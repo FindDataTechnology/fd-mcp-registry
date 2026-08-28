@@ -1,0 +1,161 @@
+providers:
+  keycloak:
+    display_name: "Keycloak"
+    client_id: "${KEYCLOAK_CLIENT_ID}"
+    client_secret: "${KEYCLOAK_CLIENT_SECRET}"
+    auth_url: "${KEYCLOAK_EXTERNAL_URL}/realms/${KEYCLOAK_REALM}/protocol/openid-connect/auth"
+    token_url: "${KEYCLOAK_URL}/realms/${KEYCLOAK_REALM}/protocol/openid-connect/token"
+    user_info_url: "${KEYCLOAK_URL}/realms/${KEYCLOAK_REALM}/protocol/openid-connect/userinfo"
+    logout_url: "${KEYCLOAK_EXTERNAL_URL}/realms/${KEYCLOAK_REALM}/protocol/openid-connect/logout"
+    scopes: ["openid", "email", "profile"]
+    response_type: "code"
+    grant_type: "authorization_code"
+    # Claims mapping for user info
+    username_claim: "preferred_username"
+    groups_claim: "groups"
+    email_claim: "email"
+    name_claim: "name"
+    enabled: "${KEYCLOAK_ENABLED}"
+
+  cognito:
+    display_name: "AWS Cognito"
+    client_id: "${COGNITO_CLIENT_ID}"
+    client_secret: "${COGNITO_CLIENT_SECRET}"
+    # Domain will be auto-derived from user pool ID if COGNITO_DOMAIN is not set
+    auth_url: "https://${COGNITO_DOMAIN}.auth.${AWS_REGION}.amazoncognito.com/oauth2/authorize"
+    token_url: "https://${COGNITO_DOMAIN}.auth.${AWS_REGION}.amazoncognito.com/oauth2/token"
+    user_info_url: "https://${COGNITO_DOMAIN}.auth.${AWS_REGION}.amazoncognito.com/oauth2/userInfo"
+    logout_url: "https://${COGNITO_DOMAIN}.auth.${AWS_REGION}.amazoncognito.com/logout"
+    scopes: ["openid", "email", "profile", "aws.cognito.signin.user.admin"]
+    response_type: "code"
+    grant_type: "authorization_code"
+    # Claims mapping for user info
+    username_claim: "email"
+    groups_claim: "cognito:groups"
+    email_claim: "email"
+    name_claim: "name"
+    enabled: "${COGNITO_ENABLED}"
+
+  entra:
+    display_name: "Microsoft Entra ID"
+    client_id: "${ENTRA_CLIENT_ID}"
+    client_secret: "${ENTRA_CLIENT_SECRET}"
+    auth_url: "https://login.microsoftonline.com/${ENTRA_TENANT_ID}/oauth2/v2.0/authorize"
+    token_url: "https://login.microsoftonline.com/${ENTRA_TENANT_ID}/oauth2/v2.0/token"
+    user_info_url: "https://graph.microsoft.com/oidc/userinfo"
+    logout_url: "https://login.microsoftonline.com/${ENTRA_TENANT_ID}/oauth2/v2.0/logout"
+    # Request only OIDC scopes for user authentication
+    # The resulting access token is for Microsoft Graph API
+    # For programmatic API access, users get JWT tokens through the /tokens/generate endpoint
+    scopes: ["openid", "email", "profile"]
+    response_type: "code"
+    grant_type: "authorization_code"
+    # Claims mapping for user info
+    username_claim: "preferred_username"
+    groups_claim: "groups"
+    email_claim: "email"
+    name_claim: "name"
+    enabled: "${ENTRA_ENABLED}"
+
+  okta:
+    display_name: "Okta"
+    client_id: "${OKTA_CLIENT_ID}"
+    client_secret: "${OKTA_CLIENT_SECRET}"
+    auth_url: "https://${OKTA_DOMAIN}/oauth2/v1/authorize"
+    token_url: "https://${OKTA_DOMAIN}/oauth2/v1/token"
+    user_info_url: "https://${OKTA_DOMAIN}/oauth2/v1/userinfo"
+    logout_url: "https://${OKTA_DOMAIN}/oauth2/v1/logout"
+    scopes: ["openid", "email", "profile", "groups"]
+    response_type: "code"
+    grant_type: "authorization_code"
+    username_claim: "preferred_username"
+    groups_claim: "groups"
+    email_claim: "email"
+    name_claim: "name"
+    enabled: true
+
+  github:
+    display_name: "GitHub"
+    client_id: "${GITHUB_CLIENT_ID}"
+    client_secret: "${GITHUB_CLIENT_SECRET}"
+    auth_url: "https://github.com/login/oauth/authorize"
+    token_url: "https://github.com/login/oauth/access_token"
+    user_info_url: "https://api.github.com/user"
+    scopes: ["read:user", "user:email"]
+    response_type: "code"
+    grant_type: "authorization_code"
+    # GitHub specific claim mapping
+    username_claim: "login"
+    groups_claim: null  # GitHub doesn't provide groups in basic scope
+    email_claim: "email"
+    name_claim: "name"
+    enabled: "${GITHUB_ENABLED}"
+
+  auth0:
+    display_name: "Auth0"
+    client_id: "${AUTH0_CLIENT_ID}"
+    client_secret: "${AUTH0_CLIENT_SECRET}"
+    auth_url: "https://${AUTH0_DOMAIN}/authorize"
+    token_url: "https://${AUTH0_DOMAIN}/oauth/token"
+    user_info_url: "https://${AUTH0_DOMAIN}/userinfo"
+    logout_url: "https://${AUTH0_DOMAIN}/v2/logout"
+    scopes: ["openid", "email", "profile"]
+    response_type: "code"
+    grant_type: "authorization_code"
+    # Claims mapping for user info
+    # Auth0 uses 'nickname' for display name and requires a custom
+    # Rule/Action to add groups to tokens as a namespaced claim
+    username_claim: "nickname"
+    groups_claim: "${AUTH0_GROUPS_CLAIM}"
+    email_claim: "email"
+    name_claim: "name"
+    enabled: "${AUTH0_ENABLED}"
+
+  pingfederate:
+    display_name: "PingFederate"
+    client_id: "${PINGFEDERATE_CLIENT_ID}"
+    client_secret: "${PINGFEDERATE_CLIENT_SECRET}"
+    auth_url: "${PINGFEDERATE_EXTERNAL_URL}/as/authorization.oauth2"
+    token_url: "${PINGFEDERATE_BASE_URL}/as/token.oauth2"
+    user_info_url: "${PINGFEDERATE_BASE_URL}/idp/userinfo.openid"
+    logout_url: "${PINGFEDERATE_EXTERNAL_URL}/idp/startSLO.ping"
+    scopes: ["openid", "email", "profile", "groups"]
+    response_type: "code"
+    grant_type: "authorization_code"
+    username_claim: "preferred_username"
+    groups_claim: "${PINGFEDERATE_GROUPS_CLAIM}"
+    email_claim: "email"
+    name_claim: "name"
+    enabled: "${PINGFEDERATE_ENABLED}"
+
+  google:
+    display_name: "Google"
+    client_id: "${GOOGLE_CLIENT_ID}"
+    client_secret: "${GOOGLE_CLIENT_SECRET}"
+    auth_url: "https://accounts.google.com/o/oauth2/auth"
+    token_url: "https://oauth2.googleapis.com/token"
+    user_info_url: "https://www.googleapis.com/oauth2/v2/userinfo"
+    scopes: ["openid", "email", "profile"]
+    response_type: "code"
+    grant_type: "authorization_code"
+    # Google specific claim mapping
+    username_claim: "email"
+    groups_claim: null  # Google doesn't provide groups in basic scope
+    email_claim: "email"
+    name_claim: "name"
+    enabled: "${GOOGLE_ENABLED}"
+
+# Default session settings
+session:
+  max_age_seconds: 28800  # 8 hours
+  cookie_name: "mcp_oauth_session"
+  secure: true  # Set to false for development
+  httponly: true
+  samesite: "lax"
+  domain: "${SESSION_COOKIE_DOMAIN}"  # Set to your domain (with leading dot) to share cookies across subdomains, e.g., ".example.com"
+
+# Registry integration settings
+registry:
+  callback_url: "${REGISTRY_URL}/auth/callback"
+  success_redirect: "${REGISTRY_URL}/"
+  error_redirect: "${REGISTRY_URL}/login"
