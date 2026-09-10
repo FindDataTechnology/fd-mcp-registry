@@ -41,7 +41,7 @@ const Login: React.FC = () => {
         } catch (error) {
             console.error('Failed to fetch auth config:', error);
             // Fallback to localhost for development
-            setAuthServerUrl('http://localhost:8888');
+            setAuthServerUrl(window.location.origin); // hotfix: same-origin fallback (was localhost:8888 dev default)
         }
     };
 
@@ -76,7 +76,7 @@ const Login: React.FC = () => {
     // it as untrusted: only navigate to an http/https base, never a
     // javascript:/data: scheme. Fall back to the safe default otherwise.
     const configuredAuthUrl =
-      authServerUrl && isSafeUrl(authServerUrl) ? authServerUrl : 'http://localhost:8888';
+      authServerUrl && isSafeUrl(authServerUrl) ? authServerUrl : window.location.origin; // hotfix: same-origin fallback
     window.location.href = `${configuredAuthUrl}/oauth2/login/${provider}?redirect_uri=${redirectUri}`;
   };
 
@@ -109,7 +109,7 @@ const Login: React.FC = () => {
                   onClick={() => handleOAuthLogin(provider.name)}
                   className="w-full flex items-center justify-center px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-lg shadow-sm text-sm font-medium text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 transition-all duration-200 hover:shadow-md"
                 >
-                  <span>Continue with {provider.display_name}</span>
+                  <span>寻数科技账号登录</span>
                 </button>
               ))}
             </div>

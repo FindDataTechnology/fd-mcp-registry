@@ -545,12 +545,12 @@ services:
       - KEYCLOAK_M2M_CLIENT_SECRET=${KEYCLOAK_M2M_CLIENT_SECRET}
       - LOGTO_ENABLED=${LOGTO_ENABLED:-false}
       - LOGTO_URL=${LOGTO_URL:-http://idp-logto:3001}
-      - LOGTO_EXTERNAL_URL=${LOGTO_EXTERNAL_URL:-https://auth.token118.com}
+      - LOGTO_EXTERNAL_URL=${LOGTO_EXTERNAL_URL:-https://auth.finddatatech.cloud}
       - LOGTO_CLIENT_ID=${LOGTO_CLIENT_ID}
       - LOGTO_CLIENT_SECRET=${LOGTO_CLIENT_SECRET}
       - LOGTO_M2M_CLIENT_ID=${LOGTO_M2M_CLIENT_ID}
       - LOGTO_M2M_CLIENT_SECRET=${LOGTO_M2M_CLIENT_SECRET}
-      - LOGTO_M2M_RESOURCE=${LOGTO_M2M_RESOURCE:-https://mcp.token118.com/api}
+      - LOGTO_M2M_RESOURCE=${LOGTO_M2M_RESOURCE:-https://mcp.finddatatech.cloud/api}
       # Entra ID configuration
       - ENTRA_TENANT_ID=${ENTRA_TENANT_ID}
       - ENTRA_CLIENT_ID=${ENTRA_CLIENT_ID}
