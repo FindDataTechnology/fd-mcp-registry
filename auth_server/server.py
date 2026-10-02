@@ -4251,6 +4251,8 @@ async def validate_request(request: Request):
             logger.warning(f"Failed to enrich groups from MongoDB: {e}")
             # Don't fail validation if enrichment fails
 
+        groups_enriched_from_db = False
+
         # Issue #1127: enrich user groups from idp_user_groups collection if
         # the validated user token has no groups claim (e.g., PingFederate
         # without the custom ATM groups attribute). Gated per-provider via
@@ -4290,6 +4292,7 @@ async def validate_request(request: Request):
 
                 if enriched_user_groups != current_user_groups:
                     validation_result["groups"] = enriched_user_groups
+                    groups_enriched_from_db = True
                     logger.info(
                         "Enriched user '%s' (provider=%s) from idp_user_groups: %d -> %d group(s)",
                         username_for_lookup,
@@ -4370,6 +4373,21 @@ async def validate_request(request: Request):
             logger.debug(
                 "Re-mapped pingfederate: %d groups -> %d scopes "
                 "after fallback enrichment (transport=%s)",
+                len(user_groups),
+                len(user_scopes),
+                auth_method,
+            )
+        elif user_groups and not existing_scopes and groups_enriched_from_db:
+            # IDP_USER_GROUP_FALLBACK enrichment (idp_user_groups) runs after
+            # the initial validation, so tokens minted without IdP group
+            # claims carry empty scopes; re-map the DB-assigned groups now so
+            # a fallback-assigned caller group (e.g. the platform's
+            # "paas-agent-callers") grants its scopes on self-signed bearer
+            # tokens too. Gated on enrichment so tokens that carry IdP groups
+            # are byte-identical to before.
+            user_scopes = await map_groups_to_scopes(user_groups)
+            logger.debug(
+                "Re-mapped %d DB-enriched groups -> %d scopes (method=%s)",
                 len(user_groups),
                 len(user_scopes),
                 auth_method,
