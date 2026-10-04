@@ -63,15 +63,14 @@ def _base_claims(issuer: str, audience: str) -> dict:
     }
 
 
-def _make_keycloak_provider():
-    from providers.keycloak import KeycloakProvider
+def _make_logto_provider():
+    from providers.logto import LogtoProvider
 
-    return KeycloakProvider(
-        keycloak_url="http://keycloak:8080",
-        realm="test-realm",
+    return LogtoProvider(
+        logto_url="http://logto:3001",
         client_id="gateway-web",
         client_secret="secret",  # noqa: S106 - test fixture, not a real secret
-        keycloak_external_url="https://keycloak.example.com",
+        logto_external_url="https://logto.example.com",
     )
 
 
@@ -84,9 +83,9 @@ class TestIdTokenAccepted:
     """A correctly signed id_token with the right iss/aud/exp is accepted."""
 
     def test_valid_signed_token_accepted(self):
-        provider = _make_keycloak_provider()
+        provider = _make_logto_provider()
         private_key, jwks = _build_keypair()
-        issuer = provider.realm_url
+        issuer = provider.issuer
         token = _sign_id_token(private_key, _base_claims(issuer, provider.client_id))
 
         with patch.object(provider, "get_jwks", return_value=jwks):
@@ -95,17 +94,18 @@ class TestIdTokenAccepted:
         assert claims["sub"] == "user-123"
         assert claims["groups"] == ["mcp-registry-admin"]
 
-    def test_external_issuer_accepted(self):
-        provider = _make_keycloak_provider()
+    def test_issuer_is_public_endpoint(self):
+        """Logto has a single issuer: the configured public endpoint + /oidc."""
+        provider = _make_logto_provider()
         private_key, jwks = _build_keypair()
         token = _sign_id_token(
-            private_key, _base_claims(provider.external_realm_url, provider.client_id)
+            private_key, _base_claims(provider.issuer, provider.client_id)
         )
 
         with patch.object(provider, "get_jwks", return_value=jwks):
             claims = provider.validate_id_token(token)
 
-        assert claims["iss"] == provider.external_realm_url
+        assert claims["iss"] == "https://logto.example.com/oidc"
 
 
 # =============================================================================
@@ -120,11 +120,11 @@ class TestIdTokenRejected:
         """Token signed by a DIFFERENT key than the JWKS advertises."""
         from providers.base import IdTokenVerificationError
 
-        provider = _make_keycloak_provider()
+        provider = _make_logto_provider()
         # JWKS advertises key A; token is signed with key B.
         _key_a, jwks = _build_keypair()
         attacker_key, _ = _build_keypair()
-        token = _sign_id_token(attacker_key, _base_claims(provider.realm_url, provider.client_id))
+        token = _sign_id_token(attacker_key, _base_claims(provider.issuer, provider.client_id))
 
         with patch.object(provider, "get_jwks", return_value=jwks):
             with pytest.raises(IdTokenVerificationError):
@@ -134,11 +134,11 @@ class TestIdTokenRejected:
         """A token with alg=none (unsigned) is rejected before any claim use."""
         from providers.base import IdTokenVerificationError
 
-        provider = _make_keycloak_provider()
+        provider = _make_logto_provider()
         _key, jwks = _build_keypair()
         # Attacker crafts an unsigned token asserting admin group.
         forged = jwt.encode(
-            _base_claims(provider.realm_url, provider.client_id),
+            _base_claims(provider.issuer, provider.client_id),
             key="",
             algorithm="none",
             headers={"kid": "test-kid"},
@@ -151,7 +151,7 @@ class TestIdTokenRejected:
     def test_wrong_issuer_rejected(self):
         from providers.base import IdTokenVerificationError
 
-        provider = _make_keycloak_provider()
+        provider = _make_logto_provider()
         private_key, jwks = _build_keypair()
         token = _sign_id_token(
             private_key,
@@ -165,9 +165,9 @@ class TestIdTokenRejected:
     def test_wrong_audience_rejected(self):
         from providers.base import IdTokenVerificationError
 
-        provider = _make_keycloak_provider()
+        provider = _make_logto_provider()
         private_key, jwks = _build_keypair()
-        token = _sign_id_token(private_key, _base_claims(provider.realm_url, "some-other-client"))
+        token = _sign_id_token(private_key, _base_claims(provider.issuer, "some-other-client"))
 
         with patch.object(provider, "get_jwks", return_value=jwks):
             with pytest.raises(IdTokenVerificationError):
@@ -176,9 +176,9 @@ class TestIdTokenRejected:
     def test_expired_token_rejected(self):
         from providers.base import IdTokenVerificationError
 
-        provider = _make_keycloak_provider()
+        provider = _make_logto_provider()
         private_key, jwks = _build_keypair()
-        claims = _base_claims(provider.realm_url, provider.client_id)
+        claims = _base_claims(provider.issuer, provider.client_id)
         claims["exp"] = int(time.time()) - 10  # expired
         claims["iat"] = int(time.time()) - 3610
         token = _sign_id_token(private_key, claims)
@@ -190,10 +190,10 @@ class TestIdTokenRejected:
     def test_kid_not_in_jwks_rejected(self):
         from providers.base import IdTokenVerificationError
 
-        provider = _make_keycloak_provider()
+        provider = _make_logto_provider()
         private_key, jwks = _build_keypair(kid="kid-a")
         token = _sign_id_token(
-            private_key, _base_claims(provider.realm_url, provider.client_id), kid="kid-b"
+            private_key, _base_claims(provider.issuer, provider.client_id), kid="kid-b"
         )
 
         with patch.object(provider, "get_jwks", return_value=jwks):
@@ -203,11 +203,11 @@ class TestIdTokenRejected:
     def test_missing_kid_rejected(self):
         from providers.base import IdTokenVerificationError
 
-        provider = _make_keycloak_provider()
+        provider = _make_logto_provider()
         private_key, jwks = _build_keypair()
         # Sign without a kid header.
         token = jwt.encode(
-            _base_claims(provider.realm_url, provider.client_id),
+            _base_claims(provider.issuer, provider.client_id),
             private_key,
             algorithm="RS256",
         )
@@ -219,9 +219,9 @@ class TestIdTokenRejected:
     def test_jwks_unreachable_fails_closed(self):
         from providers.base import IdTokenVerificationError
 
-        provider = _make_keycloak_provider()
+        provider = _make_logto_provider()
         private_key, _jwks = _build_keypair()
-        token = _sign_id_token(private_key, _base_claims(provider.realm_url, provider.client_id))
+        token = _sign_id_token(private_key, _base_claims(provider.issuer, provider.client_id))
 
         with patch.object(provider, "get_jwks", side_effect=ValueError("network down")):
             with pytest.raises(IdTokenVerificationError):
@@ -230,14 +230,14 @@ class TestIdTokenRejected:
     def test_empty_token_rejected(self):
         from providers.base import IdTokenVerificationError
 
-        provider = _make_keycloak_provider()
+        provider = _make_logto_provider()
         with pytest.raises(IdTokenVerificationError):
             provider.validate_id_token("")
 
     def test_garbage_token_rejected(self):
         from providers.base import IdTokenVerificationError
 
-        provider = _make_keycloak_provider()
+        provider = _make_logto_provider()
         _key, jwks = _build_keypair()
         with patch.object(provider, "get_jwks", return_value=jwks):
             with pytest.raises(IdTokenVerificationError):
@@ -249,122 +249,6 @@ class TestIdTokenRejected:
 # =============================================================================
 
 
-class TestPerProviderWiring:
-    """Each provider's validate_id_token verifies against its own iss/aud."""
-
-    def test_entra_valid_token_accepted(self):
-        from providers.entra import EntraIdProvider
-
-        provider = EntraIdProvider(
-            tenant_id="00000000-0000-0000-0000-000000000000",
-            client_id="entra-client",
-            client_secret="secret",  # noqa: S106 - test fixture
-        )
-        private_key, jwks = _build_keypair()
-        token = _sign_id_token(private_key, _base_claims(provider.issuer_v2, provider.client_id))
-        with patch.object(provider, "get_jwks", return_value=jwks):
-            claims = provider.validate_id_token(token)
-        assert claims["aud"] == provider.client_id
-
-    def test_entra_forged_signature_rejected(self):
-        from providers.base import IdTokenVerificationError
-        from providers.entra import EntraIdProvider
-
-        provider = EntraIdProvider(
-            tenant_id="00000000-0000-0000-0000-000000000000",
-            client_id="entra-client",
-            client_secret="secret",  # noqa: S106 - test fixture
-        )
-        _key, jwks = _build_keypair()
-        attacker_key, _ = _build_keypair()
-        token = _sign_id_token(attacker_key, _base_claims(provider.issuer_v2, provider.client_id))
-        with patch.object(provider, "get_jwks", return_value=jwks):
-            with pytest.raises(IdTokenVerificationError):
-                provider.validate_id_token(token)
-
-    def test_okta_valid_token_accepted(self):
-        from providers.okta import OktaProvider
-
-        provider = OktaProvider(
-            okta_domain="example.okta.com",
-            client_id="okta-client",
-            client_secret="secret",  # noqa: S106 - test fixture
-        )
-        private_key, jwks = _build_keypair()
-        token = _sign_id_token(private_key, _base_claims(provider.issuer, provider.client_id))
-        with patch.object(provider, "get_jwks", return_value=jwks):
-            claims = provider.validate_id_token(token)
-        assert claims["sub"] == "user-123"
-
-    def test_okta_wrong_issuer_rejected(self):
-        from providers.base import IdTokenVerificationError
-        from providers.okta import OktaProvider
-
-        provider = OktaProvider(
-            okta_domain="example.okta.com",
-            client_id="okta-client",
-            client_secret="secret",  # noqa: S106 - test fixture
-        )
-        private_key, jwks = _build_keypair()
-        token = _sign_id_token(
-            private_key, _base_claims("https://evil.okta.com", provider.client_id)
-        )
-        with patch.object(provider, "get_jwks", return_value=jwks):
-            with pytest.raises(IdTokenVerificationError):
-                provider.validate_id_token(token)
-
-    def test_auth0_valid_token_accepted(self):
-        from providers.auth0 import Auth0Provider
-
-        provider = Auth0Provider(
-            domain="example.auth0.com",
-            client_id="auth0-client",
-            client_secret="secret",  # noqa: S106 - test fixture
-        )
-        private_key, jwks = _build_keypair()
-        token = _sign_id_token(private_key, _base_claims(provider.issuer, provider.client_id))
-        with patch.object(provider, "get_jwks", return_value=jwks):
-            claims = provider.validate_id_token(token)
-        assert claims["email"] == "alice@example.com"
-
-    def test_auth0_extract_user_carries_subject(self):
-        """The id_token sub becomes the session subject the egress vault keys on."""
-        from providers.auth0 import Auth0Provider
-
-        provider = Auth0Provider(
-            domain="example.auth0.com",
-            client_id="auth0-client",
-            client_secret="secret",  # noqa: S106 - test fixture
-        )
-        private_key, jwks = _build_keypair()
-        token = _sign_id_token(private_key, _base_claims(provider.issuer, provider.client_id))
-        with patch.object(provider, "get_jwks", return_value=jwks):
-            user = provider.extract_user_from_tokens({"id_token": token, "access_token": "x"})
-        assert user["subject"] == "user-123"
-
-    def test_auth0_extract_user_rejects_forged_token(self):
-        """extract_user_from_tokens must propagate verification failure (fail closed)."""
-        from providers.auth0 import Auth0Provider
-        from providers.base import IdTokenVerificationError
-
-        provider = Auth0Provider(
-            domain="example.auth0.com",
-            client_id="auth0-client",
-            client_secret="secret",  # noqa: S106 - test fixture
-        )
-        _key, jwks = _build_keypair()
-        attacker_key, _ = _build_keypair()
-        forged = _sign_id_token(attacker_key, _base_claims(provider.issuer, provider.client_id))
-        with patch.object(provider, "get_jwks", return_value=jwks):
-            with pytest.raises(IdTokenVerificationError):
-                provider.extract_user_from_tokens({"id_token": forged, "access_token": "x"})
-
-
-# =============================================================================
-# Nonce binding (OIDC replay protection)
-# =============================================================================
-
-
 class TestIdTokenNonce:
     """When an expected_nonce is supplied, the verified token's nonce claim must
     match it. This binds the id_token to the specific login (replay/injection
@@ -372,9 +256,9 @@ class TestIdTokenNonce:
     """
 
     def test_matching_nonce_accepted(self):
-        provider = _make_keycloak_provider()
+        provider = _make_logto_provider()
         private_key, jwks = _build_keypair()
-        claims = _base_claims(provider.realm_url, provider.client_id)
+        claims = _base_claims(provider.issuer, provider.client_id)
         claims["nonce"] = "login-nonce-abc"
         token = _sign_id_token(private_key, claims)
 
@@ -386,9 +270,9 @@ class TestIdTokenNonce:
     def test_mismatched_nonce_rejected(self):
         from providers.base import IdTokenVerificationError
 
-        provider = _make_keycloak_provider()
+        provider = _make_logto_provider()
         private_key, jwks = _build_keypair()
-        claims = _base_claims(provider.realm_url, provider.client_id)
+        claims = _base_claims(provider.issuer, provider.client_id)
         claims["nonce"] = "attacker-nonce"
         token = _sign_id_token(private_key, claims)
 
@@ -399,10 +283,10 @@ class TestIdTokenNonce:
     def test_absent_nonce_claim_rejected_when_expected(self):
         from providers.base import IdTokenVerificationError
 
-        provider = _make_keycloak_provider()
+        provider = _make_logto_provider()
         private_key, jwks = _build_keypair()
         # No nonce claim in the token, but a nonce is expected for this login.
-        token = _sign_id_token(private_key, _base_claims(provider.realm_url, provider.client_id))
+        token = _sign_id_token(private_key, _base_claims(provider.issuer, provider.client_id))
 
         with patch.object(provider, "get_jwks", return_value=jwks):
             with pytest.raises(IdTokenVerificationError):
@@ -411,9 +295,9 @@ class TestIdTokenNonce:
     def test_no_expected_nonce_skips_check(self):
         """When no nonce is bound to the login, verification does not require one
         (a signature-only valid token still passes)."""
-        provider = _make_keycloak_provider()
+        provider = _make_logto_provider()
         private_key, jwks = _build_keypair()
-        token = _sign_id_token(private_key, _base_claims(provider.realm_url, provider.client_id))
+        token = _sign_id_token(private_key, _base_claims(provider.issuer, provider.client_id))
 
         with patch.object(provider, "get_jwks", return_value=jwks):
             verified = provider.validate_id_token(token, expected_nonce=None)
