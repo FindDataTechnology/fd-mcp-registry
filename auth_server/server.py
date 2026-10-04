@@ -121,7 +121,6 @@ from registry.core.config import settings
 # Configure logging using shared module (RotatingFileHandler + optional MongoDB)
 from registry.exceptions import UrlValidationError
 from registry.repositories.factory import get_scope_repository, get_server_repository
-from registry.repositories.factory import get_server_repository
 from registry.services.patch_key_service import PATCH_KEY_PREFIX
 from registry.utils.logging_setup import setup_logging as _setup_logging
 from registry.utils.request_utils import get_client_ip
