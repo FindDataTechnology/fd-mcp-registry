@@ -2,10 +2,10 @@ name: Registry Test Suite
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main, develop, 'fd-*']
     # No path filters - run on every merge to main/develop
   pull_request:
-    branches: [main, develop]
+    branches: [main, develop, 'fd-*']
     paths:
       - 'registry/**'
       - 'tests/**'

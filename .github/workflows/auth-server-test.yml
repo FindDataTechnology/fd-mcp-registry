@@ -2,13 +2,13 @@ name: Auth Server Test Suite
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main, develop, 'fd-*']
     paths:
       - 'auth_server/**'
       - 'tests/auth_server/**'
       - '.github/workflows/auth-server-test.yml'
   pull_request:
-    branches: [main, develop]
+    branches: [main, develop, 'fd-*']
     paths:
       - 'auth_server/**'
       - 'tests/auth_server/**'
