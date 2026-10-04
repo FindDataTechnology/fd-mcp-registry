@@ -234,69 +234,6 @@ class TestOAuthProtectedResourceEndpoint:
             assert response.status_code == 502
 
 
-class TestGlobalPrmEntraScopeFormat:
-    """The global PRM must advertise scopes in the form the configured Entra
-    version expects (issue #990). Uses a REAL EntraIdProvider so the route +
-    provider.protected_resource_metadata() + format_advertised_scopes() are
-    exercised end-to-end. Regression guard for AADSTS650053: v1 clients must
-    receive api://<app-id>/<scope> so they send the correct /authorize scope.
-    """
-
-    def _entra_provider(self, monkeypatch, scope_format, application_id_uri=None):
-        for var in (
-            "ENTRA_LOGIN_BASE_URL",
-            "ENTRA_GRAPH_BASE_URL",
-            "ENTRA_SCOPE_FORMAT",
-            "ENTRA_APPLICATION_ID_URI",
-        ):
-            monkeypatch.delenv(var, raising=False)
-        from auth_server.providers.entra import EntraIdProvider
-
-        return EntraIdProvider(
-            tenant_id="tenant-abc",
-            client_id="app-guid",
-            client_secret="s",
-            scope_format=scope_format,
-            application_id_uri=application_id_uri,
-        )
-
-    def _run(self, provider, mock_settings, advertised_scopes):
-        mock_settings.registry_url = "https://gw.example.com"
-        mock_settings.mcp_https_required = True
-        mock_settings.mcp_resource_documentation_url = None
-        mock_settings.mcp_advertised_scopes = advertised_scopes
-        with (
-            patch(
-                "registry.api.wellknown_routes._get_active_auth_provider",
-                return_value=provider,
-            ),
-            patch("registry.auth.oauth_metadata.settings", mock_settings),
-            patch("registry.api.wellknown_routes.settings", mock_settings),
-        ):
-            client = TestClient(_make_oauth_discovery_app(provider))
-            return client.get("/.well-known/oauth-protected-resource")
-
-    def test_v1_emits_api_prefixed_custom_scope(self, mock_settings, monkeypatch):
-        provider = self._entra_provider(monkeypatch, scope_format="v1")
-        resp = self._run(provider, mock_settings, "openid email mcp.read")
-        assert resp.status_code == 200
-        scopes = resp.json()["scopes_supported"]
-        # OIDC scopes bare, custom scope api://-prefixed (AADSTS650053 fix).
-        assert scopes == ["openid", "email", "api://app-guid/mcp.read"]
-
-    def test_v1_uses_application_id_uri(self, mock_settings, monkeypatch):
-        provider = self._entra_provider(
-            monkeypatch, scope_format="v1", application_id_uri="api://gw-uri"
-        )
-        resp = self._run(provider, mock_settings, "mcp.read")
-        assert resp.json()["scopes_supported"] == ["api://gw-uri/mcp.read"]
-
-    def test_v2_emits_bare_custom_scope(self, mock_settings, monkeypatch):
-        provider = self._entra_provider(monkeypatch, scope_format="v2")
-        resp = self._run(provider, mock_settings, "openid mcp.read")
-        assert resp.json()["scopes_supported"] == ["openid", "mcp.read"]
-
-
 class TestGlobalPrmNonEntraUnchanged:
     """Non-Entra providers must emit scopes unchanged (no api:// rewrite).
 

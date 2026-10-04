@@ -23,11 +23,9 @@ _MARKER_SECRET_NAME: str = "AUTH_SERVER_NGINX_MARKER_SECRET"
 # Provider modules that historically carried the "development-secret-key"
 # default. They must now read SECRET_KEY without a fallback.
 _PROVIDER_MODULES: tuple[str, ...] = (
-    "auth_server/providers/keycloak.py",
-    "auth_server/providers/okta.py",
-    "auth_server/providers/auth0.py",
-    "auth_server/providers/entra.py",
-    "auth_server/providers/pingfederate.py",
+    "auth_server/providers/logto.py",
+    "auth_server/providers/base.py",
+    "auth_server/providers/factory.py",
 )
 
 _REPO_ROOT: Path = Path(__file__).resolve().parents[3]

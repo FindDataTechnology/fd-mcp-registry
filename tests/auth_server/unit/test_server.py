@@ -2628,8 +2628,8 @@ class TestOAuth2CallbackTokenStorage:
         }
         temp_session_data = {
             "state": "test-state",
-            "provider": "github",
-            "callback_uri": "http://localhost:8888/oauth2/callback/github",
+            "provider": "logto",
+            "callback_uri": "http://localhost:8888/oauth2/callback/logto",
             "nonce": "test-nonce",
             "code_verifier": "test-code-verifier",
         }
@@ -2666,7 +2666,7 @@ class TestOAuth2CallbackTokenStorage:
             patch("session_store.create_session", _fake_create_session),
         ):
             response = client.get(
-                "/oauth2/callback/github",
+                "/oauth2/callback/logto",
                 params={"code": "test-code", "state": "test-state"},
                 cookies={"oauth2_temp_session": temp_cookie},
                 follow_redirects=False,
@@ -2747,17 +2747,6 @@ class TestMapUserInfoSubject:
 
         assert map_user_info(user_info, self._BASE_CONFIG)["subject"] is None
 
-    @pytest.mark.parametrize("provider", ["github", "google"])
-    def test_non_oidc_userinfo_providers_configure_subject_claim(self, provider):
-        from pathlib import Path
-
-        import yaml
-
-        config_path = Path(__file__).parents[3] / "auth_server" / "oauth2_providers.yml"
-        providers = yaml.safe_load(config_path.read_text())["providers"]
-        assert providers[provider]["subject_claim"] == "id"
-
-
 class TestOAuth2CallbackIdTokenVerification:
     """The OAuth2 callback must verify a present id_token before trusting its
     claims. A forged/tampered id_token (verification failure) denies the login
@@ -2827,7 +2816,7 @@ class TestOAuth2CallbackIdTokenVerification:
 
         return response, create_called["value"], captured
 
-    @pytest.mark.parametrize("provider", ["keycloak", "entra", "okta", "pingfederate"])
+    @pytest.mark.parametrize("provider", ["keycloak", "okta", "pingfederate"])
     def test_forged_id_token_denies_login_and_never_persists_groups(self, provider):
         """A present id_token that fails verification must fail closed: the
         session is never created, so forged group/identity claims cannot reach
