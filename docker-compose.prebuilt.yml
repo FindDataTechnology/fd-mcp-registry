@@ -49,7 +49,7 @@ services:
   # Pre-built images are published to Amazon ECR Public (public.ecr.aws/p3v1o3c6).
   # Override the namespace with ECR_REGISTRY if you mirror them elsewhere.
   registry:
-    image: ${ECR_REGISTRY:-public.ecr.aws/p3v1o3c6}/registry:${REGISTRY_VERSION:-latest}
+    image: ccr.ccs.tencentyun.com/yizuo/mcp-registry:sha-7fbc2d6
     environment:
       # Deployment Mode Configuration
       - DEPLOYMENT_MODE=${DEPLOYMENT_MODE:-with-gateway}
@@ -462,7 +462,7 @@ services:
   auth-server:
     # Local build with the logto provider patch (swap-mcp-registry-idp-to-logto);
     # original: ${ECR_REGISTRY:-public.ecr.aws/p3v1o3c6}/auth-server:${AUTH_SERVER_VERSION:-latest}
-    image: mcp-auth-server:logto
+    image: ccr.ccs.tencentyun.com/yizuo/mcp-auth-server:sha-7fbc2d6
     networks:
       - default
       - tokenvault-idp
@@ -675,7 +675,7 @@ services:
   # MCP Gateway Server - using pre-built image
   # ECR repository is named "mcpgw" (the published image), service stays mcpgw-server.
   mcpgw-server:
-    image: ${ECR_REGISTRY:-public.ecr.aws/p3v1o3c6}/mcpgw:${MCPGW_VERSION:-latest}
+    image: ${ECR_REGISTRY:-public.ecr.aws/p3v1o3c6}/mcpgw:${MCPGW_VERSION:-1.32.0}
     environment:
       - HOST=0.0.0.0
       - PORT=8003
