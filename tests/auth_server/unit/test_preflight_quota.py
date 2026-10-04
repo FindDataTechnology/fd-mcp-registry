@@ -22,14 +22,28 @@ X-Internal-Token, mocked upstream, mocked probe):
 
 import json
 import logging
+import sys
 import time as _time
 import types
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 
 pytestmark = [pytest.mark.unit, pytest.mark.auth]
+
+# ---------------------------------------------------------------------------
+# sys.path bootstrap (inlined from logto-support tests/auth_server/conftest.py;
+# the main snapshot has no conftest). auth_server/server.py imports its
+# siblings FLAT (``from internal_request_token import ...`` — the container
+# layout flattens auth_server/ into /app), which in the repo only resolves
+# with auth_server/ itself on sys.path. The real auth_server/*.py files exist
+# here, so no module mocking is needed.
+# ---------------------------------------------------------------------------
+_AUTH_SERVER_DIR = str(Path(__file__).resolve().parents[3] / "auth_server")
+if _AUTH_SERVER_DIR not in sys.path:
+    sys.path.insert(0, _AUTH_SERVER_DIR)
 
 
 # ---------------------------------------------------------------------------

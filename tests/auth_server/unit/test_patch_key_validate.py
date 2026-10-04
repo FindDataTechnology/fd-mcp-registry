@@ -10,10 +10,18 @@ Covers the acceptance flow mint -> authenticate -> revoke -> 401 at the
 
 The patch_keys collection is faked via a dict-backed service mock; the scope
 repository is the shared in-memory fixture so group->scope mapping works.
+
+Lineage note (main fork): on logto-support these fixtures lived in
+``tests/auth_server/conftest.py`` (which also put ``auth_server/`` on
+``sys.path`` so the server module's flat sibling imports resolve). The main
+snapshot trimmed every conftest, so the needed pieces are inlined here
+verbatim from that conftest instead of touching a shared one.
 """
 
 import logging
+import sys
 from datetime import datetime
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -28,6 +36,19 @@ from registry.schemas.patch_key import (
 logger = logging.getLogger(__name__)
 
 pytestmark = [pytest.mark.unit, pytest.mark.auth]
+
+# ---------------------------------------------------------------------------
+# sys.path bootstrap (inlined from logto-support tests/auth_server/conftest.py)
+# ---------------------------------------------------------------------------
+# auth_server/server.py imports its siblings FLAT (``from internal_request_token
+# import ...``, ``from providers.factory import ...``) — the container layout
+# flattens auth_server/ into /app. In the repo that only resolves with
+# auth_server/ itself on sys.path. On main the real auth_server/*.py files
+# exist, so no module mocking is required (logto-support additionally mocked
+# metrics_middleware; here the real one imports fine).
+_AUTH_SERVER_DIR = str(Path(__file__).resolve().parents[3] / "auth_server")
+if _AUTH_SERVER_DIR not in sys.path:
+    sys.path.insert(0, _AUTH_SERVER_DIR)
 
 # A representative minted key (shape: "wgk-" + token_urlsafe(32) == 43 chars).
 _PLAINTEXT_KEY = "wgk-A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p5Q6r7S8t9U0v"
@@ -77,6 +98,103 @@ def _patched_service(service: _FakePatchKeyService):
         "registry.services.patch_key_service.get_patch_key_service",
         new=AsyncMock(return_value=service),
     )
+
+
+@pytest.fixture
+def auth_env_vars(monkeypatch) -> dict[str, str]:
+    """Set up environment variables for auth server testing.
+
+    Inlined verbatim from logto-support tests/auth_server/conftest.py (the
+    server module binds most of these at import time; this keeps parity with
+    the lineage the tests were written against).
+    """
+    env_vars = {
+        "SECRET_KEY": "test-secret-key-for-auth-testing-do-not-use-in-prod",
+        "AUTH_PROVIDER": "cognito",
+        "COGNITO_USER_POOL_ID": "us-east-1_TEST12345",
+        "COGNITO_CLIENT_ID": "test-client-id",
+        "COGNITO_CLIENT_SECRET": "test-client-secret",
+        "AWS_REGION": "us-east-1",
+        "MAX_TOKENS_PER_USER_PER_HOUR": "100",
+    }
+
+    for key, value in env_vars.items():
+        monkeypatch.setenv(key, value)
+
+    logger.debug(f"Set up {len(env_vars)} auth environment variables")
+    return env_vars
+
+
+@pytest.fixture
+def mock_scopes_config() -> dict:
+    """Mock scopes configuration (inlined from logto-support conftest).
+
+    ``developers`` maps to read+write on test-server; ``users`` read-only —
+    the per-server denial test relies on that split.
+    """
+    return {
+        "group_mappings": {
+            "users": ["read:servers", "read:tools"],
+            "developers": ["read:servers", "write:servers", "read:tools", "tools:call"],
+            "admins": ["admin:all"],
+        },
+        "read:servers": [
+            {"server": "test-server", "methods": ["initialize", "tools/list"], "tools": []}
+        ],
+        "write:servers": [
+            {
+                "server": "test-server",
+                "methods": ["initialize", "tools/list", "tools/call"],
+                "tools": ["*"],
+            }
+        ],
+        "admin:all": [{"server": "*", "methods": ["*"], "tools": ["*"]}],
+    }
+
+
+@pytest.fixture
+def mock_scope_repository_with_data(mock_scopes_config):
+    """Mocked scope repository backed by mock_scopes_config.
+
+    Inlined verbatim from logto-support tests/auth_server/conftest.py.
+    """
+    mock_repo = AsyncMock()
+
+    # Mock get_server_scopes to return the scope data from mock_scopes_config
+    async def get_server_scopes_side_effect(scope_name: str):
+        """Return server access rules for a scope from mock_scopes_config."""
+        # Return the scope data if it exists, otherwise empty list
+        return mock_scopes_config.get(scope_name, [])
+
+    # Mock get_group_mappings to return scopes for a group from mock_scopes_config
+    async def get_group_mappings_side_effect(group_name: str):
+        """Return scopes for a group from mock_scopes_config."""
+        group_mappings = mock_scopes_config.get("group_mappings", {})
+        return group_mappings.get(group_name, [])
+
+    # get_group_mappings_bulk returns the de-duplicated union across groups
+    # (mirrors the base-class default). map_groups_to_scopes calls this now.
+    async def get_group_mappings_bulk_side_effect(groups: list[str]):
+        group_mappings = mock_scopes_config.get("group_mappings", {})
+        seen: set[str] = set()
+        out: list[str] = []
+        for group in groups:
+            for scope in group_mappings.get(group, []):
+                if scope not in seen:
+                    seen.add(scope)
+                    out.append(scope)
+        return out
+
+    mock_repo.get_server_scopes.side_effect = get_server_scopes_side_effect
+    mock_repo.get_group_mappings.side_effect = get_group_mappings_side_effect
+    mock_repo.get_group_mappings_bulk.side_effect = get_group_mappings_bulk_side_effect
+    mock_repo.load_all = AsyncMock()
+    mock_repo.list_groups.return_value = {}
+    mock_repo.get_group.return_value = None
+    mock_repo.get_scope_definition.return_value = None
+    mock_repo.list_scope_definitions.return_value = []
+
+    return mock_repo
 
 
 @pytest.fixture

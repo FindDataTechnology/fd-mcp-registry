@@ -7,6 +7,15 @@ Covers the console API surface:
 
 The service layer is mocked (its logic has its own suite); auth is faked via
 the nginx_proxied_auth dependency override, mirroring the m2m routes tests.
+
+Lineage note (main fork): the logto-support original imported the FULL
+``registry.main`` app. On this fork ``registry.main`` is not importable in
+tests (its egress_auth router imports ``registry.secrets.*``, which exists
+only on logto-support — the main snapshot trimmed that package), and no other
+test on main imports ``registry.main``. The unit under test here is the
+patch-key router itself (service and auth are mocked anyway), so this suite
+mounts that router alone on a minimal FastAPI app; paths, dependencies and
+handlers are the production ones.
 """
 
 import logging
@@ -15,6 +24,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from registry.schemas.patch_key import (
@@ -45,6 +55,14 @@ def console_user_context() -> dict[str, Any]:
 
 
 @pytest.fixture
+def mock_settings(monkeypatch):
+    # logto-support 谱系的 conftest 曾提供此 fixture（main 无）：显式开 patch-key 开关
+    from registry.core import config
+
+    monkeypatch.setattr(config.settings, "patch_key_auth_enabled", True, raising=False)
+
+
+@pytest.fixture
 def mock_service() -> MagicMock:
     service = MagicMock()
     service.mint_key = AsyncMock()
@@ -53,17 +71,32 @@ def mock_service() -> MagicMock:
     return service
 
 
+def _build_test_app() -> FastAPI:
+    """Minimal app exposing only the patch-key console router.
+
+    Equivalent to the production wiring for these endpoints: the router is
+    included with its own ``/api/patch-keys`` prefix and its real dependencies
+    (nginx_proxied_auth, verify_csrf_token_flexible). See the module docstring
+    for why registry.main cannot be imported on this fork.
+    """
+    from registry.api.patch_key_routes import router as patch_key_router
+
+    test_app = FastAPI()
+    test_app.include_router(patch_key_router)
+    return test_app
+
+
+app = _build_test_app()
+
+
 def _override_auth(user_context: dict | None) -> None:
     from registry.auth.dependencies import nginx_proxied_auth
-    from registry.main import app
 
     app.dependency_overrides[nginx_proxied_auth] = lambda: user_context
 
 
 @pytest.fixture
 def client(console_user_context, mock_settings, mock_service):
-    from registry.main import app
-
     _override_auth(console_user_context)
     with patch(
         "registry.api.patch_key_routes._get_service",
@@ -76,8 +109,6 @@ def client(console_user_context, mock_settings, mock_service):
 
 @pytest.fixture
 def anon_client(mock_settings, mock_service):
-    from registry.main import app
-
     _override_auth(None)
     with patch(
         "registry.api.patch_key_routes._get_service",
