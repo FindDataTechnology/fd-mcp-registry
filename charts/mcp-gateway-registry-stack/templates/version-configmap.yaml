@@ -1,9 +1,0 @@
-{{ if .Values.global.chartVersion }}
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: chart-version
-  namespace: {{ include "common.names.namespace" . | quote }}
-data:
-  version: {{ .Values.global.chartVersion | quote }}
-{{ end }}
