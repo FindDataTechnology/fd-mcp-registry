@@ -1016,11 +1016,18 @@ async def get_servers_json(
         # Extract technical name from path (remove leading and trailing slashes)
         technical_name = path.strip("/")
 
-        # Check if user can list this service using technical name
+        # Check if user can list this service using technical name. The
+        # per-user access set lives in ``accessible_servers`` (server names,
+        # resolved from scope server_access rules); ``accessible_services``
+        # is the legacy path-shaped list and is empty for non-admins, so
+        # gating on it alone hid every server from restricted users while
+        # the detail endpoint (which checks accessible_servers) served them.
         if (
             not is_unrestricted
             and "all" not in accessible_services
+            and "all" not in accessible_servers_list
             and technical_name not in normalized_accessible_services
+            and server_name not in accessible_servers_list
         ):
             continue
 
