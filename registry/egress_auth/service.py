@@ -151,6 +151,11 @@ _PER_USER_IDP_METHODS: frozenset[str] = frozenset(
         "okta",
         "auth0",
         "pingfederate",
+        # Per-user long-lived key (wgk-): its owner IS the vault principal, so
+        # it must fold into the canonical "oauth2" bucket like any IdP method --
+        # otherwise vend-read composes a "patch-key" bucket the consent-write
+        # (always "oauth2") never wrote, and every wgk- call reports no PAT.
+        "patch-key",
     }
 )
 
