@@ -8387,6 +8387,39 @@ async def mcp_proxy(
         relay_authorization=relay_ingress_auth,
     )
 
+    # Opt-in identity forwarding: when the target server registered
+    # identity_forwarding=true and the VERIFIED mcp-proxy claims carry a
+    # non-empty `sub`, inject X-Forwarded-User: <sub> onto the upstream request.
+    # The value comes ONLY from the signed token -- any caller-supplied
+    # X-Forwarded-User is dropped and replaced (never relayed), so a forged
+    # identity cannot ride through. Flag off, unknown server, lookup failure,
+    # or empty/missing sub leaves forward_headers untouched: egress is then
+    # byte-identical to the pre-feature hop.
+    caller_sub = (claims.get("sub") or "").strip()
+    if caller_sub:
+        identity_server = (server_name or "").split("/", 1)[0]
+        identity_forwarding = False
+        try:
+            identity_doc = await get_server_repository().get(identity_server)
+            identity_forwarding = bool((identity_doc or {}).get("identity_forwarding"))
+        except Exception as exc:
+            # Fail closed (= disabled): an indeterminate flag must never turn
+            # identity injection on.
+            logger.warning(
+                "mcp_proxy: identity_forwarding lookup failed for %s (%s); "
+                "not injecting X-Forwarded-User",
+                identity_server,
+                exc,
+            )
+        if identity_forwarding:
+            _pop_header_ci(forward_headers, "X-Forwarded-User")
+            forward_headers["X-Forwarded-User"] = caller_sub
+            logger.debug(
+                "mcp_proxy: identity_forwarding enabled for %s; injecting "
+                "verified sub as X-Forwarded-User",
+                identity_server,
+            )
+
     # Re-authorize the caller's scopes against the EXACT body we are about to act
     # on, BEFORE any outbound work (egress vend or upstream forward). /validate
     # authorizes on a separately-captured copy (X-Body) that can diverge from this

@@ -69,6 +69,24 @@ def _accept_internal_token_replay_check():
         yield
 
 
+@pytest.fixture(autouse=True)
+def _stub_server_repo_identity_lookup():
+    """Stub the server-repository read behind the /mcp-proxy identity flag.
+
+    The mcp-proxy hop consults the server repository for the opt-in
+    ``identity_forwarding`` flag on every request carrying a verified ``sub``.
+    These unit tests have no live datastore, so default the flag to off (an
+    empty document) -- egress behavior is then identical to the pre-feature
+    hop. Tests that exercise the flag patch
+    ``auth_server.server.get_server_repository`` themselves and thereby
+    override this stub for their duration.
+    """
+    repo = AsyncMock()
+    repo.get.return_value = {}
+    with patch("auth_server.server.get_server_repository", return_value=repo):
+        yield repo
+
+
 # =============================================================================
 # MOCK JWKS FIXTURES
 # =============================================================================
