@@ -103,6 +103,7 @@ def _doc_to_info(doc: dict) -> PatchKeyInfo:
         username=doc["username"],
         email=doc.get("email"),
         provider=doc.get("provider"),
+        egress_user=doc.get("egress_user"),
         groups=list(doc.get("groups") or []),
         status=doc.get("status") or PATCH_KEY_STATUS_REVOKED,
         created_at=doc.get("created_at") or datetime.utcnow(),
@@ -142,6 +143,7 @@ class PatchKeyService:
         name: str,
         email: str | None = None,
         provider: str | None = None,
+        egress_user: str | None = None,
     ) -> PatchKeyCreated:
         """Mint a new patch key for ``username``.
 
@@ -172,6 +174,9 @@ class PatchKeyService:
             # apply immediately; group-membership edits need a fresh key.
             "groups": list(groups),
             "provider": provider,
+            # Canonical per-user egress vault id (OIDC sub) captured at mint so
+            # the wgk- acceptance path can vend the owner's egress credentials.
+            "egress_user": egress_user,
             "status": PATCH_KEY_STATUS_ACTIVE,
             "created_at": now,
             "last_used_at": None,

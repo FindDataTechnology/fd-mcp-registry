@@ -64,6 +64,14 @@ class PatchKeyInfo(BaseModel):
             "(audit labeling only; not used for authorization)"
         ),
     )
+    egress_user: str | None = Field(
+        None,
+        description=(
+            "Canonical per-user egress vault id (OIDC sub) captured at mint "
+            "time; keys the wgk- acceptance path's egress vend to the owner's "
+            "vault bucket. None for legacy keys minted before this field."
+        ),
+    )
     groups: list[str] = Field(
         default_factory=list,
         description="Snapshot of the owner's groups taken at mint time",

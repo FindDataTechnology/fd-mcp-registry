@@ -3630,6 +3630,10 @@ async def _validate_patch_key_token(access_token: str) -> dict:
         # Non-expiring by design: no expires_at claim.
         "scopes": scopes,
         "groups": list(record.groups),
+        # Canonical per-user egress vault id (OIDC sub captured at mint); the
+        # mcp-proxy token carries it so the egress vend keys the owner's vault
+        # bucket identically to the browser-consent write (no sub fallback).
+        "egress_user": record.egress_user or "",
         # Marks the caller as a per-USER credential so the M2M group
         # enrichment fallback never treats it as a service account
         # (mirrors the self-signed validator's marker).

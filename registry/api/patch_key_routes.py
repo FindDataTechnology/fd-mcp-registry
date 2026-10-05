@@ -80,6 +80,7 @@ async def mint_patch_key(
             name=payload.name,
             email=ctx.get("email") or None,
             provider=ctx.get("auth_method") or None,
+            egress_user=ctx.get("egress_user") or None,
         )
     except PatchKeyQuotaExceeded as exc:
         raise HTTPException(

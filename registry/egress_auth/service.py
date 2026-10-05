@@ -43,6 +43,7 @@ PER_USER_AUTH_METHODS: frozenset[str] = frozenset(
     {
         "oauth2",
         "self_signed",
+        "patch-key",  # per-user long-lived key (wgk-): owner is the vault principal
         "jwt",
         "boto3",
         "cognito",
