@@ -1,4 +1,5 @@
 import React from 'react';
+import { useI18n } from '../../contexts/I18nContext';
 
 export interface FieldRef {
   /** Field name, rendered as inline code. */
@@ -23,9 +24,11 @@ interface FieldReferenceGridProps {
  * entity-specific field lists; the layout is shared.
  */
 const FieldReferenceGrid: React.FC<FieldReferenceGridProps> = ({ columns }) => {
+  const { t } = useI18n();
+
   return (
     <div className="bg-gray-50 dark:bg-gray-900 border dark:border-gray-700 rounded-lg p-4">
-      <h4 className="font-medium text-gray-900 dark:text-white mb-3">Field Reference</h4>
+      <h4 className="font-medium text-gray-900 dark:text-white mb-3">{t('Field Reference')}</h4>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
         {columns.map((col) => (
           <div key={col.heading}>

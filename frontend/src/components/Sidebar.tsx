@@ -16,6 +16,7 @@ import {
   LinkIcon,
 } from '@heroicons/react/24/outline';
 import { useAuth } from '../contexts/AuthContext';
+import { useI18n } from '../contexts/I18nContext';
 import axios from 'axios';
 import { isEgressAuthEnabled } from '../utils/egressAuth';
 
@@ -39,6 +40,7 @@ interface SidebarProps {
 const Sidebar: React.FC<SidebarProps> = ({ sidebarOpen, setSidebarOpen, stats, activeFilter, setActiveFilter, availableTags, selectedTags, onTagSelect }) => {
   // const { stats, activeFilter, setActiveFilter } = useServerStats();
   const { user } = useAuth();
+  const { t } = useI18n();
   const location = useLocation();
   const [showScopes, setShowScopes] = useState(false);
   const [tagDropdownOpen, setTagDropdownOpen] = useState(false);
@@ -63,10 +65,10 @@ const Sidebar: React.FC<SidebarProps> = ({ sidebarOpen, setSidebarOpen, stats, a
   }, []);
 
   const filters = [
-    { key: 'all', label: 'All Services', count: 'total' },
-    { key: 'enabled', label: 'Enabled', count: 'enabled' },
-    { key: 'disabled', label: 'Disabled', count: 'disabled' },
-    { key: 'unhealthy', label: 'With Issues', count: 'withIssues' },
+    { key: 'all', label: t('All Services'), count: 'total' },
+    { key: 'enabled', label: t('Enabled'), count: 'enabled' },
+    { key: 'disabled', label: t('Disabled'), count: 'disabled' },
+    { key: 'unhealthy', label: t('With Issues'), count: 'withIssues' },
   ];
 
   const isTokenPage = location.pathname === '/generate-token';
@@ -90,16 +92,16 @@ const Sidebar: React.FC<SidebarProps> = ({ sidebarOpen, setSidebarOpen, stats, a
   // Scope descriptions mapping
   const getScopeDescription = (scope: string) => {
     const scopeMappings: { [key: string]: string } = {
-      'mcp-servers-restricted/read': 'Read access to restricted MCP servers',
-      'mcp-servers/read': 'Read access to all MCP servers',
-      'mcp-servers/write': 'Write access to MCP servers',
-      'mcp-registry-user': 'Basic registry user permissions',
-      'mcp-registry-admin': 'Full registry administration access',
-      'health-check': 'Health check and monitoring access',
-      'token-generation': 'Ability to generate access tokens',
-      'server-management': 'Manage server configurations',
+      'mcp-servers-restricted/read': t('Read access to restricted MCP servers'),
+      'mcp-servers/read': t('Read access to all MCP servers'),
+      'mcp-servers/write': t('Write access to MCP servers'),
+      'mcp-registry-user': t('Basic registry user permissions'),
+      'mcp-registry-admin': t('Full registry administration access'),
+      'health-check': t('Health check and monitoring access'),
+      'token-generation': t('Ability to generate access tokens'),
+      'server-management': t('Manage server configurations'),
     };
-    return scopeMappings[scope] || 'Custom permission scope';
+    return scopeMappings[scope] || t('Custom permission scope');
   };
 
 const fetchAdminTokens = async () => {
@@ -124,7 +126,7 @@ const fetchAdminTokens = async () => {
       setShowTokenModal(true);
     }
   } catch (err: any) {
-    setError(err.response?.data?.detail || 'Failed to generate token');
+    setError(err.response?.data?.detail || t('Failed to generate token'));
   } finally {
     setLoading(false);
   }
@@ -174,7 +176,7 @@ const fetchAdminTokens = async () => {
               tabIndex={0}
             >
               <ArrowLeftIcon className="h-4 w-4" />
-              <span>Back to Dashboard</span>
+              <span>{t('Back to Dashboard')}</span>
             </Link>
 
             <Link
@@ -183,7 +185,7 @@ const fetchAdminTokens = async () => {
               tabIndex={0}
             >
               <KeyIcon className="h-4 w-4" />
-              <span>Generate Token</span>
+              <span>{t('Generate Token')}</span>
             </Link>
 
             {egressEnabled && (
@@ -194,7 +196,7 @@ const fetchAdminTokens = async () => {
                 tabIndex={0}
               >
                 <LinkIcon className="h-4 w-4" />
-                <span>Connected Accounts</span>
+                <span>{t('Connected Accounts')}</span>
               </Link>
             )}
           </div>
@@ -208,11 +210,11 @@ const fetchAdminTokens = async () => {
                 </div>
                 <div className="text-xs text-gray-600 dark:text-gray-300 mb-2">
                   {user.is_admin ? (
-                    <span className="text-green-600 dark:text-green-400">🔑 Admin Access</span>
+                    <span className="text-green-600 dark:text-green-400">🔑 {t('Admin Access')}</span>
                   ) : user.can_modify_servers ? (
-                    <span className="text-blue-600 dark:text-blue-400">⚙️ Modify Access</span>
+                    <span className="text-blue-600 dark:text-blue-400">⚙️ {t('Modify Access')}</span>
                   ) : (
-                    <span className="text-gray-600 dark:text-gray-300">👁️ Read-only Access</span>
+                    <span className="text-gray-600 dark:text-gray-300">👁️ {t('Read-only Access')}</span>
                   )}
                   {user.auth_method === 'oauth2' && user.provider && (
                     <span className="ml-1">({user.provider})</span>
@@ -226,7 +228,7 @@ const fetchAdminTokens = async () => {
                       onClick={() => setShowScopes(!showScopes)}
                       className="flex items-center justify-between w-full text-xs text-gray-500 dark:text-gray-300 hover:text-gray-700 dark:hover:text-gray-100 transition-colors py-1"
                     >
-                      <span>Scopes ({user.scopes.length})</span>
+                      <span>{t('Scopes ({count})', { count: user.scopes.length })}</span>
                       {showScopes ? (
                         <ChevronUpIcon className="h-3 w-3" />
                       ) : (
@@ -257,14 +259,14 @@ const fetchAdminTokens = async () => {
           {/* Token Generation Help */}
           <div className="text-center">
             <KeyIcon className="h-12 w-12 text-purple-600 mx-auto mb-4" />
-            <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-2">Token Generation</h3>
+            <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-2">{t('Token Generation')}</h3>
             <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
-              Create personal access tokens for programmatic access to MCP servers
+              {t('Create personal access tokens for programmatic access to MCP servers')}
             </p>
             <div className="text-xs text-gray-500 dark:text-gray-400 space-y-1">
-              <p>• Tokens inherit your current permissions</p>
-              <p>• Configure expiration time and scopes</p>
-              <p>• Use tokens for programmatic access</p>
+              <p>• {t('Tokens inherit your current permissions')}</p>
+              <p>• {t('Configure expiration time and scopes')}</p>
+              <p>• {t('Use tokens for programmatic access')}</p>
             </div>
           </div>
         </div>
@@ -282,11 +284,11 @@ const fetchAdminTokens = async () => {
                   </div>
                   <div className="text-xs text-gray-600 dark:text-gray-300 mb-2">
                     {user.is_admin ? (
-                      <span className="text-green-600 dark:text-green-400">🔑 Admin Access</span>
+                      <span className="text-green-600 dark:text-green-400">🔑 {t('Admin Access')}</span>
                     ) : user.can_modify_servers ? (
-                      <span className="text-blue-600 dark:text-blue-400">⚙️ Modify Access</span>
+                      <span className="text-blue-600 dark:text-blue-400">⚙️ {t('Modify Access')}</span>
                     ) : (
-                      <span className="text-gray-600 dark:text-gray-300">👁️ Read-only Access</span>
+                      <span className="text-gray-600 dark:text-gray-300">👁️ {t('Read-only Access')}</span>
                     )}
                     {user.auth_method === 'oauth2' && user.provider && (
                       <span className="ml-1">({user.provider})</span>
@@ -303,12 +305,12 @@ const fetchAdminTokens = async () => {
                       {loading ? (
                         <>
                           <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-purple-700 dark:border-purple-300"></div>
-                          <span>Loading...</span>
+                          <span>{t('Loading...')}</span>
                         </>
                       ) : (
                         <>
                           <KeyIcon className="h-3 w-3" />
-                          <span>Get JWT Token</span>
+                          <span>{t('Get JWT Token')}</span>
                         </>
                       )}
                     </button>
@@ -324,7 +326,7 @@ const fetchAdminTokens = async () => {
                         onClick={() => setShowScopes(!showScopes)}
                         className="flex items-center justify-between w-full text-xs text-gray-500 dark:text-gray-300 hover:text-gray-700 dark:hover:text-gray-100 transition-colors py-1"
                       >
-                        <span>Scopes ({user.scopes.length})</span>
+                        <span>{t('Scopes ({count})', { count: user.scopes.length })}</span>
                         {showScopes ? (
                           <ChevronUpIcon className="h-3 w-3" />
                         ) : (
@@ -357,7 +359,7 @@ const fetchAdminTokens = async () => {
           <div className="flex-1 p-4 md:p-6">
             <div className="flex items-center space-x-2 mb-4">
               <FunnelIcon className="h-4 w-4 text-gray-600 dark:text-gray-400" />
-              <h3 className="text-sm font-medium text-gray-900 dark:text-white">Filter Services</h3>
+              <h3 className="text-sm font-medium text-gray-900 dark:text-white">{t('Filter Services')}</h3>
             </div>
 
             <div className="space-y-2">
@@ -392,7 +394,7 @@ const fetchAdminTokens = async () => {
                   }`}
                   tabIndex={0}
                 >
-                  <span>{activeFilter === 'deprecated' ? 'Showing deprecated' : 'Also show deprecated'}</span>
+                  <span>{activeFilter === 'deprecated' ? t('Showing deprecated') : t('Also show deprecated')}</span>
                 </button>
               </div>
             </div>
@@ -404,13 +406,13 @@ const fetchAdminTokens = async () => {
             <div className="border-t border-gray-200 dark:border-gray-700 p-4 md:p-6">
               <div className="flex items-center space-x-2 mb-3">
                 <TagIcon className="h-4 w-4 text-gray-600 dark:text-gray-400" />
-                <h3 className="text-sm font-medium text-gray-900 dark:text-white">Filter by Tag</h3>
+                <h3 className="text-sm font-medium text-gray-900 dark:text-white">{t('Filter by Tag')}</h3>
                 {selectedTags.length > 0 && (
                   <button
-                    onClick={() => selectedTags.forEach(t => onTagSelect(t))}
+                    onClick={() => selectedTags.forEach((tag) => onTagSelect(tag))}
                     className="text-xs text-purple-600 dark:text-purple-400 hover:underline ml-auto"
                   >
-                    Clear all
+                    {t('Clear all')}
                   </button>
                 )}
               </div>
@@ -427,7 +429,7 @@ const fetchAdminTokens = async () => {
                       <button
                         onClick={() => onTagSelect(tag)}
                         className="hover:text-purple-900 dark:hover:text-purple-100 focus:outline-none"
-                        aria-label={`Remove tag ${tag}`}
+                        aria-label={t('Remove tag {tag}', { tag })}
                       >
                         <XMarkIcon className="h-3 w-3" />
                       </button>
@@ -446,7 +448,7 @@ const fetchAdminTokens = async () => {
                   <div className="relative" ref={tagDropdownRef}>
                     <input
                       type="text"
-                      placeholder="Search tags..."
+                      placeholder={t('Search tags...')}
                       value={tagSearch}
                       onChange={(e) => {
                         setTagSearch(e.target.value);
@@ -503,7 +505,7 @@ const fetchAdminTokens = async () => {
                         ))}
                         {filteredTags.length === 0 && (
                           <div className="px-3 py-2 text-xs text-gray-400 dark:text-gray-500">
-                            No matching tags
+                            {t('No matching tags')}
                           </div>
                         )}
                       </div>
@@ -518,25 +520,25 @@ const fetchAdminTokens = async () => {
           <div className="border-t border-gray-200 dark:border-gray-700 p-4 md:p-6">
             <div className="flex items-center space-x-2 mb-4">
               <ChartBarIcon className="h-5 w-5 text-gray-500" />
-              <h3 className="text-sm font-medium text-gray-900 dark:text-white">Statistics</h3>
+              <h3 className="text-sm font-medium text-gray-900 dark:text-white">{t('Statistics')}</h3>
             </div>
 
             <div className="grid grid-cols-2 gap-3">
               <div className="text-center p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
                 <div className="text-xl font-semibold text-gray-900 dark:text-white">{stats.total}</div>
-                <div className="text-xs text-gray-500 dark:text-gray-300">Total</div>
+                <div className="text-xs text-gray-500 dark:text-gray-300">{t('Total')}</div>
               </div>
               <div className="text-center p-3 bg-green-50 dark:bg-green-900/20 rounded-lg">
                 <div className="text-xl font-semibold text-green-600 dark:text-green-400">{stats.enabled}</div>
-                <div className="text-xs text-green-600 dark:text-green-400">Enabled</div>
+                <div className="text-xs text-green-600 dark:text-green-400">{t('Enabled')}</div>
               </div>
               <div className="text-center p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
                 <div className="text-xl font-semibold text-gray-500 dark:text-gray-300">{stats.disabled}</div>
-                <div className="text-xs text-gray-500 dark:text-gray-300">Disabled</div>
+                <div className="text-xs text-gray-500 dark:text-gray-300">{t('Disabled')}</div>
               </div>
               <div className="text-center p-3 bg-red-50 dark:bg-red-900/20 rounded-lg">
                 <div className="text-xl font-semibold text-red-600 dark:text-red-400">{stats.withIssues}</div>
-                <div className="text-xs text-red-600 dark:text-red-400">Issues</div>
+                <div className="text-xs text-red-600 dark:text-red-400">{t('Issues')}</div>
               </div>
             </div>
           </div>
@@ -588,7 +590,7 @@ const fetchAdminTokens = async () => {
                         type="button"
                         className="-m-2.5 p-2.5"
                         onClick={() => setSidebarOpen(false)}
-                        aria-label="Close sidebar"
+                        aria-label={t('Close sidebar')}
                       >
                         <XMarkIcon className="h-6 w-6 text-white" />
                       </button>
@@ -655,7 +657,7 @@ const fetchAdminTokens = async () => {
                     as="h3"
                     className="text-lg font-medium leading-6 text-gray-900 dark:text-white mb-4"
                   >
-                    JWT Access Token
+                    {t('JWT Access Token')}
                   </Dialog.Title>
 
                   {tokenData && (
@@ -669,12 +671,12 @@ const fetchAdminTokens = async () => {
                           {copied ? (
                             <>
                               <CheckIcon className="h-4 w-4" />
-                              <span>Copied!</span>
+                              <span>{t('Copied!')}</span>
                             </>
                           ) : (
                             <>
                               <ClipboardIcon className="h-4 w-4" />
-                              <span>Copy JSON</span>
+                              <span>{t('Copy JSON')}</span>
                             </>
                           )}
                         </button>
@@ -683,7 +685,7 @@ const fetchAdminTokens = async () => {
                           className="flex items-center space-x-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm"
                         >
                           <ArrowDownTrayIcon className="h-4 w-4" />
-                          <span>Download JSON</span>
+                          <span>{t('Download JSON')}</span>
                         </button>
                       </div>
 
@@ -693,16 +695,16 @@ const fetchAdminTokens = async () => {
                           from the response rather than hardcoding a value. */}
                       {typeof tokenData?.tokens?.expires_in === 'number' && (
                         <p className="text-sm text-gray-600 dark:text-gray-300">
-                          This token expires in{' '}
+                          {t('This token expires in')}{' '}
                           <span className="font-medium">
                             {(() => {
                               const secs = tokenData.tokens.expires_in;
                               const hrs = secs / 3600;
                               const rounded = Math.round(hrs * 100) / 100;
-                              return `${rounded} hour${rounded === 1 ? '' : 's'}`;
+                              return `${rounded} ${rounded === 1 ? t('hour') : t('hours')}`;
                             })()}
                           </span>{' '}
-                          ({tokenData.tokens.expires_in} seconds).
+                          {t('({seconds} seconds).', { seconds: tokenData.tokens.expires_in })}
                         </p>
                       )}
 
@@ -719,7 +721,7 @@ const fetchAdminTokens = async () => {
                           onClick={() => setShowTokenModal(false)}
                           className="px-4 py-2 bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200 rounded-lg hover:bg-gray-300 dark:hover:bg-gray-800 transition-colors text-sm"
                         >
-                          Close
+                          {t('Close')}
                         </button>
                       </div>
                     </div>

@@ -10,6 +10,7 @@ import {
   ChevronRightIcon,
 } from '@heroicons/react/24/outline';
 import { VirtualServerInfo, ResolvedTool } from '../types/virtualServer';
+import { useI18n } from '../contexts/I18nContext';
 import ServerConfigModal from './ServerConfigModal';
 import StarRatingWidget from './StarRatingWidget';
 import useEscapeKey from '../hooks/useEscapeKey';
@@ -52,6 +53,7 @@ const VirtualServerCard: React.FC<VirtualServerCardProps> = ({
   const [expandedBackends, setExpandedBackends] = useState<Record<string, boolean>>({});
   const [expandedTools, setExpandedTools] = useState<Record<string, boolean>>({});
   const [showConfig, setShowConfig] = useState(false);
+  const { t } = useI18n();
 
   useEscapeKey(() => setShowTools(false), showTools);
 
@@ -87,7 +89,7 @@ const VirtualServerCard: React.FC<VirtualServerCardProps> = ({
 
       // If any backend has more than 3 tools, collapse all tools by default
       // Otherwise expand all tools
-      const hasLargeBackend = Object.values(toolsByBackend).some(t => t.length > 3);
+      const hasLargeBackend = Object.values(toolsByBackend).some(toolsForBackend => toolsForBackend.length > 3);
       if (!hasLargeBackend) {
         // Expand all tools if small number of tools
         const allToolsExpanded: Record<string, boolean> = {};
@@ -100,12 +102,12 @@ const VirtualServerCard: React.FC<VirtualServerCardProps> = ({
       }
     } catch (error) {
       console.error('Failed to fetch tools:', error);
-      onShowToast?.('Failed to load tools', 'error');
+      onShowToast?.(t('Failed to load tools'), 'error');
       setTools([]);
     } finally {
       setLoadingTools(false);
     }
-  }, [server.path, loadingTools, onShowToast]);
+  }, [server.path, loadingTools, onShowToast, t]);
 
   const toggleBackend = (backend: string) => {
     setExpandedBackends(prev => ({
@@ -154,7 +156,7 @@ const VirtualServerCard: React.FC<VirtualServerCardProps> = ({
                   {server.server_name}
                 </h3>
                 <span className="px-2 py-0.5 text-xs font-semibold bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-300 rounded-full flex-shrink-0 border border-teal-200 dark:border-teal-600">
-                  VIRTUAL
+                  {t('VIRTUAL')}
                 </span>
               </div>
 
@@ -168,7 +170,7 @@ const VirtualServerCard: React.FC<VirtualServerCardProps> = ({
                 <button
                   className="p-2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50 rounded-lg transition-all duration-200"
                   onClick={() => onEdit(server)}
-                  title="Edit virtual server"
+                  title={t('Edit virtual server')}
                 >
                   <PencilIcon className="h-4 w-4" />
                 </button>
@@ -178,18 +180,18 @@ const VirtualServerCard: React.FC<VirtualServerCardProps> = ({
               <button
                 onClick={() => setShowConfig(true)}
                 className="flex items-center gap-1 px-2 py-1.5 text-xs font-medium text-green-600 dark:text-green-400 hover:bg-green-50 dark:hover:bg-green-700/50 rounded-lg transition-all duration-200 flex-shrink-0 border border-green-200 dark:border-green-700"
-                title="Get connection details and mcp.json configuration"
-                aria-label={`Connect to ${server.server_name}`}
+                title={t('Get connection details and mcp.json configuration')}
+                aria-label={t('Connect to {name}', { name: server.server_name })}
               >
                 <LinkIcon className="h-3.5 w-3.5" />
-                Connect
+                {t('Connect')}
               </button>
 
               {canModify && (
                 <button
                   onClick={() => onDelete(server.path)}
                   className="p-2 text-gray-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-700/50 rounded-lg transition-all duration-200"
-                  title="Delete virtual server"
+                  title={t('Delete virtual server')}
                 >
                   <TrashIcon className="h-4 w-4" />
                 </button>
@@ -199,7 +201,7 @@ const VirtualServerCard: React.FC<VirtualServerCardProps> = ({
 
           {/* Description */}
           <p className="text-gray-600 dark:text-gray-300 text-sm leading-relaxed line-clamp-2 mb-4">
-            {server.description || 'No description available'}
+            {server.description || t('No description available')}
           </p>
 
           {/* Tags */}
@@ -246,14 +248,14 @@ const VirtualServerCard: React.FC<VirtualServerCardProps> = ({
                   onClick={handleViewTools}
                   disabled={loadingTools}
                   className="flex items-center gap-2 text-teal-600 hover:text-teal-700 dark:text-teal-400 dark:hover:text-teal-300 disabled:opacity-50 hover:bg-teal-50 dark:hover:bg-teal-900/20 px-2 py-1 -mx-2 -my-1 rounded transition-all"
-                  title="View tools"
+                  title={t('View tools')}
                 >
                   <div className="p-1.5 bg-teal-50 dark:bg-teal-900/30 rounded">
                     <WrenchScrewdriverIcon className="h-4 w-4" />
                   </div>
                   <div>
                     <div className="text-sm font-semibold">{server.tool_count}</div>
-                    <div className="text-xs">Tools</div>
+                    <div className="text-xs">{t('Tools')}</div>
                   </div>
                 </button>
               ) : (
@@ -263,7 +265,7 @@ const VirtualServerCard: React.FC<VirtualServerCardProps> = ({
                   </div>
                   <div>
                     <div className="text-sm font-semibold">0</div>
-                    <div className="text-xs">Tools</div>
+                    <div className="text-xs">{t('Tools')}</div>
                   </div>
                 </div>
               )}
@@ -282,7 +284,7 @@ const VirtualServerCard: React.FC<VirtualServerCardProps> = ({
                   : 'bg-gray-300 dark:bg-gray-600'
               }`} />
               <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                {server.is_enabled ? 'Enabled' : 'Disabled'}
+                {server.is_enabled ? t('Enabled') : t('Disabled')}
               </span>
             </div>
 
@@ -294,7 +296,7 @@ const VirtualServerCard: React.FC<VirtualServerCardProps> = ({
                   checked={server.is_enabled}
                   onChange={(e) => onToggle(server.path, e.target.checked)}
                   className="sr-only peer"
-                  aria-label={`Enable ${server.server_name}`}
+                  aria-label={t('Enable {name}', { name: server.server_name })}
                 />
                 <div className={`relative w-12 h-6 rounded-full transition-colors duration-200 ease-in-out ${
                   server.is_enabled
@@ -317,7 +319,7 @@ const VirtualServerCard: React.FC<VirtualServerCardProps> = ({
           <div className="bg-white dark:bg-gray-800 rounded-xl p-6 max-w-2xl w-full mx-4 max-h-[80vh] overflow-auto">
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
-                Tools for {server.server_name}
+                {t('Tools for {name}', { name: server.server_name })}
               </h3>
               <button
                 onClick={() => setShowTools(false)}
@@ -330,7 +332,7 @@ const VirtualServerCard: React.FC<VirtualServerCardProps> = ({
             {loadingTools ? (
               <div className="flex items-center justify-center py-8">
                 <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-teal-600"></div>
-                <span className="ml-3 text-gray-500">Loading tools...</span>
+                <span className="ml-3 text-gray-500">{t('Loading tools...')}</span>
               </div>
             ) : tools.length > 0 ? (
               <div className="space-y-3">
@@ -355,7 +357,9 @@ const VirtualServerCard: React.FC<VirtualServerCardProps> = ({
                           </span>
                         </div>
                         <span className="px-2 py-0.5 text-xs bg-teal-100 dark:bg-teal-900/40 text-teal-700 dark:text-teal-300 rounded-full">
-                          {backendTools.length} tool{backendTools.length !== 1 ? 's' : ''}
+                          {backendTools.length !== 1
+                            ? t('{count} tools', { count: backendTools.length })
+                            : t('{count} tool', { count: backendTools.length })}
                         </span>
                       </button>
 
@@ -391,7 +395,7 @@ const VirtualServerCard: React.FC<VirtualServerCardProps> = ({
                                       </span>
                                       {tool.original_name && tool.name !== tool.original_name && (
                                         <span className="text-xs text-gray-400 dark:text-gray-500">
-                                          (original: {tool.original_name})
+                                          {t('(original: {name})', { name: tool.original_name })}
                                         </span>
                                       )}
                                     </div>
@@ -420,7 +424,7 @@ const VirtualServerCard: React.FC<VirtualServerCardProps> = ({
                                       <div className="ml-5">
                                         <details className="text-xs">
                                           <summary className="cursor-pointer text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 font-medium">
-                                            View Schema
+                                            {t('View Schema')}
                                           </summary>
                                           <pre className="mt-2 p-3 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded overflow-x-auto text-gray-800 dark:text-gray-200">
                                             {JSON.stringify(tool.input_schema, null, 2)}
@@ -455,7 +459,7 @@ const VirtualServerCard: React.FC<VirtualServerCardProps> = ({
               </div>
             ) : (
               <p className="text-gray-500 dark:text-gray-300 text-center py-8">
-                No tools available for this virtual server.
+                {t('No tools available for this virtual server.')}
               </p>
             )}
           </div>

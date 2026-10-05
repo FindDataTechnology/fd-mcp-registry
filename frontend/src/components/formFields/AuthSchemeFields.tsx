@@ -1,6 +1,7 @@
 import React from 'react';
 import FormField from './FormField';
 import { fieldClass, FIELD_FOCUS } from './formClasses';
+import { useI18n } from '../../contexts/I18nContext';
 
 export type AuthScheme = 'none' | 'bearer' | 'api_key' | 'oauth';
 
@@ -80,34 +81,34 @@ const AuthSchemeFields: React.FC<AuthSchemeFieldsProps> = ({
   discoveryEnabled = false,
   onDiscoveryEnabledChange,
 }) => {
+  const { t } = useI18n();
   return (
     <div className="border-t border-gray-200 dark:border-gray-700 pt-4 mt-4">
       <h4 className="text-sm font-semibold text-gray-900 dark:text-white mb-1">
-        Backend Authentication
+        {t('Backend Authentication')}
       </h4>
       <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
-        The credential the registry uses itself to reach this server for health
-        checks and tool discovery. Per-user egress reuses this header definition.
+        {t('The credential the registry uses itself to reach this server for health checks and tool discovery. Per-user egress reuses this header definition.')}
       </p>
 
       <div className="space-y-4">
-        <FormField label="Authentication Scheme">
+        <FormField label={t('Authentication Scheme')}>
           <select
             value={scheme}
             onChange={(e) => onSchemeChange(e.target.value as AuthScheme)}
             className={fieldClass(accent)}
           >
-            <option value="none">None</option>
-            <option value="bearer">Bearer Token</option>
-            <option value="api_key">API Key</option>
-            <option value="oauth">OAuth 2.0 (client credentials)</option>
+            <option value="none">{t('None')}</option>
+            <option value="bearer">{t('Bearer Token')}</option>
+            <option value="api_key">{t('API Key')}</option>
+            <option value="oauth">{t('OAuth 2.0 (client credentials)')}</option>
           </select>
         </FormField>
 
         {(scheme === 'bearer' || scheme === 'api_key') && (
           <FormField
-            label={scheme === 'bearer' ? 'Bearer Token' : 'API Key'}
-            hint="Leave blank to keep the existing credential unchanged."
+            label={scheme === 'bearer' ? t('Bearer Token') : t('API Key')}
+            hint={t('Leave blank to keep the existing credential unchanged.')}
           >
             <input
               type="password"
@@ -115,14 +116,14 @@ const AuthSchemeFields: React.FC<AuthSchemeFieldsProps> = ({
               onChange={(e) => onCredentialChange(e.target.value)}
               className={fieldClass(accent)}
               placeholder={
-                editing ? 'Leave blank to keep current credential' : ''
+                editing ? t('Leave blank to keep current credential') : ''
               }
             />
           </FormField>
         )}
 
         {scheme === 'api_key' && (
-          <FormField label="Header Name">
+          <FormField label={t('Header Name')}>
             <input
               type="text"
               value={headerName}
@@ -144,13 +145,12 @@ const AuthSchemeFields: React.FC<AuthSchemeFieldsProps> = ({
               />
               <span>
                 <span className="block text-sm font-medium text-gray-900 dark:text-white">
-                  Discovery Identity (OAuth 2.1)
+                  {t('Discovery Identity (OAuth 2.1)')}
                 </span>
                 <span className="block text-xs text-gray-500 dark:text-gray-400 mt-0.5">
-                  When enabled, the registry borrows the connected admin&apos;s own
-                  account for its headless health checks and tool discovery against
-                  this server. Requires the authentication scheme above to be{' '}
-                  <span className="font-medium">None</span>.
+                  {t('When enabled, the registry borrows the connected admin\'s own account for its headless health checks and tool discovery against this server. Requires the authentication scheme above to be')}{' '}
+                  <span className="font-medium">{t('None')}</span>
+                  {t('.')}
                 </span>
               </span>
             </label>
@@ -164,11 +164,12 @@ const AuthSchemeFields: React.FC<AuthSchemeFieldsProps> = ({
             */}
             {discoveryEnabled && scheme !== 'none' && (
               <p className="mt-2 rounded border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 p-2 text-xs text-amber-800 dark:text-amber-300">
-                <span className="font-semibold">Not in effect.</span> The{' '}
-                <span className="font-mono">{scheme}</span> credential above is this
-                server&apos;s discovery credential and takes precedence. Set the
-                scheme to <span className="font-medium">None</span> for the discovery
-                identity to be used.
+                <span className="font-semibold">{t('Not in effect.')}</span>{' '}
+                {t('The')}{' '}
+                <span className="font-mono">{scheme}</span>{' '}
+                {t('credential above is this server\'s discovery credential and takes precedence. Set the scheme to')}{' '}
+                <span className="font-medium">{t('None')}</span>{' '}
+                {t('for the discovery identity to be used.')}
               </p>
             )}
           </div>
@@ -177,21 +178,17 @@ const AuthSchemeFields: React.FC<AuthSchemeFieldsProps> = ({
         {oboDiscoveryActive && scheme === 'none' && (
           <div className="rounded-md border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 p-3 text-xs text-blue-800 dark:text-blue-300">
             <p className="font-semibold mb-1">
-              On-Behalf-Of server — discovery uses a gateway machine token
+              {t('On-Behalf-Of server — discovery uses a gateway machine token')}
             </p>
             <p>
-              Health checks and tool discovery authenticate as the gateway&apos;s
-              own IdP app (client_credentials) audienced to{' '}
+              {t('Health checks and tool discovery authenticate as the gateway\'s own IdP app (client_credentials) audienced to')}{' '}
               <code className="font-mono break-all">
-                {oboTargetAudience || 'this server\u2019s target audience'}
+                {oboTargetAudience || t('this server\u2019s target audience')}
               </code>
-              . No per-server credential is needed here.
+              {t('. No per-server credential is needed here.')}
             </p>
             <p className="mt-1">
-              On Entra: grant the gateway app an application permission (app role)
-              on the target server&apos;s app and admin-consent it; the internal
-              server must accept app-only tokens for discovery. Selecting a scheme
-              above overrides discovery with an explicit credential.
+              {t('On Entra: grant the gateway app an application permission (app role) on the target server\'s app and admin-consent it; the internal server must accept app-only tokens for discovery. Selecting a scheme above overrides discovery with an explicit credential.')}
             </p>
           </div>
         )}

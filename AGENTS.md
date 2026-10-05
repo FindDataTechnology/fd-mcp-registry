@@ -952,7 +952,7 @@ Canonical commands live in `.github/workflows/`, `pyproject.toml` and
 | Changed | Run |
 |---------|-----|
 | `registry/`, `auth_server/` | `uv run python scripts/test.py coverage -n 8`; re-read the security invariants above |
-| `frontend/` | `npm run lint && npm run build` in `frontend/` |
+| `frontend/` | `npm run lint && npm run build && npm run i18n:scan` in `frontend/` (the scan gates translation coverage: critical customer-path files fully translated, <5% missing overall) |
 | `charts/` | `helm unittest charts/mcpgw charts/auth-server charts/registry charts/mcp-gateway-registry-stack`, then `helm dep update` on the stack chart if a subchart changed |
 | `terraform/` | `terraform fmt -check && terraform validate`, then `terraform plan` |
 | `api/` routes | Refresh `api/openapi.json` (see below). Update `api/registry_client.py` and `api/registry_management.py` |

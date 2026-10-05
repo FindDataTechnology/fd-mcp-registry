@@ -1,6 +1,7 @@
 import React from 'react';
 import { SunIcon, MoonIcon } from '@heroicons/react/24/outline';
 import { useTheme } from '../contexts/ThemeContext';
+import { useI18n } from '../contexts/I18nContext';
 
 /**
  * Header control that flips light/dark mode.
@@ -12,15 +13,17 @@ import { useTheme } from '../contexts/ThemeContext';
  */
 const ThemeToggle: React.FC = () => {
   const { theme, toggleTheme } = useTheme();
+  const { t } = useI18n();
   const isDark = theme === 'dark';
+  const label = t(isDark ? 'Switch to light mode' : 'Switch to dark mode');
 
   return (
     <button
       type="button"
       onClick={toggleTheme}
       className="p-2 text-gray-400 hover:text-gray-500 dark:text-gray-300 dark:hover:text-gray-100 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-purple-500"
-      title={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
-      aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+      title={label}
+      aria-label={label}
     >
       {isDark ? (
         <SunIcon className="h-5 w-5" />

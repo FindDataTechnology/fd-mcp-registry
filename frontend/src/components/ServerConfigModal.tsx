@@ -7,6 +7,8 @@ import { useRegistryConfig } from '../hooks/useRegistryConfig';
 import useEscapeKey from '../hooks/useEscapeKey';
 import { getBaseURL } from '../utils/basePath';
 import { isSafeUrl } from '../utils/safeUrl';
+import { useI18n } from '../contexts/I18nContext';
+import { localizeError } from '../utils/apiError';
 import {
   initiateConsent,
   disconnect as disconnectEgress,
@@ -63,10 +65,11 @@ function EgressConnectCallout({
   onEgressChanged?: () => void;
   onShowToast?: (message: string, type: 'success' | 'error') => void;
 }) {
+  const { t } = useI18n();
   const [busy, setBusy] = useState(false);
   const providerLabel = state.provider
     ? state.provider.charAt(0).toUpperCase() + state.provider.slice(1)
-    : 'account';
+    : t('account');
 
   const startConnect = async () => {
     setBusy(true);
@@ -81,7 +84,7 @@ function EgressConnectCallout({
       }
       // MANDATORY isSafeUrl guard before window.open (fail closed on unsafe/empty).
       if (!isSafeUrl(url)) {
-        onShowToast?.('Cannot open the connect URL for this server.', 'error');
+        onShowToast?.(t('Cannot open the connect URL for this server.'), 'error');
         return;
       }
       window.open(url, '_blank', 'noopener,noreferrer');
@@ -97,10 +100,10 @@ function EgressConnectCallout({
     setBusy(true);
     try {
       await disconnectEgress(state.provider, serverPath);
-      onShowToast?.(`Disconnected ${providerLabel}.`, 'success');
+      onShowToast?.(t('Disconnected {provider}.', { provider: providerLabel }), 'success');
       onEgressChanged?.();
     } catch {
-      onShowToast?.(`Could not disconnect ${providerLabel}.`, 'error');
+      onShowToast?.(t('Could not disconnect {provider}.', { provider: providerLabel }), 'error');
     } finally {
       setBusy(false);
     }
@@ -112,13 +115,13 @@ function EgressConnectCallout({
       <div className="flex items-center gap-3 rounded-lg border border-purple-200 dark:border-purple-800 bg-purple-50 dark:bg-purple-900/20 p-4">
         <PlugIcon className="h-5 w-5 flex-shrink-0 text-purple-600 dark:text-purple-400" />
         <span className="text-sm text-purple-900 dark:text-purple-100">
-          This server needs a personal access token before its tools appear.
+          {t('This server needs a personal access token before its tools appear.')}
         </span>
         <a
           href={`/connected-accounts?server=${encodeURIComponent(serverPath)}`}
           className="ml-auto text-sm font-medium text-purple-700 dark:text-purple-300 hover:underline"
         >
-          Submit token
+          {t('Submit token')}
         </a>
       </div>
     );
@@ -142,8 +145,8 @@ function EgressConnectCallout({
         />
         <span className="text-sm text-gray-900 dark:text-gray-100">
           {warn
-            ? `Your ${providerLabel} connection expired or failed — reconnect to restore this server's tools.`
-            : `This server acts on your behalf. Connect your ${providerLabel} account before copying the config.`}
+            ? t("Your {provider} connection expired or failed — reconnect to restore this server's tools.", { provider: providerLabel })
+            : t('This server acts on your behalf. Connect your {provider} account before copying the config.', { provider: providerLabel })}
         </span>
         <button
           type="button"
@@ -151,7 +154,7 @@ function EgressConnectCallout({
           onClick={startConnect}
           className="ml-auto flex-shrink-0 rounded-md bg-purple-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-purple-700 disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-purple-500"
         >
-          {busy ? 'Opening…' : warn ? `Reconnect ${providerLabel}` : `Connect ${providerLabel} account`}
+          {busy ? t('Opening…') : warn ? t('Reconnect {provider}', { provider: providerLabel }) : t('Connect {provider} account', { provider: providerLabel })}
         </button>
       </div>
     );
@@ -161,7 +164,7 @@ function EgressConnectCallout({
     <div className="flex items-center gap-3 rounded-lg border border-green-200 dark:border-green-800 bg-green-50 dark:bg-green-900/20 p-4">
       <PlugIcon className="h-5 w-5 flex-shrink-0 text-green-600 dark:text-green-400" />
       <span className="text-sm text-green-900 dark:text-green-100">
-        Connected to {providerLabel}. This server can act on your behalf.
+        {t('Connected to {provider}. This server can act on your behalf.', { provider: providerLabel })}
       </span>
       <button
         type="button"
@@ -169,7 +172,7 @@ function EgressConnectCallout({
         onClick={handleDisconnect}
         className="ml-auto flex-shrink-0 rounded-md px-3 py-1.5 text-sm font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-red-500"
       >
-        {busy ? 'Working…' : 'Disconnect'}
+        {busy ? t('Working…') : t('Disconnect')}
       </button>
     </div>
   );
@@ -184,6 +187,7 @@ const ServerConfigModal: React.FC<ServerConfigModalProps> = ({
   egressConnect,
   onEgressChanged,
 }) => {
+  const { t } = useI18n();
   const [jwtToken, setJwtToken] = useState<string | null>(null);
   // Actual token lifetime in hours, derived from the response's expires_in
   // (seconds) rather than hardcoded, since the default is operator-configurable.
@@ -309,7 +313,7 @@ const ServerConfigModal: React.FC<ServerConfigModalProps> = ({
         setEgressAuthMode(resp.data.egress_auth_mode ?? 'none');
         if (resp.data.decrypt_failures > 0) {
           setConnectConfigError(
-            `${resp.data.decrypt_failures} custom header(s) could not be decrypted.`
+            t('{count} custom header(s) could not be decrypted.', { count: resp.data.decrypt_failures })
           );
         }
       })
@@ -321,19 +325,19 @@ const ServerConfigModal: React.FC<ServerConfigModalProps> = ({
         const status = err?.response?.status;
         if (status === 403) {
           setConnectConfigError(
-            "Could not load connect configuration (403): your session may be stale. " +
+            t("Could not load connect configuration (403): your session may be stale. " +
             "Log out and back in, then reopen this dialog. The configuration shown " +
-            "below is a fallback and may omit OAuth login or required headers."
+            "below is a fallback and may omit OAuth login or required headers.")
           );
         } else {
           setConnectConfigError(
-            "Could not load connect configuration for this server. " +
+            t("Could not load connect configuration for this server. " +
             "The configuration shown below is a fallback and may omit OAuth login " +
-            "or headers your server requires."
+            "or headers your server requires.")
           );
         }
       });
-  }, [isOpen, server.path]);
+  }, [isOpen, server.path, t]);
 
   const fetchJwtToken = async () => {
     setTokenLoading(true);
@@ -368,18 +372,18 @@ const ServerConfigModal: React.FC<ServerConfigModalProps> = ({
             typeof expiresInSeconds === 'number' ? Math.round(expiresInSeconds / 3600) : null,
           );
         } else {
-          setTokenError('Token not found in response');
+          setTokenError(t('Token not found in response'));
         }
       } else {
-        setTokenError('Token generation failed');
+        setTokenError(t('Token generation failed'));
       }
     } catch (err: any) {
       const status = err.response?.status;
-      const errorMessage = err.response?.data?.detail || err.message || 'Failed to generate token';
+      const errorMessage = localizeError(err, t, 'Failed to generate token');
 
       // Provide more helpful error messages based on status
       if (status === 401 || status === 403) {
-        setTokenError('Authentication required. Please log in first.');
+        setTokenError(t('Authentication required. Please log in first.'));
       } else {
         setTokenError(errorMessage);
       }
@@ -827,12 +831,12 @@ const ServerConfigModal: React.FC<ServerConfigModalProps> = ({
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
 
-      onShowToast?.('Configuration copied to clipboard!', 'success');
+      onShowToast?.(t('Configuration copied to clipboard!'), 'success');
     } catch (error) {
       console.error('Failed to copy to clipboard:', error);
-      onShowToast?.('Failed to copy configuration', 'error');
+      onShowToast?.(t('Failed to copy configuration'), 'error');
     }
-  }, [generateMCPConfig, onShowToast]);
+  }, [generateMCPConfig, onShowToast, t]);
 
   const copyGooseConfigToClipboard = useCallback(async () => {
     try {
@@ -842,24 +846,24 @@ const ServerConfigModal: React.FC<ServerConfigModalProps> = ({
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
 
-      onShowToast?.('Configuration copied to clipboard!', 'success');
+      onShowToast?.(t('Configuration copied to clipboard!'), 'success');
     } catch (error) {
       console.error('Failed to copy to clipboard:', error);
-      onShowToast?.('Failed to copy configuration', 'error');
+      onShowToast?.(t('Failed to copy configuration'), 'error');
     }
-  }, [generateGooseConfig, onShowToast]);
+  }, [generateGooseConfig, onShowToast, t]);
 
   const copyCurlToClipboard = useCallback(async (text: string) => {
     try {
       await navigator.clipboard.writeText(text);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
-      onShowToast?.('Command copied to clipboard!', 'success');
+      onShowToast?.(t('Command copied to clipboard!'), 'success');
     } catch (error) {
       console.error('Failed to copy to clipboard:', error);
-      onShowToast?.('Failed to copy command', 'error');
+      onShowToast?.(t('Failed to copy command'), 'error');
     }
-  }, [onShowToast]);
+  }, [onShowToast, t]);
 
   const copyCommandToClipboard = useCallback(async () => {
     try {
@@ -870,12 +874,12 @@ const ServerConfigModal: React.FC<ServerConfigModalProps> = ({
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
 
-      onShowToast?.('Command copied to clipboard!', 'success');
+      onShowToast?.(t('Command copied to clipboard!'), 'success');
     } catch (error) {
       console.error('Failed to copy to clipboard:', error);
-      onShowToast?.('Failed to copy command', 'error');
+      onShowToast?.(t('Failed to copy command'), 'error');
     }
-  }, [generateClaudeCodeCommand, onShowToast]);
+  }, [generateClaudeCodeCommand, onShowToast, t]);
 
   if (!isOpen) {
     return null;
@@ -886,7 +890,7 @@ const ServerConfigModal: React.FC<ServerConfigModalProps> = ({
       <div className="bg-white dark:bg-gray-800 rounded-xl p-6 max-w-3xl w-full mx-4 max-h-[80vh] overflow-auto">
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
-            MCP Configuration for {server.name}
+            {t('MCP Configuration for {name}', { name: server.name })}
           </h3>
           <button
             onClick={onClose}
@@ -911,20 +915,20 @@ const ServerConfigModal: React.FC<ServerConfigModalProps> = ({
 
           <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
             <h4 className="font-medium text-blue-900 dark:text-blue-100 mb-2">
-              How to use this configuration:
+              {t('How to use this configuration:')}
             </h4>
             <ol className="text-sm text-blue-800 dark:text-blue-200 space-y-1 list-decimal list-inside">
-              <li>Copy the configuration below</li>
+              <li>{t('Copy the configuration below')}</li>
               <li>
-                Paste it into your <code className="bg-blue-100 dark:bg-blue-800 px-1 rounded">mcp.json</code> file
+                {t('Paste it into your')} <code className="bg-blue-100 dark:bg-blue-800 px-1 rounded">mcp.json</code> {t('file')}
               </li>
               {!isRegistryOnly && !jwtToken && (
                 <li>
-                  Replace <code className="bg-blue-100 dark:bg-blue-800 px-1 rounded">[YOUR_AUTH_TOKEN]</code> with your
-                  gateway authentication token (or wait for auto-generation)
+                  {t('Replace')} <code className="bg-blue-100 dark:bg-blue-800 px-1 rounded">[YOUR_AUTH_TOKEN]</code>{' '}
+                  {t('with your gateway authentication token (or wait for auto-generation)')}
                 </li>
               )}
-              <li>Restart your AI coding assistant to load the new configuration</li>
+              <li>{t('Restart your AI coding assistant to load the new configuration')}</li>
             </ol>
           </div>
 
@@ -939,18 +943,16 @@ const ServerConfigModal: React.FC<ServerConfigModalProps> = ({
 
           {isLocal ? (
             <div className="bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800 rounded-lg p-4">
-              <h4 className="font-medium text-purple-900 dark:text-purple-100 mb-2">Local Server</h4>
+              <h4 className="font-medium text-purple-900 dark:text-purple-100 mb-2">{t('Local Server')}</h4>
               <p className="text-sm text-purple-800 dark:text-purple-200">
-                This server runs on your machine via stdio. The configuration below
-                is a launch recipe — no gateway authentication needed.
+                {t('This server runs on your machine via stdio. The configuration below is a launch recipe — no gateway authentication needed.')}
               </p>
               {server.local_runtime?.required_env && server.local_runtime.required_env.length > 0 && (
                 <div className="mt-3 p-3 rounded bg-yellow-50 dark:bg-yellow-900/30 border border-yellow-200 dark:border-yellow-800">
                   <p className="text-sm text-yellow-900 dark:text-yellow-100">
-                    <strong>Action required:</strong> replace{' '}
+                    <strong>{t('Action required:')}</strong> {t('replace')}{' '}
                     <code className="bg-yellow-100 dark:bg-yellow-800 px-1 rounded">&lt;your-value&gt;</code>{' '}
-                    in the <code className="bg-yellow-100 dark:bg-yellow-800 px-1 rounded">env</code> block
-                    for these keys before pasting into your IDE config:{' '}
+                    {t('in the')} <code className="bg-yellow-100 dark:bg-yellow-800 px-1 rounded">env</code> {t('block for these keys before pasting into your IDE config:')}{' '}
                     <code className="bg-yellow-100 dark:bg-yellow-800 px-1 rounded">
                       {server.local_runtime.required_env.join(', ')}
                     </code>
@@ -975,72 +977,69 @@ const ServerConfigModal: React.FC<ServerConfigModalProps> = ({
                     : 'text-amber-900 dark:text-amber-100'
                 }`}>
                   {tokenLoading
-                    ? 'Fetching Token...'
+                    ? t('Fetching Token...')
                     : jwtToken
-                    ? 'Token Ready - Copy and Paste!'
+                    ? t('Token Ready - Copy and Paste!')
                     : tokenError
-                    ? 'Token Generation Failed'
-                    : 'Authentication Required'}
+                    ? t('Token Generation Failed')
+                    : t('Authentication Required')}
                 </h4>
                 {!tokenLoading && (
                   <button
                     onClick={fetchJwtToken}
                     className="flex items-center gap-1 px-2 py-1 text-xs bg-blue-600 hover:bg-blue-700 text-white rounded transition-colors"
-                    title="Generate new token"
+                    title={t('Generate new token')}
                   >
                     <KeyIcon className="h-3 w-3" />
-                    {jwtToken ? 'Refresh' : 'Get Token'}
+                    {jwtToken ? t('Refresh') : t('Get Token')}
                   </button>
                 )}
               </div>
               {tokenLoading ? (
                 <p className="text-sm text-amber-800 dark:text-amber-200">
-                  Generating JWT token for your configuration...
+                  {t('Generating JWT token for your configuration...')}
                 </p>
               ) : jwtToken ? (
                 <p className="text-sm text-green-800 dark:text-green-200">
-                  JWT token has been automatically added to the configuration below. You can copy and paste it directly into your mcp.json file.
+                  {t('JWT token has been automatically added to the configuration below. You can copy and paste it directly into your mcp.json file.')}
                   {tokenExpiresInHours
-                    ? ` Token expires in ${tokenExpiresInHours} hour${tokenExpiresInHours === 1 ? '' : 's'}.`
+                    ? ` ${t(tokenExpiresInHours === 1 ? 'Token expires in {count} hour.' : 'Token expires in {count} hours.', { count: tokenExpiresInHours })}`
                     : ''}
                 </p>
               ) : tokenError ? (
                 <p className="text-sm text-red-800 dark:text-red-200">
-                  {tokenError}. Click &quot;Get Token&quot; to retry, or manually replace [YOUR_AUTH_TOKEN] with your gateway token.
+                  {t('{error}. Click "Get Token" to retry, or manually replace [YOUR_AUTH_TOKEN] with your gateway token.', { error: tokenError })}
                 </p>
               ) : (
                 <p className="text-sm text-amber-800 dark:text-amber-200">
-                  This configuration requires gateway authentication tokens. The tokens authenticate your AI assistant with
-                  the MCP Gateway, not the individual server.
+                  {t('This configuration requires gateway authentication tokens. The tokens authenticate your AI assistant with the MCP Gateway, not the individual server.')}
                 </p>
               )}
             </div>
           ) : (
             <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
-              <h4 className="font-medium text-blue-900 dark:text-blue-100 mb-2">Direct Connection Mode</h4>
+              <h4 className="font-medium text-blue-900 dark:text-blue-100 mb-2">{t('Direct Connection Mode')}</h4>
               <p className="text-sm text-blue-800 dark:text-blue-200">
-                This registry operates in catalog-only mode. The configuration connects directly to the MCP server
-                endpoint without going through a gateway proxy.
+                {t('This registry operates in catalog-only mode. The configuration connects directly to the MCP server endpoint without going through a gateway proxy.')}
               </p>
               <p className="text-sm text-blue-800 dark:text-blue-200 mt-2">
-                <strong>Note:</strong> The MCP server may still require authentication (API key, auth header, etc.).
-                Check the server's documentation to determine if any credentials are needed.
+                <strong>{t('Note:')}</strong> {t("The MCP server may still require authentication (API key, auth header, etc.). Check the server's documentation to determine if any credentials are needed.")}
               </p>
             </div>
           )}
 
           {server.mcp_endpoint && (
             <div className="bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800 rounded-lg p-4">
-              <h4 className="font-medium text-purple-900 dark:text-purple-100 mb-2">Custom Endpoint Configured</h4>
+              <h4 className="font-medium text-purple-900 dark:text-purple-100 mb-2">{t('Custom Endpoint Configured')}</h4>
               <p className="text-sm text-purple-800 dark:text-purple-200">
-                This server uses a custom MCP endpoint:{' '}
+                {t('This server uses a custom MCP endpoint:')}{' '}
                 <code className="bg-purple-100 dark:bg-purple-800 px-1 rounded break-all">{server.mcp_endpoint}</code>
               </p>
             </div>
           )}
 
           <div className="bg-gray-50 dark:bg-gray-900 border dark:border-gray-700 rounded-lg p-4">
-            <h4 className="font-medium text-gray-900 dark:text-white mb-3">Select your IDE/Tool:</h4>
+            <h4 className="font-medium text-gray-900 dark:text-white mb-3">{t('Select your IDE/Tool:')}</h4>
             <div className="flex flex-wrap gap-2">
               {enabledIDEs.map((ide) => (
                 <button
@@ -1052,19 +1051,19 @@ const ServerConfigModal: React.FC<ServerConfigModalProps> = ({
                       : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-800'
                   }`}
                 >
-                  {IDE_LABELS[ide]}
+                  {t(IDE_LABELS[ide])}
                 </button>
               ))}
             </div>
             <p className="text-xs text-gray-600 dark:text-gray-400 mt-2">
-              Configuration format optimized for {IDE_LABELS[selectedIDE]} integration
+              {t('Configuration format optimized for {ide} integration', { ide: t(IDE_LABELS[selectedIDE]) })}
             </p>
           </div>
 
           {selectedIDE === 'claude-code' ? (
             <div className="space-y-2">
               <div className="flex items-center justify-between">
-                <h4 className="font-medium text-gray-900 dark:text-white">CLI Command:</h4>
+                <h4 className="font-medium text-gray-900 dark:text-white">{t('CLI Command:')}</h4>
                 <button
                   onClick={copyCommandToClipboard}
                   className={`flex items-center gap-2 px-3 py-2 text-white rounded-lg transition-colors duration-200 ${
@@ -1074,44 +1073,37 @@ const ServerConfigModal: React.FC<ServerConfigModalProps> = ({
                   }`}
                 >
                   <ClipboardDocumentIcon className="h-4 w-4" />
-                  {copied ? 'Copied!' : 'Copy Command'}
+                  {copied ? t('Copied!') : t('Copy Command')}
                 </button>
               </div>
               <pre className="bg-gray-900 text-green-100 p-4 rounded-lg text-sm overflow-x-auto whitespace-pre-wrap break-all">
                 {generateClaudeCodeCommand()}
               </pre>
               <p className="text-xs text-gray-600 dark:text-gray-400 mt-2">
-                Run this command in your terminal to add the MCP server to Claude Code.
-                {useOAuthLogin && ' It passes the pre-registered public client id (--client-id) ' +
-                  'so Claude Code runs the OAuth login flow — no gateway token is embedded.'}
-                {useOAuthLogin && oauthCallbackPort ? ' --callback-port pins the OAuth redirect ' +
-                  'port so it matches what the identity provider has registered.' : ''}
-                {connectScope ? ` --scope ${connectScope} installs the server at the "${connectScope}" ` +
-                  'scope so it is available beyond the current directory.' : ''}
+                {t('Run this command in your terminal to add the MCP server to Claude Code.')}
+                {useOAuthLogin && t(' It passes the pre-registered public client id (--client-id) so Claude Code runs the OAuth login flow — no gateway token is embedded.')}
+                {useOAuthLogin && oauthCallbackPort ? t(' --callback-port pins the OAuth redirect port so it matches what the identity provider has registered.') : ''}
+                {connectScope ? t(' --scope {scope} installs the server at the "{scope}" scope so it is available beyond the current directory.', { scope: connectScope }) : ''}
               </p>
             </div>
           ) : selectedIDE === 'codex' ? (
             <div className="space-y-2">
               <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4 mb-3">
-                <h4 className="font-medium text-blue-900 dark:text-blue-100 mb-2">Codex CLI:</h4>
+                <h4 className="font-medium text-blue-900 dark:text-blue-100 mb-2">{t('Codex CLI:')}</h4>
                 <p className="text-sm text-blue-800 dark:text-blue-200">
-                  Run this command in your terminal to add the MCP server to Codex.
+                  {t('Run this command in your terminal to add the MCP server to Codex.')}
                   {useOAuthLogin
-                    ? ' It registers the pre-registered public client id (--oauth-client-id) ' +
-                      'so Codex runs the OAuth login flow — no gateway token is embedded.'
-                    : isDCR && ' OAuth authentication is handled automatically via DCR.'}
+                    ? t(' It registers the pre-registered public client id (--oauth-client-id) so Codex runs the OAuth login flow — no gateway token is embedded.')
+                    : isDCR && t(' OAuth authentication is handled automatically via DCR.')}
                 </p>
                 {useOAuthLogin && oauthCallbackPort ? (
                   <p className="text-xs text-amber-800 dark:text-amber-300 mt-2">
-                    Note: Codex does not support pinning the OAuth callback port, so it uses a
-                    random loopback port. If your identity provider requires the redirect URI
-                    (including the port) to be pre-registered (e.g. Okta, Entra, Cognito), Codex
-                    login may fail. Claude Code supports a fixed port via --callback-port.
+                    {t('Note: Codex does not support pinning the OAuth callback port, so it uses a random loopback port. If your identity provider requires the redirect URI (including the port) to be pre-registered (e.g. Okta, Entra, Cognito), Codex login may fail. Claude Code supports a fixed port via --callback-port.')}
                   </p>
                 ) : null}
               </div>
               <div className="flex items-center justify-between">
-                <h4 className="font-medium text-gray-900 dark:text-white">Command:</h4>
+                <h4 className="font-medium text-gray-900 dark:text-white">{t('Command:')}</h4>
                 <button
                   onClick={() => copyCurlToClipboard(generateCodexCommand())}
                   className={`flex items-center gap-2 px-3 py-2 text-white rounded-lg transition-colors duration-200 ${
@@ -1119,7 +1111,7 @@ const ServerConfigModal: React.FC<ServerConfigModalProps> = ({
                   }`}
                 >
                   <ClipboardDocumentIcon className="h-4 w-4" />
-                  {copied ? 'Copied!' : 'Copy Command'}
+                  {copied ? t('Copied!') : t('Copy Command')}
                 </button>
               </div>
               <pre className="bg-gray-900 text-green-100 p-4 rounded-lg text-sm overflow-x-auto whitespace-pre-wrap break-all">
@@ -1127,23 +1119,23 @@ const ServerConfigModal: React.FC<ServerConfigModalProps> = ({
               </pre>
               {!isDCR && !isRegistryOnly && !useOAuthLogin && (
                 <p className="text-xs text-gray-600 dark:text-gray-400 mt-2">
-                  Set the <code className="bg-gray-200 dark:bg-gray-700 px-1 rounded">MCP_AUTH_TOKEN</code> environment variable to your JWT token before running Codex.
+                  {t('Set the')} <code className="bg-gray-200 dark:bg-gray-700 px-1 rounded">MCP_AUTH_TOKEN</code> {t('environment variable to your JWT token before running Codex.')}
                 </p>
               )}
             </div>
           ) : selectedIDE === 'cli' ? (
             <div className="space-y-4">
               <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4 mb-3">
-                <h4 className="font-medium text-blue-900 dark:text-blue-100 mb-2">MCP Protocol via curl:</h4>
+                <h4 className="font-medium text-blue-900 dark:text-blue-100 mb-2">{t('MCP Protocol via curl:')}</h4>
                 <p className="text-sm text-blue-800 dark:text-blue-200">
-                  Use these commands to interact with the MCP server directly. Copy the{' '}
+                  {t('Use these commands to interact with the MCP server directly. Copy the')}{' '}
                   <code className="bg-blue-100 dark:bg-blue-800 px-1 rounded">Mcp-Session-Id</code>{' '}
-                  response header from Step 1 into Step 2.
+                  {t('response header from Step 1 into Step 2.')}
                 </p>
               </div>
               <div>
                 <div className="flex items-center justify-between mb-2">
-                  <h4 className="font-medium text-gray-900 dark:text-white">Step 1: Initialize session</h4>
+                  <h4 className="font-medium text-gray-900 dark:text-white">{t('Step 1: Initialize session')}</h4>
                   <button
                     onClick={() => copyCurlToClipboard(generateCurlCommands().initCmd)}
                     className={`flex items-center gap-2 px-3 py-1.5 text-sm text-white rounded-lg transition-colors duration-200 ${
@@ -1151,7 +1143,7 @@ const ServerConfigModal: React.FC<ServerConfigModalProps> = ({
                     }`}
                   >
                     <ClipboardDocumentIcon className="h-3 w-3" />
-                    {copied ? 'Copied!' : 'Copy'}
+                    {copied ? t('Copied!') : t('Copy')}
                   </button>
                 </div>
                 <pre className="bg-gray-900 text-green-100 p-4 rounded-lg text-sm overflow-x-auto whitespace-pre-wrap">
@@ -1160,7 +1152,7 @@ const ServerConfigModal: React.FC<ServerConfigModalProps> = ({
               </div>
               <div>
                 <div className="flex items-center justify-between mb-2">
-                  <h4 className="font-medium text-gray-900 dark:text-white">Step 2: List tools</h4>
+                  <h4 className="font-medium text-gray-900 dark:text-white">{t('Step 2: List tools')}</h4>
                   <button
                     onClick={() => copyCurlToClipboard(generateCurlCommands().toolsCmd)}
                     className={`flex items-center gap-2 px-3 py-1.5 text-sm text-white rounded-lg transition-colors duration-200 ${
@@ -1168,7 +1160,7 @@ const ServerConfigModal: React.FC<ServerConfigModalProps> = ({
                     }`}
                   >
                     <ClipboardDocumentIcon className="h-3 w-3" />
-                    {copied ? 'Copied!' : 'Copy'}
+                    {copied ? t('Copied!') : t('Copy')}
                   </button>
                 </div>
                 <pre className="bg-gray-900 text-green-100 p-4 rounded-lg text-sm overflow-x-auto whitespace-pre-wrap">
@@ -1179,16 +1171,16 @@ const ServerConfigModal: React.FC<ServerConfigModalProps> = ({
           ) : selectedIDE === 'goose' ? (
             <div className="space-y-2">
               <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4 mb-3">
-                <h4 className="font-medium text-blue-900 dark:text-blue-100 mb-2">Goose Configuration:</h4>
+                <h4 className="font-medium text-blue-900 dark:text-blue-100 mb-2">{t('Goose Configuration:')}</h4>
                 <p className="text-sm text-blue-800 dark:text-blue-200">
-                  Copy the YAML below and merge it into{' '}
+                  {t('Copy the YAML below and merge it into')}{' '}
                   <code className="bg-blue-100 dark:bg-blue-800 px-1 rounded">~/.config/goose/config.yaml</code>{' '}
-                  under the <code className="bg-blue-100 dark:bg-blue-800 px-1 rounded">extensions:</code> key. If an{' '}
-                  <code className="bg-blue-100 dark:bg-blue-800 px-1 rounded">extensions:</code> block already exists, add this entry underneath it.
+                  {t('under the')} <code className="bg-blue-100 dark:bg-blue-800 px-1 rounded">extensions:</code> {t('key. If an')}{' '}
+                  <code className="bg-blue-100 dark:bg-blue-800 px-1 rounded">extensions:</code> {t('block already exists, add this entry underneath it.')}
                 </p>
               </div>
               <div className="flex items-center justify-between">
-                <h4 className="font-medium text-gray-900 dark:text-white">Configuration YAML:</h4>
+                <h4 className="font-medium text-gray-900 dark:text-white">{t('Configuration YAML:')}</h4>
                 <button
                   onClick={copyGooseConfigToClipboard}
                   className={`flex items-center gap-2 px-3 py-2 text-white rounded-lg transition-colors duration-200 ${
@@ -1198,7 +1190,7 @@ const ServerConfigModal: React.FC<ServerConfigModalProps> = ({
                   }`}
                 >
                   <ClipboardDocumentIcon className="h-4 w-4" />
-                  {copied ? 'Copied!' : 'Copy to Clipboard'}
+                  {copied ? t('Copied!') : t('Copy to Clipboard')}
                 </button>
               </div>
               <pre className="bg-gray-900 text-green-100 p-4 rounded-lg text-sm overflow-x-auto">
@@ -1208,14 +1200,14 @@ const ServerConfigModal: React.FC<ServerConfigModalProps> = ({
           ) : selectedIDE === 'kiro' ? (
             <div className="space-y-2">
               <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4 mb-3">
-                <h4 className="font-medium text-blue-900 dark:text-blue-100 mb-2">Kiro Configuration:</h4>
+                <h4 className="font-medium text-blue-900 dark:text-blue-100 mb-2">{t('Kiro Configuration:')}</h4>
                 <p className="text-sm text-blue-800 dark:text-blue-200">
-                  Copy the JSON below and paste it into{' '}
+                  {t('Copy the JSON below and paste it into')}{' '}
                   <code className="bg-blue-100 dark:bg-blue-800 px-1 rounded">~/.kiro/settings/mcp.json</code>
                 </p>
               </div>
               <div className="flex items-center justify-between">
-                <h4 className="font-medium text-gray-900 dark:text-white">Configuration JSON:</h4>
+                <h4 className="font-medium text-gray-900 dark:text-white">{t('Configuration JSON:')}</h4>
                 <button
                   onClick={copyConfigToClipboard}
                   className={`flex items-center gap-2 px-3 py-2 text-white rounded-lg transition-colors duration-200 ${
@@ -1225,7 +1217,7 @@ const ServerConfigModal: React.FC<ServerConfigModalProps> = ({
                   }`}
                 >
                   <ClipboardDocumentIcon className="h-4 w-4" />
-                  {copied ? 'Copied!' : 'Copy to Clipboard'}
+                  {copied ? t('Copied!') : t('Copy to Clipboard')}
                 </button>
               </div>
               <pre className="bg-gray-900 text-green-100 p-4 rounded-lg text-sm overflow-x-auto">
@@ -1235,7 +1227,7 @@ const ServerConfigModal: React.FC<ServerConfigModalProps> = ({
           ) : (
             <div className="space-y-2">
               <div className="flex items-center justify-between">
-                <h4 className="font-medium text-gray-900 dark:text-white">Configuration JSON:</h4>
+                <h4 className="font-medium text-gray-900 dark:text-white">{t('Configuration JSON:')}</h4>
                 <button
                   onClick={copyConfigToClipboard}
                   className={`flex items-center gap-2 px-3 py-2 text-white rounded-lg transition-colors duration-200 ${
@@ -1245,7 +1237,7 @@ const ServerConfigModal: React.FC<ServerConfigModalProps> = ({
                   }`}
                 >
                   <ClipboardDocumentIcon className="h-4 w-4" />
-                  {copied ? 'Copied!' : 'Copy to Clipboard'}
+                  {copied ? t('Copied!') : t('Copy to Clipboard')}
                 </button>
               </div>
               <pre className="bg-gray-900 text-green-100 p-4 rounded-lg text-sm overflow-x-auto">
@@ -1253,9 +1245,7 @@ const ServerConfigModal: React.FC<ServerConfigModalProps> = ({
               </pre>
               {useOAuthLogin && selectedIDE === 'cursor' && (
                 <p className="text-xs text-gray-600 dark:text-gray-400 mt-2">
-                  This config uses OAuth login: no gateway token is embedded.
-                  Your IDE shows a login button and authenticates via the
-                  gateway's OAuth flow using the pre-registered client.
+                  {t("This config uses OAuth login: no gateway token is embedded. Your IDE shows a login button and authenticates via the gateway's OAuth flow using the pre-registered client.")}
                 </p>
               )}
             </div>

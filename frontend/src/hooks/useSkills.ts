@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Skill } from '../types/skill';
 import { fetchAllPages } from '../utils/fetchAllPages';
+import { useI18n } from '../contexts/I18nContext';
+import { localizeError } from '../utils/apiError';
 
 export type { Skill } from '../types/skill';
 
@@ -13,6 +15,7 @@ interface UseSkillsReturn {
 }
 
 export const useSkills = (): UseSkillsReturn => {
+  const { t } = useI18n();
   const [skills, setSkills] = useState<Skill[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -75,12 +78,12 @@ export const useSkills = (): UseSkillsReturn => {
       setSkills(transformedSkills);
     } catch (err: any) {
       console.error('Failed to fetch skills data:', err);
-      setError(err.response?.data?.detail || 'Failed to fetch skills');
+      setError(localizeError(err, t, 'Failed to fetch skills'));
       setSkills([]);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     fetchData();

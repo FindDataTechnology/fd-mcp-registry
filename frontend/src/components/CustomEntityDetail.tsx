@@ -7,6 +7,7 @@ import { labelFor } from '../utils/humanize';
 import { gatewayClientUrl } from '../utils/gatewayClientUrl';
 import { formatValue } from './CustomEntityCard';
 import { EntityModal, CopyButton } from './modals';
+import { useI18n } from '../contexts/I18nContext';
 
 interface CustomEntityDetailProps {
   descriptor: CustomTypeDescriptor;
@@ -28,6 +29,7 @@ const CustomEntityDetail: React.FC<CustomEntityDetailProps> = ({
   record,
   onClose,
 }) => {
+  const { t } = useI18n();
   return (
     <EntityModal
       isOpen
@@ -42,42 +44,42 @@ const CustomEntityDetail: React.FC<CustomEntityDetailProps> = ({
       headerActions={
         <CopyButton
           variant="subtle"
-          label="Copy JSON"
+          label={t('Copy JSON')}
           // Copy the full record exactly as stored (envelope + attributes +
           // path/timestamps/ratings), pretty-printed.
           getText={() => JSON.stringify(record, null, 2)}
-          title="Copy the full record JSON as stored"
+          title={t('Copy the full record JSON as stored')}
         />
       }
     >
       <div className="space-y-6">
         {/* --- Envelope --- */}
         <dl className="grid grid-cols-3 gap-x-4 gap-y-2 text-sm">
-          <dt className="text-gray-500 dark:text-gray-400">Visibility</dt>
-          <dd className="col-span-2 text-gray-900 dark:text-white">{record.visibility}</dd>
+          <dt className="text-gray-500 dark:text-gray-400">{t('Visibility')}</dt>
+          <dd className="col-span-2 text-gray-900 dark:text-white">{t(record.visibility)}</dd>
 
           {record.visibility === 'group-restricted' && (
             <>
-              <dt className="text-gray-500 dark:text-gray-400">Allowed Groups</dt>
+              <dt className="text-gray-500 dark:text-gray-400">{t('Allowed Groups')}</dt>
               <dd className="col-span-2 text-gray-900 dark:text-white">
                 {record.allowed_groups.length > 0 ? record.allowed_groups.join(', ') : '—'}
               </dd>
             </>
           )}
 
-          <dt className="text-gray-500 dark:text-gray-400">Owner</dt>
+          <dt className="text-gray-500 dark:text-gray-400">{t('Owner')}</dt>
           <dd className="col-span-2 text-gray-900 dark:text-white">{record.owner || '—'}</dd>
 
           {record.description && (
             <>
-              <dt className="text-gray-500 dark:text-gray-400">Description</dt>
+              <dt className="text-gray-500 dark:text-gray-400">{t('Description')}</dt>
               <dd className="col-span-2 text-gray-900 dark:text-white whitespace-pre-wrap">
                 {record.description}
               </dd>
             </>
           )}
 
-          <dt className="text-gray-500 dark:text-gray-400">Tags</dt>
+          <dt className="text-gray-500 dark:text-gray-400">{t('Tags')}</dt>
           <dd className="col-span-2 text-gray-900 dark:text-white">
             {record.tags.length > 0 ? record.tags.join(', ') : '—'}
           </dd>
@@ -86,7 +88,7 @@ const CustomEntityDetail: React.FC<CustomEntityDetailProps> = ({
         {/* --- Gateway proxy --- */}
         {record.is_proxied && (
           <dl className="grid grid-cols-3 gap-x-4 gap-y-2 text-sm pt-2 border-t border-gray-200 dark:border-gray-700">
-            <dt className="text-gray-500 dark:text-gray-400">Gateway URL</dt>
+            <dt className="text-gray-500 dark:text-gray-400">{t('Gateway URL')}</dt>
             <dd className="col-span-2 text-gray-900 dark:text-white">
               {record.proxy_client_url ? (
                 <span className="flex items-start gap-2">
@@ -95,10 +97,10 @@ const CustomEntityDetail: React.FC<CustomEntityDetailProps> = ({
                   </code>
                   <CopyButton
                     variant="subtle"
-                    label="Copy"
-                    copiedLabel="Copied"
+                    label={t('Copy')}
+                    copiedLabel={t('Copied')}
                     getText={() => gatewayClientUrl(record.proxy_client_url)}
-                    title="Copy the client URL"
+                    title={t('Copy the client URL')}
                   />
                 </span>
               ) : (
@@ -108,7 +110,7 @@ const CustomEntityDetail: React.FC<CustomEntityDetailProps> = ({
 
             {record.proxy_target_url && (
               <>
-                <dt className="text-gray-500 dark:text-gray-400">Backend URL</dt>
+                <dt className="text-gray-500 dark:text-gray-400">{t('Backend URL')}</dt>
                 <dd className="col-span-2 text-gray-900 dark:text-white break-all">
                   {record.proxy_target_url}
                 </dd>
@@ -117,7 +119,7 @@ const CustomEntityDetail: React.FC<CustomEntityDetailProps> = ({
 
             {record.proxy_connect_notes && (
               <>
-                <dt className="text-gray-500 dark:text-gray-400">Connect notes</dt>
+                <dt className="text-gray-500 dark:text-gray-400">{t('Connect notes')}</dt>
                 <dd className="col-span-2 text-gray-900 dark:text-white whitespace-pre-wrap break-words">
                   {record.proxy_connect_notes}
                 </dd>

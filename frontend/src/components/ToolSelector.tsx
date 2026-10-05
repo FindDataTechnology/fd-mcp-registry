@@ -9,6 +9,7 @@ import {
 } from '@heroicons/react/24/outline';
 import { ToolMapping, ToolCatalogEntry } from '../types/virtualServer';
 import { useToolCatalog } from '../hooks/useVirtualServers';
+import { useI18n } from '../contexts/I18nContext';
 
 
 /**
@@ -41,6 +42,7 @@ const ToolSelector: React.FC<ToolSelectorProps> = ({
   selectedTools,
   onToolsChange,
 }) => {
+  const { t } = useI18n();
   const { catalog, loading, error } = useToolCatalog();
   const [searchQuery, setSearchQuery] = useState('');
   const [expandedServers, setExpandedServers] = useState<Set<string>>(new Set());
@@ -100,9 +102,9 @@ const ToolSelector: React.FC<ToolSelectorProps> = ({
 
   const isToolSelected = (entry: ToolCatalogEntry): boolean => {
     return selectedTools.some(
-      (t) =>
-        t.tool_name === entry.tool_name &&
-        t.backend_server_path === entry.server_path
+      (mapping) =>
+        mapping.tool_name === entry.tool_name &&
+        mapping.backend_server_path === entry.server_path
     );
   };
 
@@ -174,7 +176,7 @@ const ToolSelector: React.FC<ToolSelectorProps> = ({
       <div className="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
         <div className="bg-gray-50 dark:bg-gray-900/50 px-4 py-3 border-b border-gray-200 dark:border-gray-700">
           <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-            Available Tools
+            {t('Available Tools')}
           </h4>
           <div className="relative">
             <MagnifyingGlassIcon className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
@@ -182,8 +184,8 @@ const ToolSelector: React.FC<ToolSelectorProps> = ({
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search tools..."
-              aria-label="Search available tools"
+              placeholder={t('Search tools...')}
+              aria-label={t('Search available tools')}
               className="w-full pl-9 pr-4 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded
                          bg-white dark:bg-gray-800 text-gray-900 dark:text-white
                          focus:ring-2 focus:ring-teal-500 focus:border-transparent"
@@ -191,10 +193,10 @@ const ToolSelector: React.FC<ToolSelectorProps> = ({
           </div>
         </div>
 
-        <div className="max-h-80 overflow-y-auto" role="listbox" aria-label="Available tools">
+        <div className="max-h-80 overflow-y-auto" role="listbox" aria-label={t('Available tools')}>
           {loading && (
             <div className="p-4 text-center text-sm text-gray-500 dark:text-gray-400">
-              Loading tool catalog...
+              {t('Loading tool catalog...')}
             </div>
           )}
 
@@ -206,7 +208,7 @@ const ToolSelector: React.FC<ToolSelectorProps> = ({
 
           {!loading && !error && filteredGroups.length === 0 && (
             <div className="p-4 text-center text-sm text-gray-500 dark:text-gray-400">
-              {searchQuery ? 'No matching tools found' : 'No tools available'}
+              {searchQuery ? t('No matching tools found') : t('No tools available')}
             </div>
           )}
 
@@ -236,7 +238,7 @@ const ToolSelector: React.FC<ToolSelectorProps> = ({
                       onClick={() => handleSelectAllFromGroup(group)}
                       className="w-full text-left px-3 py-1.5 text-xs font-medium text-teal-600 dark:text-teal-400 hover:bg-teal-50 dark:hover:bg-teal-900/20 rounded transition-colors mb-1"
                     >
-                      Select All ({group.tools.length} tools)
+                      {t('Select All ({count} tools)', { count: group.tools.length })}
                     </button>
                   )}
                   {group.tools.map((tool) => {
@@ -260,7 +262,7 @@ const ToolSelector: React.FC<ToolSelectorProps> = ({
                             <PlusIcon className="h-4 w-4 text-gray-400" />
                           )}
                           {selected && (
-                            <span className="text-xs text-teal-500">Added</span>
+                            <span className="text-xs text-teal-500">{t('Added')}</span>
                           )}
                         </div>
                         {tool.description && (
@@ -282,14 +284,14 @@ const ToolSelector: React.FC<ToolSelectorProps> = ({
       <div className="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
         <div className="bg-gray-50 dark:bg-gray-900/50 px-4 py-3 border-b border-gray-200 dark:border-gray-700">
           <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300">
-            Selected Tools ({selectedTools.length})
+            {t('Selected Tools ({count})', { count: selectedTools.length })}
           </h4>
         </div>
 
-        <div className="max-h-80 overflow-y-auto" role="listbox" aria-label="Selected tools">
+        <div className="max-h-80 overflow-y-auto" role="listbox" aria-label={t('Selected tools')}>
           {selectedTools.length === 0 && (
             <div className="p-4 text-center text-sm text-gray-500 dark:text-gray-400">
-              No tools selected. Click on tools from the left panel to add them.
+              {t('No tools selected. Click on tools from the left panel to add them.')}
             </div>
           )}
 
@@ -310,7 +312,7 @@ const ToolSelector: React.FC<ToolSelectorProps> = ({
                     </span>
                     {mapping.alias && (
                       <span className="text-xs text-gray-500 dark:text-gray-400 ml-2">
-                        (from {mapping.tool_name})
+                        {t('(from {tool})', { tool: mapping.tool_name })}
                       </span>
                     )}
                   </div>
@@ -320,14 +322,14 @@ const ToolSelector: React.FC<ToolSelectorProps> = ({
                         setEditingAlias(editingAlias === index ? null : index)
                       }
                       className="p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 rounded transition-colors"
-                      title="Set alias"
+                      title={t('Set alias')}
                     >
                       <PencilIcon className="h-3.5 w-3.5" />
                     </button>
                     <button
                       onClick={() => handleRemoveTool(index)}
                       className="p-1 text-gray-400 hover:text-red-500 rounded transition-colors"
-                      title="Remove tool"
+                      title={t('Remove tool')}
                     >
                       <XMarkIcon className="h-3.5 w-3.5" />
                     </button>
@@ -345,7 +347,7 @@ const ToolSelector: React.FC<ToolSelectorProps> = ({
                       type="text"
                       value={mapping.alias || ''}
                       onChange={(e) => handleAliasChange(index, e.target.value)}
-                      placeholder="Tool alias (optional)"
+                      placeholder={t('Tool alias (optional)')}
                       className="w-full px-2 py-1 text-xs border border-gray-300 dark:border-gray-600 rounded
                                  bg-white dark:bg-gray-800 text-gray-900 dark:text-white
                                  focus:ring-1 focus:ring-teal-500 focus:border-transparent"
@@ -363,7 +365,7 @@ const ToolSelector: React.FC<ToolSelectorProps> = ({
                                  bg-white dark:bg-gray-800 text-gray-900 dark:text-white
                                  focus:ring-1 focus:ring-teal-500 focus:border-transparent"
                     >
-                      <option value="">Default version</option>
+                      <option value="">{t('Default version')}</option>
                       {catalogEntry.available_versions.map((v) => (
                         <option key={v} value={v}>
                           {v}

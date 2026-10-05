@@ -28,6 +28,8 @@ import type { Server } from './ServerCard';
 import type { Agent as AgentType } from './AgentCard';
 import useEscapeKey from '../hooks/useEscapeKey';
 import ANSBadge from './ANSBadge';
+import { useI18n } from '../contexts/I18nContext';
+import { localizeError } from '../utils/apiError';
 
 interface SemanticSearchResultsProps {
   query: string;
@@ -56,6 +58,7 @@ const ToolSchemaModal: React.FC<ToolSchemaModalProps> = ({
   isOpen,
   onClose
 }) => {
+  const { t } = useI18n();
   useEscapeKey(onClose, isOpen);
   if (!isOpen) return null;
 
@@ -78,7 +81,7 @@ const ToolSchemaModal: React.FC<ToolSchemaModalProps> = ({
         </div>
         <div className="p-4 overflow-auto flex-1">
           <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-2">
-            Input Schema
+            {t('Input Schema')}
           </p>
           {schema && Object.keys(schema).length > 0 ? (
             <pre className="text-xs bg-gray-100 dark:bg-gray-900 p-3 rounded-lg overflow-auto text-gray-800 dark:text-gray-200">
@@ -86,7 +89,7 @@ const ToolSchemaModal: React.FC<ToolSchemaModalProps> = ({
             </pre>
           ) : (
             <p className="text-sm text-gray-500 dark:text-gray-400 italic">
-              No input schema available for this tool.
+              {t('No input schema available for this tool.')}
             </p>
           )}
         </div>
@@ -132,6 +135,7 @@ const ServerDetailsModal: React.FC<ServerDetailsModalProps> = ({
   isOpen,
   onClose
 }) => {
+  const { t } = useI18n();
   useEscapeKey(onClose, isOpen);
   if (!isOpen) return null;
 
@@ -168,10 +172,10 @@ const ServerDetailsModal: React.FC<ServerDetailsModalProps> = ({
           {/* Description */}
           <div>
             <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-2">
-              Description
+              {t('Description')}
             </p>
             <p className="text-sm text-gray-700 dark:text-gray-200">
-              {server.description || 'No description available.'}
+              {server.description || t('No description available.')}
             </p>
           </div>
 
@@ -179,7 +183,7 @@ const ServerDetailsModal: React.FC<ServerDetailsModalProps> = ({
           {server.tags && server.tags.length > 0 && (
             <div>
               <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-2">
-                Tags
+                {t('Tags')}
               </p>
               <div className="flex flex-wrap gap-2">
                 {server.tags.map((tag) => (
@@ -198,7 +202,7 @@ const ServerDetailsModal: React.FC<ServerDetailsModalProps> = ({
           {server.matching_tools && server.matching_tools.length > 0 && (
             <div>
               <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-2">
-                Tools ({server.matching_tools.length})
+                {t('Tools ({count})', { count: server.matching_tools.length })}
               </p>
               <ul className="space-y-2">
                 {server.matching_tools.map((tool) => (
@@ -218,7 +222,7 @@ const ServerDetailsModal: React.FC<ServerDetailsModalProps> = ({
           {/* Status */}
           <div>
             <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-2">
-              Status
+              {t('Status')}
             </p>
             <div className="flex items-center gap-2">
               <div className={`w-3 h-3 rounded-full ${
@@ -227,7 +231,7 @@ const ServerDetailsModal: React.FC<ServerDetailsModalProps> = ({
                   : 'bg-gray-300 dark:bg-gray-600'
               }`} />
               <span className="text-sm text-gray-700 dark:text-gray-300">
-                {server.is_enabled ? 'Enabled' : 'Disabled'}
+                {server.is_enabled ? t('Enabled') : t('Disabled')}
               </span>
             </div>
           </div>
@@ -235,10 +239,10 @@ const ServerDetailsModal: React.FC<ServerDetailsModalProps> = ({
           {/* Relevance Score */}
           <div>
             <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-2">
-              Match Score
+              {t('Match Score')}
             </p>
             <span className="inline-flex items-center rounded-full bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-200 px-3 py-1 text-xs font-semibold">
-              {Math.round(Math.min(server.relevance_score, 1) * 100)}% match
+              {t('{percent} match', { percent: formatPercent(server.relevance_score) })}
             </span>
           </div>
         </div>
@@ -262,6 +266,7 @@ const SkillContentModal: React.FC<SkillContentModalProps> = ({
   const [loading, setLoading] = useState(false);
   const [content, setContent] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const { t } = useI18n();
 
   useEscapeKey(onClose, isOpen);
 
@@ -285,7 +290,7 @@ const SkillContentModal: React.FC<SkillContentModalProps> = ({
         setContent(response.data.content);
       } catch (err: any) {
         console.error('Failed to fetch SKILL.md content:', err);
-        setError(err.response?.data?.detail || 'Failed to load SKILL.md content');
+        setError(localizeError(err, t, 'Failed to load SKILL.md content'));
       } finally {
         setLoading(false);
       }
@@ -327,7 +332,7 @@ const SkillContentModal: React.FC<SkillContentModalProps> = ({
               {skill.skill_name}
             </h3>
             <span className="px-2 py-0.5 text-[10px] font-semibold rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-200 border border-amber-200 dark:border-amber-600">
-              SKILL
+              {t('SKILL')}
             </span>
           </div>
           <button
@@ -348,7 +353,7 @@ const SkillContentModal: React.FC<SkillContentModalProps> = ({
               className="flex items-center gap-1 text-sm text-amber-700 dark:text-amber-300 hover:underline"
             >
               <ArrowTopRightOnSquareIcon className="h-4 w-4" />
-              View Skill
+              {t('View Skill')}
             </SafeLink>
           )}
           {skill.repository_url && (
@@ -359,7 +364,7 @@ const SkillContentModal: React.FC<SkillContentModalProps> = ({
               className="flex items-center gap-1 text-sm text-amber-700 dark:text-amber-300 hover:underline"
             >
               <ArrowTopRightOnSquareIcon className="h-4 w-4" />
-              View Repo
+              {t('View Repo')}
             </SafeLink>
           )}
           {content && (
@@ -367,18 +372,18 @@ const SkillContentModal: React.FC<SkillContentModalProps> = ({
               <button
                 onClick={handleCopy}
                 className="flex items-center gap-1 text-sm text-gray-600 dark:text-gray-400 hover:text-amber-700 dark:hover:text-amber-300 transition-colors"
-                title="Copy to clipboard"
+                title={t('Copy to clipboard')}
               >
                 <ClipboardIcon className="h-4 w-4" />
-                Copy
+                {t('Copy')}
               </button>
               <button
                 onClick={handleDownload}
                 className="flex items-center gap-1 text-sm text-gray-600 dark:text-gray-400 hover:text-amber-700 dark:hover:text-amber-300 transition-colors"
-                title="Download SKILL.md"
+                title={t('Download SKILL.md')}
               >
                 <ArrowDownTrayIcon className="h-4 w-4" />
-                Download
+                {t('Download')}
               </button>
             </>
           )}
@@ -394,16 +399,16 @@ const SkillContentModal: React.FC<SkillContentModalProps> = ({
               <p className="text-red-500">{error}</p>
               {skill.skill_md_url && (
                 <p className="mt-2 text-sm">
-                  Try visiting the{' '}
+                  {t('Try visiting the')}{' '}
                   <SafeLink
                     href={skill.skill_md_url}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="text-amber-600 hover:underline"
                   >
-                    source URL
+                    {t('source URL')}
                   </SafeLink>{' '}
-                  directly.
+                  {t('directly.')}
                 </p>
               )}
             </div>
@@ -435,7 +440,7 @@ const SkillContentModal: React.FC<SkillContentModalProps> = ({
             </>
           ) : (
             <div className="text-center py-12 text-gray-500">
-              <p>Could not load SKILL.md content.</p>
+              <p>{t('Could not load SKILL.md content.')}</p>
             </div>
           )}
         </div>
@@ -458,6 +463,7 @@ const VirtualServerDetailsModal: React.FC<VirtualServerDetailsModalProps> = ({
 }) => {
   const [copiedEndpoint, setCopiedEndpoint] = useState(false);
   const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set());
+  const { t } = useI18n();
 
   useEscapeKey(onClose, isOpen);
   if (!isOpen) return null;
@@ -512,7 +518,7 @@ const VirtualServerDetailsModal: React.FC<VirtualServerDetailsModalProps> = ({
           {virtualServer.endpoint_url && (
             <div>
               <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-2">
-                Endpoint URL
+                {t('Endpoint URL')}
               </p>
               <div className="flex items-center gap-2 bg-gray-50 dark:bg-gray-900/50 rounded-lg p-2">
                 <code className="flex-1 text-sm text-indigo-600 dark:text-indigo-400 font-mono break-all">
@@ -521,10 +527,10 @@ const VirtualServerDetailsModal: React.FC<VirtualServerDetailsModalProps> = ({
                 <button
                   onClick={handleCopyEndpoint}
                   className="flex-shrink-0 p-2 text-gray-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 rounded-lg transition-colors"
-                  title="Copy endpoint URL"
+                  title={t('Copy endpoint URL')}
                 >
                   {copiedEndpoint ? (
-                    <span className="text-xs text-green-600 dark:text-green-400 font-medium">Copied!</span>
+                    <span className="text-xs text-green-600 dark:text-green-400 font-medium">{t('Copied!')}</span>
                   ) : (
                     <ClipboardIcon className="h-4 w-4" />
                   )}
@@ -536,10 +542,10 @@ const VirtualServerDetailsModal: React.FC<VirtualServerDetailsModalProps> = ({
           {/* Description */}
           <div>
             <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-2">
-              Description
+              {t('Description')}
             </p>
             <p className="text-sm text-gray-700 dark:text-gray-200">
-              {virtualServer.description || 'No description available.'}
+              {virtualServer.description || t('No description available.')}
             </p>
           </div>
 
@@ -547,7 +553,7 @@ const VirtualServerDetailsModal: React.FC<VirtualServerDetailsModalProps> = ({
           {virtualServer.tags && virtualServer.tags.length > 0 && (
             <div>
               <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-2">
-                Tags
+                {t('Tags')}
               </p>
               <div className="flex flex-wrap gap-2">
                 {virtualServer.tags.map((tag) => (
@@ -566,7 +572,7 @@ const VirtualServerDetailsModal: React.FC<VirtualServerDetailsModalProps> = ({
           {backendPaths.length > 0 && (
             <div>
               <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-2">
-                Backend Servers ({backendPaths.length})
+                {t('Backend Servers ({count})', { count: backendPaths.length })}
               </p>
               <ul className="space-y-1">
                 {backendPaths.map((path) => (
@@ -582,7 +588,7 @@ const VirtualServerDetailsModal: React.FC<VirtualServerDetailsModalProps> = ({
           {tools.length > 0 && (
             <div>
               <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-2">
-                Tools ({tools.length})
+                {t('Tools ({count})', { count: tools.length })}
               </p>
               <ul className="space-y-2">
                 {tools.map((tool) => {
@@ -616,7 +622,7 @@ const VirtualServerDetailsModal: React.FC<VirtualServerDetailsModalProps> = ({
                           {tool.inputSchema && Object.keys(tool.inputSchema).length > 0 ? (
                             <>
                               <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-2">
-                                Input Schema
+                                {t('Input Schema')}
                               </p>
                               <pre className="text-xs bg-gray-100 dark:bg-gray-900 p-3 rounded-lg overflow-auto text-gray-800 dark:text-gray-200 max-h-48">
                                 {JSON.stringify(tool.inputSchema, null, 2)}
@@ -624,7 +630,7 @@ const VirtualServerDetailsModal: React.FC<VirtualServerDetailsModalProps> = ({
                             </>
                           ) : (
                             <p className="text-xs text-gray-500 dark:text-gray-400 italic">
-                              No input schema available for this tool.
+                              {t('No input schema available for this tool.')}
                             </p>
                           )}
                         </div>
@@ -639,7 +645,7 @@ const VirtualServerDetailsModal: React.FC<VirtualServerDetailsModalProps> = ({
           {/* Status */}
           <div>
             <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-2">
-              Status
+              {t('Status')}
             </p>
             <div className="flex items-center gap-2">
               <div className={`w-3 h-3 rounded-full ${
@@ -648,7 +654,7 @@ const VirtualServerDetailsModal: React.FC<VirtualServerDetailsModalProps> = ({
                   : 'bg-gray-300 dark:bg-gray-600'
               }`} />
               <span className="text-sm text-gray-700 dark:text-gray-300">
-                {virtualServer.is_enabled ? 'Enabled' : 'Disabled'}
+                {virtualServer.is_enabled ? t('Enabled') : t('Disabled')}
               </span>
             </div>
           </div>
@@ -656,10 +662,10 @@ const VirtualServerDetailsModal: React.FC<VirtualServerDetailsModalProps> = ({
           {/* Relevance Score */}
           <div>
             <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-2">
-              Match Score
+              {t('Match Score')}
             </p>
             <span className="inline-flex items-center rounded-full bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-200 px-3 py-1 text-xs font-semibold">
-              {Math.round(Math.min(virtualServer.relevance_score, 1) * 100)}% match
+              {t('{percent} match', { percent: formatPercent(virtualServer.relevance_score) })}
             </span>
           </div>
         </div>
@@ -678,6 +684,7 @@ const VirtualServerResultCard: React.FC<VirtualServerResultCardProps> = ({
   virtualServer,
   onViewDetails
 }) => {
+  const { t } = useI18n();
   const [showAllTools, setShowAllTools] = useState(false);
   const tools = virtualServer.matching_tools || [];
   const visibleTools = showAllTools ? tools : tools.slice(0, 3);
@@ -702,18 +709,18 @@ const VirtualServerResultCard: React.FC<VirtualServerResultCardProps> = ({
             type="button"
             onClick={onViewDetails}
             className="p-2 text-gray-400 hover:text-indigo-600 dark:hover:text-indigo-300 hover:bg-indigo-50 dark:hover:bg-indigo-700/30 rounded-lg transition-colors"
-            title="View virtual server details"
+            title={t('View virtual server details')}
           >
             <InformationCircleIcon className="h-4 w-4" />
           </button>
           <span className="inline-flex items-center rounded-full bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-200 px-3 py-1 text-xs font-semibold">
-            {Math.round(Math.min(virtualServer.relevance_score, 1) * 100)}% match
+            {t('{percent} match', { percent: formatPercent(virtualServer.relevance_score) })}
           </span>
         </div>
       </div>
 
       <p className="mt-3 text-sm text-gray-600 dark:text-gray-300 line-clamp-3">
-        {virtualServer.description || virtualServer.match_context || 'No description available.'}
+        {virtualServer.description || virtualServer.match_context || t('No description available.')}
       </p>
 
       {virtualServer.tags && virtualServer.tags.length > 0 && (
@@ -733,7 +740,7 @@ const VirtualServerResultCard: React.FC<VirtualServerResultCardProps> = ({
       {tools.length > 0 && (
         <div className="mt-4 border-t border-dashed border-indigo-200 dark:border-indigo-700 pt-3">
           <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-2">
-            Tools ({tools.length})
+            {t('Tools ({count})', { count: tools.length })}
           </p>
           <ul className="space-y-2">
             {visibleTools.map((tool) => (
@@ -760,15 +767,15 @@ const VirtualServerResultCard: React.FC<VirtualServerResultCardProps> = ({
               onClick={() => setShowAllTools(!showAllTools)}
               className="mt-2 text-xs text-indigo-600 dark:text-indigo-400 hover:underline"
             >
-              {showAllTools ? 'Show less' : `+${tools.length - 3} more tools...`}
+              {showAllTools ? t('Show less') : t('+{count} more tools...', { count: tools.length - 3 })}
             </button>
           )}
         </div>
       )}
 
       <div className="mt-4 flex items-center justify-between text-xs text-gray-500 dark:text-gray-400">
-        <span>{virtualServer.backend_count || 0} backends</span>
-        <span>{virtualServer.is_enabled ? 'Enabled' : 'Disabled'}</span>
+        <span>{t('{count} backends', { count: virtualServer.backend_count || 0 })}</span>
+        <span>{virtualServer.is_enabled ? t('Enabled') : t('Disabled')}</span>
       </div>
     </div>
   );
@@ -788,6 +795,7 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
   virtualServers = [],
   custom = []
 }) => {
+  const { t } = useI18n();
   const hasResults = servers.length > 0 || tools.length > 0 || agents.length > 0 || skills.length > 0 || virtualServers.length > 0 || custom.length > 0;
   const [configServer, setConfigServer] = useState<SemanticServerHit | null>(null);
   const [detailsServer, setDetailsServer] = useState<SemanticServerHit | null>(null);
@@ -867,16 +875,16 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <p className="text-sm font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">
-            Semantic Search
+            {t('Semantic Search')}
           </p>
           <h3 className="text-xl font-semibold text-gray-900 dark:text-white">
-            Results for <span className="text-purple-600 dark:text-purple-300">“{query}”</span>
+            {t('Results for')} <span className="text-purple-600 dark:text-purple-300">“{query}”</span>
           </h3>
         </div>
         {loading && (
           <div className="inline-flex items-center text-sm text-purple-600 dark:text-purple-300">
             <ArrowPathIcon className="h-5 w-5 animate-spin mr-2" />
-            Searching…
+            {t('Searching…')}
           </div>
         )}
       </div>
@@ -890,12 +898,10 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
       {!loading && !error && !hasResults && (
         <div className="text-center py-16 border border-dashed border-gray-200 dark:border-gray-700 rounded-xl">
           <p className="text-lg font-medium text-gray-700 dark:text-gray-200 mb-2">
-            No semantic matches found
+            {t('No semantic matches found')}
           </p>
           <p className="text-sm text-gray-500 dark:text-gray-400 max-w-xl mx-auto">
-            Try refining your query or describing the tools or capabilities you need. Semantic
-            search understands natural language — phrases like “servers that handle authentication”
-            or “tools for syncing calendars” work great.
+            {t('Try refining your query or describing the tools or capabilities you need. Semantic search understands natural language — phrases like “servers that handle authentication” or “tools for syncing calendars” work great.')}
           </p>
         </div>
       )}
@@ -904,7 +910,7 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
         <section className="space-y-4">
           <div className="flex items-center justify-between">
             <h4 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
-              Matching Servers <span className="text-sm font-normal text-gray-500">({servers.length})</span>
+              {t('Matching Servers')} <span className="text-sm font-normal text-gray-500">({servers.length})</span>
             </h4>
           </div>
           <div
@@ -944,14 +950,14 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
                       )}
                       {/* Orphaned badge */}
                       {isOrphanedServer && (
-                        <span className="px-2 py-0.5 text-[10px] font-semibold rounded-full bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-200 border border-red-200 dark:border-red-700" title="No longer exists on peer registry">
-                          ORPHANED
+                        <span className="px-2 py-0.5 text-[10px] font-semibold rounded-full bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-200 border border-red-200 dark:border-red-700" title={t('No longer exists on peer registry')}>
+                          {t('ORPHANED')}
                         </span>
                       )}
                       {/* Discovery badge — ARD discovery-only import (metadata only) */}
                       {isArdDiscovery && (
-                        <span className="px-2 py-0.5 text-[10px] font-semibold rounded-full bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300 border border-slate-200 dark:border-slate-600" title="Discovery-only import — resolve and connect at the source registry">
-                          Discovery
+                        <span className="px-2 py-0.5 text-[10px] font-semibold rounded-full bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300 border border-slate-200 dark:border-slate-600" title={t('Discovery-only import — resolve and connect at the source registry')}>
+                          {t('Discovery')}
                         </span>
                       )}
                     </div>
@@ -962,7 +968,7 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
                       type="button"
                       onClick={() => setDetailsServer(server)}
                       className="p-2 text-gray-400 hover:text-purple-600 dark:hover:text-purple-300 hover:bg-purple-50 dark:hover:bg-purple-700/30 rounded-lg transition-colors"
-                      title="View server details"
+                      title={t('View server details')}
                     >
                       <InformationCircleIcon className="h-4 w-4" />
                     </button>
@@ -975,7 +981,7 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
                           type="button"
                           onClick={() => window.open(ardSourceUrl, '_blank', 'noopener,noreferrer')}
                           className="p-2 text-gray-400 hover:text-blue-600 dark:hover:text-blue-300 hover:bg-blue-50 dark:hover:bg-blue-700/30 rounded-lg transition-colors"
-                          title="View at source"
+                          title={t('View at source')}
                         >
                           <ArrowTopRightOnSquareIcon className="h-4 w-4" />
                         </button>
@@ -985,18 +991,18 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
                         type="button"
                         onClick={() => setConfigServer(server)}
                         className="p-2 text-gray-400 hover:text-green-600 dark:hover:text-green-300 hover:bg-green-50 dark:hover:bg-green-700/30 rounded-lg transition-colors"
-                        title="Open MCP configuration"
+                        title={t('Open MCP configuration')}
                       >
                         <CogIcon className="h-4 w-4" />
                       </button>
                     )}
                     <span className="inline-flex items-center rounded-full bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-200 px-3 py-1 text-xs font-semibold">
-                      {formatPercent(server.relevance_score)} match
+                      {t('{percent} match', { percent: formatPercent(server.relevance_score) })}
                     </span>
                   </div>
                 </div>
                 <p className="mt-3 text-sm text-gray-600 dark:text-gray-300 line-clamp-3">
-                  {server.description || server.match_context || 'No description available.'}
+                  {server.description || server.match_context || t('No description available.')}
                 </p>
 
                 {server.tags?.length > 0 && (
@@ -1015,7 +1021,7 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
                 {server.matching_tools?.length > 0 ? (
                   <div className="mt-4 border-t border-dashed border-gray-200 dark:border-gray-700 pt-3">
                     <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-2">
-                      Relevant tools
+                      {t('Relevant tools')}
                     </p>
                     <ul className="space-y-2">
                       {server.matching_tools.slice(0, 3).map((tool) => (
@@ -1024,14 +1030,14 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
                             <span className="font-medium text-gray-900 dark:text-white">{tool.tool_name}</span>
                             <span className="mx-2 text-gray-400">-</span>
                             <span className="text-gray-600 dark:text-gray-300 line-clamp-1">
-                              {tool.description || tool.match_context || 'No description'}
+                              {tool.description || tool.match_context || t('No description')}
                             </span>
                           </div>
                           <button
                             type="button"
                             onClick={() => openToolSchema(server.path, server.server_name, tool.tool_name)}
                             className="flex-shrink-0 p-1 text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 rounded transition-colors"
-                            title="View input schema"
+                            title={t('View input schema')}
                           >
                             <InformationCircleIcon className="h-4 w-4" />
                           </button>
@@ -1042,7 +1048,7 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
                 ) : server.is_enabled && (server.health_status === 'healthy' || server.health_status === 'healthy-auth-expired') ? (
                   <div className="mt-4 border-t border-dashed border-gray-200 dark:border-gray-700 pt-3">
                     <p className="text-sm text-gray-500 dark:text-gray-300">
-                      No tools available to you on this server. Ask your administrator if you need access.
+                      {t('No tools available to you on this server. Ask your administrator if you need access.')}
                     </p>
                   </div>
                 ) : null}
@@ -1057,7 +1063,7 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
         <section className="space-y-4">
           <div className="flex items-center justify-between">
             <h4 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
-              Matching Tools <span className="text-sm font-normal text-gray-500">({tools.length})</span>
+              {t('Matching Tools')} <span className="text-sm font-normal text-gray-500">({tools.length})</span>
             </h4>
           </div>
           <div
@@ -1077,7 +1083,7 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
                     </span>
                   </p>
                   <p className="text-sm text-gray-600 dark:text-gray-300 line-clamp-2">
-                    {tool.description || tool.match_context || 'No description available.'}
+                    {tool.description || tool.match_context || t('No description available.')}
                   </p>
                 </div>
                 <div className="flex items-center gap-2 flex-shrink-0">
@@ -1089,12 +1095,12 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
                       schema: tool.inputSchema || null
                     })}
                     className="p-1.5 text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/30 rounded-lg transition-colors"
-                    title="View input schema"
+                    title={t('View input schema')}
                   >
                     <InformationCircleIcon className="h-4 w-4" />
                   </button>
                   <span className="inline-flex items-center rounded-full bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-200 px-3 py-1 text-xs font-semibold">
-                    {formatPercent(tool.relevance_score)} match
+                    {t('{percent} match', { percent: formatPercent(tool.relevance_score) })}
                   </span>
                 </div>
               </div>
@@ -1107,7 +1113,7 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
         <section className="space-y-4">
           <div className="flex items-center justify-between">
             <h4 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
-              Matching Agents <span className="text-sm font-normal text-gray-500">({agents.length})</span>
+              {t('Matching Agents')} <span className="text-sm font-normal text-gray-500">({agents.length})</span>
             </h4>
           </div>
           <div
@@ -1158,13 +1164,13 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
                       )}
                       {/* Orphaned badge */}
                       {isOrphanedAgent && (
-                        <span className="px-2 py-0.5 text-[10px] font-semibold rounded-full bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-200 border border-red-200 dark:border-red-700" title="No longer exists on peer registry">
-                          ORPHANED
+                        <span className="px-2 py-0.5 text-[10px] font-semibold rounded-full bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-200 border border-red-200 dark:border-red-700" title={t('No longer exists on peer registry')}>
+                          {t('ORPHANED')}
                         </span>
                       )}
                     </div>
                     <p className="text-xs uppercase tracking-wide text-gray-400 dark:text-gray-500">
-                      {agentVisibility}
+                      {t(agentVisibility)}
                     </p>
                   </div>
                   <div className="flex items-center gap-2">
@@ -1172,24 +1178,24 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
                       type="button"
                       onClick={() => openAgentDetails(agent)}
                       className="p-2 text-gray-400 hover:text-cyan-600 dark:hover:text-cyan-300 hover:bg-cyan-50 dark:hover:bg-cyan-700/30 rounded-lg transition-colors"
-                      title="View full agent details"
+                      title={t('View full agent details')}
                     >
                       <InformationCircleIcon className="h-4 w-4" />
                     </button>
                     <span className="inline-flex items-center rounded-full bg-cyan-100 text-cyan-700 dark:bg-cyan-900/40 dark:text-cyan-200 px-3 py-1 text-xs font-semibold">
-                      {formatPercent(agent.relevance_score)} match
+                      {t('{percent} match', { percent: formatPercent(agent.relevance_score) })}
                     </span>
                   </div>
                 </div>
 
                 <p className="mt-3 text-sm text-gray-600 dark:text-gray-300 line-clamp-3">
-                  {agentDescription || agent.match_context || 'No description available.'}
+                  {agentDescription || agent.match_context || t('No description available.')}
                 </p>
 
                 {skillNames.length > 0 && (
                   <div className="mt-4">
                     <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">
-                      Key Skills
+                      {t('Key Skills')}
                     </p>
                     <p className="text-xs text-gray-600 dark:text-gray-300">
                       {skillNames.slice(0, 4).join(', ')}
@@ -1219,7 +1225,7 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
                       {agentTrustLevel}
                     </span>
                   )}
-                  <span>{agentIsEnabled ? 'Enabled' : 'Disabled'}</span>
+                  <span>{agentIsEnabled ? t('Enabled') : t('Disabled')}</span>
                 </div>
               </div>
             );
@@ -1232,7 +1238,7 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
         <section className="space-y-4">
           <div className="flex items-center justify-between">
             <h4 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
-              Matching Skills <span className="text-sm font-normal text-gray-500">({skills.length})</span>
+              {t('Matching Skills')} <span className="text-sm font-normal text-gray-500">({skills.length})</span>
             </h4>
           </div>
           <div
@@ -1251,11 +1257,11 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
                         {skill.skill_name}
                       </p>
                       <span className="px-2 py-0.5 text-[10px] font-semibold rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-200 border border-amber-200 dark:border-amber-600">
-                        SKILL
+                        {t('SKILL')}
                       </span>
                     </div>
                     <p className="text-xs text-gray-500 dark:text-gray-400">
-                      {skill.visibility || 'public'}
+                      {t(skill.visibility || 'public')}
                     </p>
                   </div>
                   <div className="flex items-center gap-2">
@@ -1263,18 +1269,18 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
                       type="button"
                       onClick={() => setDetailsSkill(skill)}
                       className="p-2 text-gray-400 hover:text-amber-600 dark:hover:text-amber-300 hover:bg-amber-50 dark:hover:bg-amber-700/30 rounded-lg transition-colors"
-                      title="View SKILL.md content"
+                      title={t('View SKILL.md content')}
                     >
                       <InformationCircleIcon className="h-4 w-4" />
                     </button>
                     <span className="inline-flex items-center rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-200 px-3 py-1 text-xs font-semibold">
-                      {formatPercent(skill.relevance_score)} match
+                      {t('{percent} match', { percent: formatPercent(skill.relevance_score) })}
                     </span>
                   </div>
                 </div>
 
                 <p className="mt-3 text-sm text-gray-600 dark:text-gray-300 line-clamp-3">
-                  {skill.description || skill.match_context || 'No description available.'}
+                  {skill.description || skill.match_context || t('No description available.')}
                 </p>
 
                 {skill.tags && skill.tags.length > 0 && (
@@ -1293,13 +1299,13 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
                 <div className="mt-4 flex items-center justify-between text-xs text-gray-500 dark:text-gray-400">
                   <div className="flex items-center gap-2">
                     {skill.author && (
-                      <span>by {skill.author}</span>
+                      <span>{t('by {author}', { author: skill.author })}</span>
                     )}
                     {skill.version && (
-                      <span className="text-amber-600 dark:text-amber-400">v{skill.version}</span>
+                      <span className="text-amber-600 dark:text-amber-400">{t('v{version}', { version: skill.version })}</span>
                     )}
                   </div>
-                  <span>{skill.is_enabled ? 'Enabled' : 'Disabled'}</span>
+                  <span>{skill.is_enabled ? t('Enabled') : t('Disabled')}</span>
                 </div>
               </div>
             ))}
@@ -1311,7 +1317,7 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
         <section className="space-y-4">
           <div className="flex items-center justify-between">
             <h4 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
-              Matching Virtual Servers <span className="text-sm font-normal text-gray-500">({virtualServers.length})</span>
+              {t('Matching Virtual Servers')} <span className="text-sm font-normal text-gray-500">({virtualServers.length})</span>
             </h4>
           </div>
           <div
@@ -1333,7 +1339,7 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
         <section className="space-y-4">
           <div className="flex items-center justify-between">
             <h4 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
-              Matching Custom Entities <span className="text-sm font-normal text-gray-500">({custom.length})</span>
+              {t('Matching Custom Entities')} <span className="text-sm font-normal text-gray-500">({custom.length})</span>
             </h4>
           </div>
           <div
@@ -1356,16 +1362,16 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
                       </span>
                     </div>
                     <p className="text-xs text-gray-500 dark:text-gray-400">
-                      {record.visibility || 'public'}
+                      {t(record.visibility || 'public')}
                     </p>
                   </div>
                   <span className="inline-flex items-center rounded-full bg-teal-100 text-teal-700 dark:bg-teal-900/40 dark:text-teal-200 px-3 py-1 text-xs font-semibold">
-                    {formatPercent(record.relevance_score)} match
+                    {t('{percent} match', { percent: formatPercent(record.relevance_score) })}
                   </span>
                 </div>
 
                 <p className="mt-3 text-sm text-gray-600 dark:text-gray-300 line-clamp-3">
-                  {record.description || record.match_context || 'No description available.'}
+                  {record.description || record.match_context || t('No description available.')}
                 </p>
 
                 {record.tags && record.tags.length > 0 && (
@@ -1382,8 +1388,8 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
                 )}
 
                 <div className="mt-4 flex items-center justify-between text-xs text-gray-500 dark:text-gray-400">
-                  {record.owner && <span>by {record.owner}</span>}
-                  <span className="ml-auto">{record.is_enabled === false ? 'Disabled' : 'Enabled'}</span>
+                  {record.owner && <span>{t('by {author}', { author: record.owner })}</span>}
+                  <span className="ml-auto">{record.is_enabled === false ? t('Disabled') : t('Enabled')}</span>
                 </div>
               </div>
             ))}

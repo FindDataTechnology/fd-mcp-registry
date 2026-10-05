@@ -1,6 +1,7 @@
 import React from 'react';
 import FormField from './FormField';
 import { fieldClass, FIELD_FOCUS } from './formClasses';
+import { useI18n } from '../../contexts/I18nContext';
 
 export type Visibility = 'public' | 'private' | 'group-restricted';
 
@@ -26,35 +27,36 @@ const VisibilityField: React.FC<VisibilityFieldProps> = ({
   onAllowedGroupsChange,
   accent = 'purple',
 }) => {
+  const { t } = useI18n();
   return (
     <>
-      <FormField label="Visibility">
+      <FormField label={t('Visibility')}>
         <select
           value={value}
           onChange={(e) => onChange(e.target.value as Visibility)}
           className={fieldClass(accent)}
         >
-          <option value="private">Private</option>
-          <option value="public">Public</option>
-          <option value="group-restricted">Group Restricted</option>
+          <option value="private">{t('Private')}</option>
+          <option value="public">{t('Public')}</option>
+          <option value="group-restricted">{t('Group Restricted')}</option>
         </select>
       </FormField>
 
       {value === 'group-restricted' && (
         <FormField
-          label="Allowed Groups"
-          hint="Comma-separated list of groups that can access this resource"
+          label={t('Allowed Groups')}
+          hint={t('Comma-separated list of groups that can access this resource')}
         >
           <input
             type="text"
             value={allowedGroups}
             onChange={(e) => onAllowedGroupsChange(e.target.value)}
             className={fieldClass(accent)}
-            placeholder="e.g. finance-team, engineering"
+            placeholder={t('e.g. finance-team, engineering')}
           />
           {allowedGroups.trim() === '' && (
             <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
-              At least one group is required for group-restricted visibility
+              {t('At least one group is required for group-restricted visibility')}
             </p>
           )}
         </FormField>

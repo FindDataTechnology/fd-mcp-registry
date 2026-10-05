@@ -12,11 +12,13 @@ import {
 import CloudProviderBanner from './CloudProviderBanner';
 import UpdateBanner from './UpdateBanner';
 import Sidebar from './Sidebar';
+import LanguageSwitcher from './LanguageSwitcher';
 import ThemeToggle from './ThemeToggle';
 import UptimeDisplay from './UptimeDisplay';
 import { useServerStats } from '../hooks/useServerStats';
 import { useUiTitle } from '../hooks/useUiTitle';
 import { useAuth } from '../contexts/AuthContext';
+import { useI18n } from '../contexts/I18nContext';
 import logo from '../assets/logo.png';
 
 interface LayoutProps {
@@ -29,12 +31,15 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
   const { user, logout } = useAuth();
   const { stats, activeFilter, setActiveFilter } = useServerStats();
   const uiTitle = useUiTitle();
+  const { t } = useI18n();
   const [availableTags, setAvailableTags] = useState<string[]>([]);
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
 
   useEffect(() => {
-    document.title = uiTitle;
-  }, [uiTitle]);
+    // The title is the server-provided brand (ui_title); t() only replaces it
+    // when we ship a translation for that exact value (the stock default).
+    document.title = t(uiTitle);
+  }, [uiTitle, t]);
 
   const handleTagSelect = useCallback((tag: string) => {
     setSelectedTags(prev =>
@@ -111,13 +116,16 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
               {/* Light/dark mode toggle */}
               <ThemeToggle />
 
+              {/* Language switcher */}
+              <LanguageSwitcher />
+
               {/* GitHub link */}
               <a
                 href="https://github.com/agentic-community/mcp-gateway-registry"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="p-2 text-gray-400 hover:text-gray-500 dark:text-gray-300 dark:hover:text-gray-100 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800"
-                title="View on GitHub"
+                title={t('View on GitHub')}
               >
                 <svg
                   className="h-5 w-5"
@@ -150,7 +158,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
                 <Link
                   to="/settings"
                   className="p-2 text-gray-400 hover:text-gray-500 dark:text-gray-300 dark:hover:text-gray-100 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800"
-                  title="Settings"
+                  title={t('Settings')}
                 >
                   <Cog6ToothIcon className="h-5 w-5" />
                 </Link>
@@ -189,7 +197,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
                           } flex items-center w-full px-4 py-2 text-sm text-gray-700 dark:text-gray-100`}
                         >
                           <ArrowRightOnRectangleIcon className="mr-3 h-4 w-4" />
-                          Sign out
+                          {t('Sign out')}
                         </button>
                       )}
                     </Menu.Item>

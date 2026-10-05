@@ -1,4 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useI18n } from '../contexts/I18nContext';
+import { localizeError } from '../utils/apiError';
 import axios from 'axios';
 import {
   VirtualServerInfo,
@@ -44,6 +46,7 @@ function _encodeServerPath(path: string): string {
  * any mutation operation.
  */
 export const useVirtualServers = (): UseVirtualServersReturn => {
+  const { t } = useI18n();
   const [virtualServers, setVirtualServers] = useState<VirtualServerInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -61,16 +64,12 @@ export const useVirtualServers = (): UseVirtualServersReturn => {
     } catch (err: unknown) {
       const axiosErr = err as { response?: { data?: { detail?: string } }; message?: string };
       console.error('Failed to fetch virtual servers:', err);
-      setError(
-        axiosErr.response?.data?.detail ||
-        axiosErr.message ||
-        'Failed to fetch virtual servers'
-      );
+      setError(localizeError(err, t, 'Failed to fetch virtual servers'));
       setVirtualServers([]);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [t]);
 
   const createVirtualServer = useCallback(async (
     data: CreateVirtualServerRequest,
@@ -147,6 +146,7 @@ interface UseVirtualServerReturn {
  * @param path - The virtual server path (e.g., '/virtual/dev-essentials'), or undefined to skip fetching
  */
 export const useVirtualServer = (path: string | undefined): UseVirtualServerReturn => {
+  const { t } = useI18n();
   const [virtualServer, setVirtualServer] = useState<VirtualServerConfig | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -168,16 +168,12 @@ export const useVirtualServer = (path: string | undefined): UseVirtualServerRetu
     } catch (err: unknown) {
       const axiosErr = err as { response?: { data?: { detail?: string } }; message?: string };
       console.error(`Failed to fetch virtual server ${path}:`, err);
-      setError(
-        axiosErr.response?.data?.detail ||
-        axiosErr.message ||
-        'Failed to fetch virtual server'
-      );
+      setError(localizeError(err, t, 'Failed to fetch virtual server'));
       setVirtualServer(null);
     } finally {
       setLoading(false);
     }
-  }, [path]);
+  }, [path, t]);
 
   useEffect(() => {
     fetchData();
@@ -212,6 +208,7 @@ interface UseVirtualServerToolsReturn {
  * @param path - The virtual server path, or undefined to skip fetching
  */
 export const useVirtualServerTools = (path: string | undefined): UseVirtualServerToolsReturn => {
+  const { t } = useI18n();
   const [tools, setTools] = useState<ResolvedTool[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -236,16 +233,12 @@ export const useVirtualServerTools = (path: string | undefined): UseVirtualServe
     } catch (err: unknown) {
       const axiosErr = err as { response?: { data?: { detail?: string } }; message?: string };
       console.error(`Failed to fetch tools for virtual server ${path}:`, err);
-      setError(
-        axiosErr.response?.data?.detail ||
-        axiosErr.message ||
-        'Failed to fetch virtual server tools'
-      );
+      setError(localizeError(err, t, 'Failed to fetch virtual server tools'));
       setTools([]);
     } finally {
       setLoading(false);
     }
-  }, [path]);
+  }, [path, t]);
 
   useEffect(() => {
     fetchData();
@@ -276,6 +269,7 @@ interface UseToolCatalogReturn {
  * Hook for fetching the global tool catalog across all enabled backend servers.
  */
 export const useToolCatalog = (): UseToolCatalogReturn => {
+  const { t } = useI18n();
   const [catalog, setCatalog] = useState<ToolCatalogEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -293,16 +287,12 @@ export const useToolCatalog = (): UseToolCatalogReturn => {
     } catch (err: unknown) {
       const axiosErr = err as { response?: { data?: { detail?: string } }; message?: string };
       console.error('Failed to fetch tool catalog:', err);
-      setError(
-        axiosErr.response?.data?.detail ||
-        axiosErr.message ||
-        'Failed to fetch tool catalog'
-      );
+      setError(localizeError(err, t, 'Failed to fetch tool catalog'));
       setCatalog([]);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     fetchData();

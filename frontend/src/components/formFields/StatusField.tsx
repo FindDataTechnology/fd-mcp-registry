@@ -1,6 +1,7 @@
 import React from 'react';
 import FormField from './FormField';
 import { fieldClass, FIELD_FOCUS } from './formClasses';
+import { useI18n } from '../../contexts/I18nContext';
 
 export type LifecycleStatus = 'active' | 'draft' | 'deprecated' | 'beta';
 
@@ -18,20 +19,21 @@ interface StatusFieldProps {
 const StatusField: React.FC<StatusFieldProps> = ({
   value,
   onChange,
-  label = 'Lifecycle Status',
+  label,
   accent = 'purple',
 }) => {
+  const { t } = useI18n();
   return (
-    <FormField label={label}>
+    <FormField label={label ?? t('Lifecycle Status')}>
       <select
         value={value}
         onChange={(e) => onChange(e.target.value as LifecycleStatus)}
         className={fieldClass(accent)}
       >
-        <option value="active">Active</option>
-        <option value="draft">Draft</option>
-        <option value="beta">Beta</option>
-        <option value="deprecated">Deprecated</option>
+        <option value="active">{t('Active')}</option>
+        <option value="draft">{t('Draft')}</option>
+        <option value="beta">{t('Beta')}</option>
+        <option value="deprecated">{t('Deprecated')}</option>
       </select>
     </FormField>
   );

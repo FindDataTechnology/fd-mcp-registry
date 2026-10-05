@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { ShieldCheckIcon, ExclamationTriangleIcon, XCircleIcon, CodeBracketIcon } from '@heroicons/react/24/solid';
 import { SafeLink } from './SafeLink';
+import { useI18n } from '../contexts/I18nContext';
 
 interface ANSFunction {
   id?: string;
@@ -106,6 +107,7 @@ const LINK_LABELS: Record<string, string> = {
 
 
 export const ANSBadge: React.FC<ANSBadgeProps> = ({ ansMetadata }) => {
+  const { t } = useI18n();
   const [showModal, setShowModal] = useState(false);
 
   if (!ansMetadata) return null;
@@ -118,11 +120,11 @@ export const ANSBadge: React.FC<ANSBadgeProps> = ({ ansMetadata }) => {
       <span
         className={`px-2 py-0.5 text-xs font-semibold rounded-full flex-shrink-0
           cursor-pointer inline-flex items-center gap-1 ${badgeClasses}`}
-        title={`ANS: ${ansMetadata.domain || ansMetadata.ans_agent_id}`}
+        title={t('ANS: {id}', { id: ansMetadata.domain || ansMetadata.ans_agent_id })}
         onClick={() => setShowModal(true)}
       >
         <Icon className={`h-3.5 w-3.5 ${iconColor}`} />
-        {label}
+        {t(label)}
       </span>
 
       {showModal && (
@@ -142,6 +144,7 @@ interface ANSCertificateModalProps {
 }
 
 const ANSCertificateModal: React.FC<ANSCertificateModalProps> = ({ ansMetadata, onClose }) => {
+  const { t } = useI18n();
   const [showRawJson, setShowRawJson] = useState(false);
   const config = STATUS_CONFIG[ansMetadata.status] || STATUS_CONFIG.pending;
   const { label, Icon, iconColor, modalBadgeClasses } = config;
@@ -181,7 +184,7 @@ const ANSCertificateModal: React.FC<ANSCertificateModalProps> = ({ ansMetadata, 
         {/* Header */}
         <div className="flex items-center justify-between mb-5">
           <h3 className="text-lg font-bold text-gray-900 dark:text-white">
-            ANS Certificate Details
+            {t('ANS Certificate Details')}
           </h3>
           <div className="flex items-center gap-2">
             {ansMetadata.raw_ans_response && (
@@ -192,7 +195,7 @@ const ANSCertificateModal: React.FC<ANSCertificateModalProps> = ({ ansMetadata, 
                     ? 'bg-cyan-100 text-cyan-700 dark:bg-cyan-900/30 dark:text-cyan-400'
                     : 'text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800'
                 }`}
-                title="View raw ANS JSON"
+                title={t('View raw ANS JSON')}
               >
                 <CodeBracketIcon className="h-4 w-4" />
               </button>
@@ -222,11 +225,11 @@ const ANSCertificateModal: React.FC<ANSCertificateModalProps> = ({ ansMetadata, 
             {/* Status */}
             <div>
               <div className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1">
-                Status
+                {t('Status')}
               </div>
               <span className={`px-2.5 py-1 text-xs font-semibold rounded-full inline-flex items-center gap-1 ${modalBadgeClasses}`}>
                 <Icon className={`h-3.5 w-3.5 ${iconColor}`} />
-                {label}
+                {t(label)}
               </span>
             </div>
 
@@ -234,7 +237,7 @@ const ANSCertificateModal: React.FC<ANSCertificateModalProps> = ({ ansMetadata, 
             {ansMetadata.ans_display_name && (
               <div>
                 <div className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1">
-                  ANS Registered Name
+                  {t('ANS Registered Name')}
                 </div>
                 <span>{ansMetadata.ans_display_name}</span>
               </div>
@@ -243,7 +246,7 @@ const ANSCertificateModal: React.FC<ANSCertificateModalProps> = ({ ansMetadata, 
             {/* Agent ID */}
             <div>
               <div className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1">
-                Agent ID
+                {t('Agent ID')}
               </div>
               <code className="text-xs font-mono bg-gray-100 dark:bg-gray-800 px-2 py-1 rounded break-all">
                 {ansMetadata.ans_agent_id}
@@ -254,7 +257,7 @@ const ANSCertificateModal: React.FC<ANSCertificateModalProps> = ({ ansMetadata, 
             {ansMetadata.domain && (
               <div>
                 <div className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1">
-                  Domain
+                  {t('Domain')}
                 </div>
                 <a
                   href={`https://${ansMetadata.domain}`}
@@ -271,7 +274,7 @@ const ANSCertificateModal: React.FC<ANSCertificateModalProps> = ({ ansMetadata, 
             {ansMetadata.domain && (
               <div>
                 <div className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1">
-                  Agent Card
+                  {t('Agent Card')}
                 </div>
                 <a
                   href={`https://${ansMetadata.domain}/.well-known/agent-card.json`}
@@ -288,7 +291,7 @@ const ANSCertificateModal: React.FC<ANSCertificateModalProps> = ({ ansMetadata, 
             {ansMetadata.organization && (
               <div>
                 <div className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1">
-                  Organization
+                  {t('Organization')}
                 </div>
                 <span>{ansMetadata.organization}</span>
               </div>
@@ -298,7 +301,7 @@ const ANSCertificateModal: React.FC<ANSCertificateModalProps> = ({ ansMetadata, 
             {ansMetadata.ans_version && (
               <div>
                 <div className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1">
-                  ANS Version
+                  {t('ANS Version')}
                 </div>
                 <span className="font-mono text-xs">{ansMetadata.ans_version}</span>
               </div>
@@ -308,7 +311,7 @@ const ANSCertificateModal: React.FC<ANSCertificateModalProps> = ({ ansMetadata, 
             {ansMetadata.registered_with_ans_at && (
               <div>
                 <div className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1">
-                  Registered with ANS
+                  {t('Registered with ANS')}
                 </div>
                 <span>{new Date(ansMetadata.registered_with_ans_at).toLocaleString()}</span>
               </div>
@@ -318,30 +321,30 @@ const ANSCertificateModal: React.FC<ANSCertificateModalProps> = ({ ansMetadata, 
             {hasCertDetails && (
               <div className="border-t dark:border-gray-700 pt-3">
                 <div className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">
-                  Certificate
+                  {t('Certificate')}
                 </div>
                 <div className="space-y-1.5 text-xs">
                   {ansMetadata.certificate?.subject_dn && (
                     <div>
-                      <span className="font-medium text-gray-600 dark:text-gray-400">Subject:</span>{' '}
+                      <span className="font-medium text-gray-600 dark:text-gray-400">{t('Subject:')}</span>{' '}
                       <span className="font-mono">{ansMetadata.certificate.subject_dn}</span>
                     </div>
                   )}
                   {ansMetadata.certificate?.issuer_dn && (
                     <div>
-                      <span className="font-medium text-gray-600 dark:text-gray-400">Issuer:</span>{' '}
+                      <span className="font-medium text-gray-600 dark:text-gray-400">{t('Issuer:')}</span>{' '}
                       <span className="font-mono">{ansMetadata.certificate.issuer_dn}</span>
                     </div>
                   )}
                   {ansMetadata.certificate?.not_after && (
                     <div>
-                      <span className="font-medium text-gray-600 dark:text-gray-400">Expires:</span>{' '}
+                      <span className="font-medium text-gray-600 dark:text-gray-400">{t('Expires:')}</span>{' '}
                       <span>{new Date(ansMetadata.certificate.not_after).toLocaleDateString()}</span>
                     </div>
                   )}
                   {ansMetadata.certificate?.serial_number && (
                     <div>
-                      <span className="font-medium text-gray-600 dark:text-gray-400">Serial:</span>{' '}
+                      <span className="font-medium text-gray-600 dark:text-gray-400">{t('Serial:')}</span>{' '}
                       <span className="font-mono">{ansMetadata.certificate.serial_number}</span>
                     </div>
                   )}
@@ -353,7 +356,7 @@ const ANSCertificateModal: React.FC<ANSCertificateModalProps> = ({ ansMetadata, 
             {hasEndpoints && (
               <div className="border-t dark:border-gray-700 pt-3">
                 <div className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">
-                  Endpoints
+                  {t('Endpoints')}
                 </div>
                 <div className="space-y-2.5">
                   {ansMetadata.endpoints!.map((ep, idx) => (
@@ -378,10 +381,10 @@ const ANSCertificateModal: React.FC<ANSCertificateModalProps> = ({ ansMetadata, 
                       </div>
                       {ep.transports && ep.transports.length > 0 && (
                         <div className="flex items-center gap-1 ml-12">
-                          <span className="text-[10px] text-gray-400 dark:text-gray-500">Transport:</span>
-                          {ep.transports.map((t, ti) => (
+                          <span className="text-[10px] text-gray-400 dark:text-gray-500">{t('Transport:')}</span>
+                          {ep.transports.map((transport, ti) => (
                             <span key={ti} className="px-1 py-0.5 bg-gray-50 dark:bg-gray-800/80 text-gray-500 dark:text-gray-400 rounded text-[10px]">
-                              {t}
+                              {transport}
                             </span>
                           ))}
                         </div>
@@ -396,7 +399,7 @@ const ANSCertificateModal: React.FC<ANSCertificateModalProps> = ({ ansMetadata, 
             {allFunctions.length > 0 && (
               <div className="border-t dark:border-gray-700 pt-3">
                 <div className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">
-                  Functions
+                  {t('Functions')}
                 </div>
                 <div className="space-y-1.5">
                   {allFunctions.map((fn, idx) => (
@@ -421,13 +424,13 @@ const ANSCertificateModal: React.FC<ANSCertificateModalProps> = ({ ansMetadata, 
             {hasLinks && (
               <div className="border-t dark:border-gray-700 pt-3">
                 <div className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">
-                  ANS API Links
+                  {t('ANS API Links')}
                 </div>
                 <div className="space-y-1.5">
                   {ansMetadata.links!.map((link, idx) => (
                     <div key={idx} className="flex items-center gap-2 text-xs">
                       <span className="font-medium text-gray-600 dark:text-gray-400 min-w-[130px]">
-                        {LINK_LABELS[link.rel || ''] || link.rel}:
+                        {t(LINK_LABELS[link.rel || ''] || link.rel || '')}:
                       </span>
                       <SafeLink
                         href={link.href}
@@ -447,7 +450,7 @@ const ANSCertificateModal: React.FC<ANSCertificateModalProps> = ({ ansMetadata, 
             {ansMetadata.ans_description && (
               <div className="border-t dark:border-gray-700 pt-3">
                 <div className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1">
-                  ANS Description
+                  {t('ANS Description')}
                 </div>
                 <p className="text-xs text-gray-600 dark:text-gray-400">{ansMetadata.ans_description}</p>
               </div>
@@ -456,7 +459,7 @@ const ANSCertificateModal: React.FC<ANSCertificateModalProps> = ({ ansMetadata, 
             {/* Last Verified */}
             {ansMetadata.last_verified && (
               <div className="border-t dark:border-gray-700 pt-3 text-xs text-gray-500 dark:text-gray-400">
-                Last Verified: {new Date(ansMetadata.last_verified).toLocaleString()}
+                {t('Last Verified: {date}', { date: new Date(ansMetadata.last_verified).toLocaleString() })}
               </div>
             )}
           </div>
@@ -469,7 +472,7 @@ const ANSCertificateModal: React.FC<ANSCertificateModalProps> = ({ ansMetadata, 
             className="px-4 py-2 text-sm font-medium bg-gray-100 hover:bg-gray-200
               dark:bg-gray-800 dark:hover:bg-gray-700 rounded-lg transition-colors"
           >
-            Close
+            {t('Close')}
           </button>
         </div>
       </div>

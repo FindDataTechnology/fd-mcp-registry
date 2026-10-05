@@ -24,6 +24,7 @@ import type {
   CustomEntityRecord,
   CustomTypeDescriptor,
 } from '../types/customEntity';
+import { useI18n } from '../contexts/I18nContext';
 
 
 type ItemType = 'server' | 'agent' | 'skill' | 'virtual' | 'custom';
@@ -195,6 +196,7 @@ const DiscoverListRow: React.FC<DiscoverListRowProps> = ({
   onCustomEdit,
   onCustomDelete,
 }) => {
+  const { t } = useI18n();
   const [expanded, setExpanded] = useState(false);
 
   const badge = _getTypeBadge(type);
@@ -219,7 +221,7 @@ const DiscoverListRow: React.FC<DiscoverListRowProps> = ({
         <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded
           text-xs font-semibold flex-shrink-0 ${badge.bg}`}>
           <TypeIcon className="h-3 w-3" />
-          {badge.label}
+          {t(badge.label)}
         </span>
 
         {/* Registry source label */}
@@ -350,7 +352,7 @@ const DiscoverListRow: React.FC<DiscoverListRowProps> = ({
             // Descriptor failed to load (deleted type, network error): show an
             // inline notice instead of rendering an empty expanded box.
             <div className="px-3 py-2 rounded-lg bg-gray-100 dark:bg-gray-900/50 text-sm text-gray-500 dark:text-gray-400">
-              Schema unavailable for this entry (type descriptor could not be loaded).
+              {t('Schema unavailable for this entry (type descriptor could not be loaded).')}
             </div>
           )}
         </div>

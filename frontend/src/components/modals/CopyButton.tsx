@@ -5,6 +5,7 @@ import {
   CheckIcon,
 } from '@heroicons/react/24/outline';
 import clsx from 'clsx';
+import { useI18n } from '../../contexts/I18nContext';
 
 interface CopyButtonProps {
   /** Returns the text to place on the clipboard (called on click). */
@@ -36,6 +37,7 @@ const CopyButton: React.FC<CopyButtonProps> = ({
   disabled = false,
   title,
 }) => {
+  const { t } = useI18n();
   const [copied, setCopied] = useState(false);
 
   const handleClick = async () => {
@@ -80,12 +82,12 @@ const CopyButton: React.FC<CopyButtonProps> = ({
           ) : (
             <CheckIcon className={iconClass} />
           )}
-          {copiedLabel}
+          {t(copiedLabel)}
         </>
       ) : (
         <>
           <ClipboardDocumentIcon className={iconClass} />
-          {label}
+          {t(label)}
         </>
       )}
     </button>

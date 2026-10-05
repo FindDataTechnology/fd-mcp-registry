@@ -7,6 +7,8 @@ import {
   ArrowPathIcon,
 } from '@heroicons/react/24/outline';
 import useEscapeKey from '../hooks/useEscapeKey';
+import { useI18n } from '../contexts/I18nContext';
+import { localizeError } from '../utils/apiError';
 
 
 interface ServerVersion {
@@ -52,6 +54,7 @@ const VersionSelectorModal: React.FC<VersionSelectorModalProps> = ({
   authToken,
   canModify = false,
 }) => {
+  const { t } = useI18n();
   const [loading, setLoading] = useState<string | null>(null);
 
   useEscapeKey(onClose, isOpen);
@@ -79,7 +82,7 @@ const VersionSelectorModal: React.FC<VersionSelectorModalProps> = ({
       }
 
       if (onShowToast) {
-        onShowToast(`Switched to ${version}`, 'success');
+        onShowToast(t('Switched to {version}', { version }), 'success');
       }
 
       // Trigger a server refresh to get updated data
@@ -92,7 +95,7 @@ const VersionSelectorModal: React.FC<VersionSelectorModalProps> = ({
       console.error('Failed to set default version:', error);
       if (onShowToast) {
         onShowToast(
-          error.response?.data?.detail || 'Failed to switch version',
+          localizeError(error, t, 'Failed to switch version'),
           'error'
         );
       }
@@ -106,7 +109,7 @@ const VersionSelectorModal: React.FC<VersionSelectorModalProps> = ({
       return (
         <span className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-semibold bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400 rounded-full">
           <CheckCircleIcon className="h-3 w-3" />
-          ACTIVE
+          {t('ACTIVE')}
         </span>
       );
     }
@@ -116,19 +119,19 @@ const VersionSelectorModal: React.FC<VersionSelectorModalProps> = ({
         return (
           <span className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400 rounded-full">
             <ExclamationTriangleIcon className="h-3 w-3" />
-            deprecated
+            {t('deprecated')}
           </span>
         );
       case 'beta':
         return (
           <span className="px-2 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400 rounded-full">
-            beta
+            {t('beta')}
           </span>
         );
       default:
         return (
           <span className="px-2 py-0.5 text-xs font-medium bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400 rounded-full">
-            stable
+            {t('stable')}
           </span>
         );
     }
@@ -141,7 +144,7 @@ const VersionSelectorModal: React.FC<VersionSelectorModalProps> = ({
         <div className="flex items-center justify-between mb-6">
           <div>
             <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
-              Select Version
+              {t('Select Version')}
             </h3>
             <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
               {serverName}
@@ -190,7 +193,7 @@ const VersionSelectorModal: React.FC<VersionSelectorModalProps> = ({
                       {isLoading ? (
                         <ArrowPathIcon className="h-4 w-4 animate-spin" />
                       ) : (
-                        'Set Active'
+                        t('Set Active')
                       )}
                     </button>
                   )}
@@ -199,7 +202,7 @@ const VersionSelectorModal: React.FC<VersionSelectorModalProps> = ({
                 {/* Version Details */}
                 <div className="space-y-1 text-sm">
                   <div className="text-gray-600 dark:text-gray-400">
-                    <span className="font-medium">Backend:</span>{' '}
+                    <span className="font-medium">{t('Backend:')}</span>{' '}
                     <code className="text-xs bg-gray-100 dark:bg-gray-700 px-1 py-0.5 rounded">
                       {version.proxy_pass_url}
                     </code>
@@ -207,13 +210,13 @@ const VersionSelectorModal: React.FC<VersionSelectorModalProps> = ({
 
                   {version.released && (
                     <div className="text-gray-500 dark:text-gray-400">
-                      <span className="font-medium">Released:</span> {version.released}
+                      <span className="font-medium">{t('Released:')}</span> {version.released}
                     </div>
                   )}
 
                   {version.sunset_date && (
                     <div className="text-amber-600 dark:text-amber-400">
-                      <span className="font-medium">Sunset:</span> {version.sunset_date}
+                      <span className="font-medium">{t('Sunset:')}</span> {version.sunset_date}
                     </div>
                   )}
 
@@ -231,11 +234,11 @@ const VersionSelectorModal: React.FC<VersionSelectorModalProps> = ({
         {/* Info Footer */}
         <div className="mt-6 pt-4 border-t border-gray-200 dark:border-gray-700">
           <p className="text-xs text-gray-500 dark:text-gray-400">
-            Clients can request specific versions using the{' '}
+            {t('Clients can request specific versions using the')}{' '}
             <code className="bg-gray-100 dark:bg-gray-700 px-1 py-0.5 rounded">
               X-MCP-Server-Version
             </code>{' '}
-            header.
+            {t('header.')}
           </p>
         </div>
       </div>

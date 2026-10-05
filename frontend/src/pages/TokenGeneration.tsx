@@ -2,9 +2,12 @@ import React, { useState } from 'react';
 import { KeyIcon, ClipboardIcon, CheckIcon, ExclamationTriangleIcon } from '@heroicons/react/24/outline';
 import axios from 'axios';
 import { useAuth } from '../contexts/AuthContext';
+import { useI18n } from '../contexts/I18nContext';
+import { localizeError } from '../utils/apiError';
 
 const TokenGeneration: React.FC = () => {
   const { user } = useAuth();
+  const { t } = useI18n();
   const [formData, setFormData] = useState({
     description: '',
     expires_in_hours: 8,
@@ -18,9 +21,9 @@ const TokenGeneration: React.FC = () => {
   const [error, setError] = useState<string>('');
 
   const expirationOptions = [
-    { value: 1, label: '1 hour' },
-    { value: 8, label: '8 hours' },
-    { value: 24, label: '24 hours' },
+    { value: 1, label: t('1 hour') },
+    { value: 8, label: t('8 hours') },
+    { value: 24, label: t('24 hours') },
   ];
 
   const handleGenerateToken = async (e: React.FormEvent) => {
@@ -45,7 +48,7 @@ const TokenGeneration: React.FC = () => {
             }
             requestData.requested_scopes = parsedScopes;
           } catch (e) {
-            setError('Invalid JSON format for custom scopes. Please provide a valid JSON array.');
+            setError(t('Invalid JSON format for custom scopes. Please provide a valid JSON array.'));
             return;
           }
         }
@@ -66,7 +69,7 @@ const TokenGeneration: React.FC = () => {
       }
     } catch (error: any) {
       console.error('Failed to generate token:', error);
-      setError(error.response?.data?.detail || 'Failed to generate token');
+      setError(localizeError(error, t, 'Failed to generate token'));
     } finally {
       setLoading(false);
     }
@@ -105,11 +108,11 @@ const TokenGeneration: React.FC = () => {
       try {
         const parsed = JSON.parse(formData.customScopes);
         if (!Array.isArray(parsed)) {
-          return 'Custom scopes must be a JSON array';
+          return t('Custom scopes must be a JSON array');
         }
         return null;
       } catch (e) {
-        return 'Invalid JSON format';
+        return t('Invalid JSON format');
       }
     }
     return null;
@@ -125,9 +128,9 @@ const TokenGeneration: React.FC = () => {
           <div className="mx-auto w-10 h-10 bg-primary-100 dark:bg-primary-900 rounded-full flex items-center justify-center mb-2">
             <KeyIcon className="w-5 h-5 text-primary-600 dark:text-primary-400" />
           </div>
-          <h1 className="text-xl font-bold text-gray-900 dark:text-white">Generate JWT Token</h1>
+          <h1 className="text-xl font-bold text-gray-900 dark:text-white">{t('Generate JWT Token')}</h1>
           <p className="text-sm text-gray-600 dark:text-gray-400">
-            Generate a personal access token for programmatic access to MCP servers
+            {t('Generate a personal access token for programmatic access to MCP servers')}
           </p>
         </div>
       </div>
@@ -137,9 +140,9 @@ const TokenGeneration: React.FC = () => {
         <div className="max-w-4xl mx-auto space-y-4 pb-6">
           {/* Current User Permissions - Compact */}
           <div className="card p-4 bg-gray-50 dark:bg-gray-800">
-            <h3 className="text-base font-semibold text-gray-900 dark:text-white mb-2">Your Current Permissions</h3>
+            <h3 className="text-base font-semibold text-gray-900 dark:text-white mb-2">{t('Your Current Permissions')}</h3>
             <div className="mb-2">
-              <span className="text-xs font-medium text-gray-700 dark:text-gray-300">Current Scopes:</span>
+              <span className="text-xs font-medium text-gray-700 dark:text-gray-300">{t('Current Scopes:')}</span>
               <div className="flex flex-wrap gap-1 mt-1">
                 {user?.scopes && user.scopes.length > 0 ? (
                   user.scopes.map((scope) => (
@@ -148,19 +151,19 @@ const TokenGeneration: React.FC = () => {
                     </span>
                   ))
                 ) : (
-                  <span className="text-xs text-gray-500 dark:text-gray-400">No scopes available</span>
+                  <span className="text-xs text-gray-500 dark:text-gray-400">{t('No scopes available')}</span>
                 )}
               </div>
             </div>
             <p className="text-xs text-gray-600 dark:text-gray-400">
-              <em>Generated tokens can have the same or fewer permissions than your current scopes.</em>
+              <em>{t('Generated tokens can have the same or fewer permissions than your current scopes.')}</em>
             </p>
           </div>
 
           {/* Token Configuration Form */}
           <div className="card p-4">
             <form onSubmit={handleGenerateToken} className="space-y-4">
-              <h3 className="text-base font-semibold text-gray-900 dark:text-white">Token Configuration</h3>
+              <h3 className="text-base font-semibold text-gray-900 dark:text-white">{t('Token Configuration')}</h3>
 
               {/* Form Fields - Responsive Grid */}
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -169,13 +172,13 @@ const TokenGeneration: React.FC = () => {
                   {/* Description */}
                   <div>
                     <label htmlFor="description" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                      Description (optional)
+                      {t('Description (optional)')}
                     </label>
                     <input
                       type="text"
                       id="description"
                       className="input text-sm"
-                      placeholder="e.g., Token for automation script"
+                      placeholder={t('e.g., Token for automation script')}
                       value={formData.description}
                       onChange={(e) => setFormData(prev => ({ ...prev, description: e.target.value }))}
                     />
@@ -184,7 +187,7 @@ const TokenGeneration: React.FC = () => {
                   {/* Expiration */}
                   <div>
                     <label htmlFor="expires_in_hours" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                      Expires In
+                      {t('Expires In')}
                     </label>
                     <select
                       id="expires_in_hours"
@@ -199,9 +202,7 @@ const TokenGeneration: React.FC = () => {
                       ))}
                     </select>
                     <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                      The maximum lifetime is configured by your operator
-                      (MCP_TOKEN_MAX_TTL_HOURS, default 24h). Requests above the
-                      configured maximum are rejected.
+                      {t('The maximum lifetime is configured by your operator (MCP_TOKEN_MAX_TTL_HOURS, default 24h). Requests above the configured maximum are rejected.')}
                     </p>
                   </div>
                 </div>
@@ -210,7 +211,7 @@ const TokenGeneration: React.FC = () => {
                 <div className="space-y-3">
                   {/* Scope Configuration */}
                   <div>
-                    <h4 className="text-sm font-semibold text-gray-900 dark:text-white mb-2">Scope Configuration</h4>
+                    <h4 className="text-sm font-semibold text-gray-900 dark:text-white mb-2">{t('Scope Configuration')}</h4>
 
                     <div className="space-y-2">
                       <label className="flex items-center space-x-2">
@@ -224,10 +225,10 @@ const TokenGeneration: React.FC = () => {
                         />
                         <div>
                           <div className="text-sm font-medium text-gray-900 dark:text-white">
-                            Use my current scopes
+                            {t('Use my current scopes')}
                           </div>
                           <div className="text-xs text-gray-500 dark:text-gray-400">
-                            Generate token with all your current permissions
+                            {t('Generate token with all your current permissions')}
                           </div>
                         </div>
                       </label>
@@ -243,10 +244,10 @@ const TokenGeneration: React.FC = () => {
                         />
                         <div>
                           <div className="text-sm font-medium text-gray-900 dark:text-white">
-                            Upload custom scopes (JSON)
+                            {t('Upload custom scopes (JSON)')}
                           </div>
                           <div className="text-xs text-gray-500 dark:text-gray-400">
-                            Specify custom scopes in JSON format
+                            {t('Specify custom scopes in JSON format')}
                           </div>
                         </div>
                       </label>
@@ -256,7 +257,7 @@ const TokenGeneration: React.FC = () => {
                     {formData.scopeMethod === 'custom' && (
                       <div className="mt-3">
                         <label htmlFor="customScopes" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                          Custom Scopes (JSON format)
+                          {t('Custom Scopes (JSON format)')}
                         </label>
                         <textarea
                           id="customScopes"
@@ -266,7 +267,7 @@ const TokenGeneration: React.FC = () => {
                           onChange={(e) => setFormData(prev => ({ ...prev, customScopes: e.target.value }))}
                         />
                         <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                          Enter a JSON array of scope names. Must be a subset of your current scopes.
+                          {t('Enter a JSON array of scope names. Must be a subset of your current scopes.')}
                         </p>
                         {scopeValidationError && (
                           <p className="mt-1 text-xs text-red-600 dark:text-red-400">
@@ -288,12 +289,12 @@ const TokenGeneration: React.FC = () => {
                 {loading ? (
                   <>
                     <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
-                    <span>Generating...</span>
+                    <span>{t('Generating...')}</span>
                   </>
                 ) : (
                   <>
                     <KeyIcon className="h-4 w-4" />
-                    <span>Generate Token</span>
+                    <span>{t('Generate Token')}</span>
                   </>
                 )}
               </button>
@@ -316,7 +317,7 @@ const TokenGeneration: React.FC = () => {
               <div className="flex items-center space-x-2 mb-3">
                 <CheckIcon className="h-5 w-5 text-green-600 dark:text-green-400" />
                 <h3 className="text-lg font-semibold text-green-900 dark:text-green-100">
-                  Token Generated Successfully
+                  {t('Token Generated Successfully')}
                 </h3>
               </div>
 
@@ -331,7 +332,7 @@ const TokenGeneration: React.FC = () => {
                 <button
                   onClick={handleCopyToken}
                   className="absolute top-2 right-2 p-2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 rounded hover:bg-gray-100 dark:hover:bg-gray-700"
-                  title={copied ? 'Copied!' : 'Copy token'}
+                  title={copied ? t('Copied!') : t('Copy token')}
                 >
                   {copied ? (
                     <CheckIcon className="h-4 w-4 text-green-600" />
@@ -343,27 +344,27 @@ const TokenGeneration: React.FC = () => {
 
               {/* Token Details */}
               <div className="space-y-2 text-sm mb-4">
-                <p><strong>Expires:</strong> {new Date(Date.now() + tokenDetails.token_data.expires_in * 1000).toLocaleString()}</p>
-                <p><strong>Scopes:</strong> {tokenDetails.requested_scopes.join(', ')}</p>
+                <p><strong>{t('Expires:')}</strong> {new Date(Date.now() + tokenDetails.token_data.expires_in * 1000).toLocaleString()}</p>
+                <p><strong>{t('Scopes:')}</strong> {tokenDetails.requested_scopes.join(', ')}</p>
                 {tokenDetails.token_data.description && (
-                  <p><strong>Description:</strong> {tokenDetails.token_data.description}</p>
+                  <p><strong>{t('Description:')}</strong> {tokenDetails.token_data.description}</p>
                 )}
               </div>
 
               {/* Usage Instructions */}
               <div className="p-4 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg mb-4">
-                <h4 className="text-sm font-semibold text-blue-900 dark:text-blue-100 mb-2">📋 Usage Instructions</h4>
-                <p className="text-sm text-blue-800 dark:text-blue-200 mb-2">Use this token in your API requests:</p>
+                <h4 className="text-sm font-semibold text-blue-900 dark:text-blue-100 mb-2">📋 {t('Usage Instructions')}</h4>
+                <p className="text-sm text-blue-800 dark:text-blue-200 mb-2">{t('Use this token in your API requests:')}</p>
                 <code className="block text-sm bg-blue-100 dark:bg-blue-900/40 p-2 rounded font-mono text-blue-900 dark:text-blue-100">
                   Authorization: Bearer YOUR_TOKEN_HERE
                 </code>
-                <p className="text-xs text-blue-600 dark:text-blue-300 mt-2">Replace YOUR_TOKEN_HERE with the token above.</p>
+                <p className="text-xs text-blue-600 dark:text-blue-300 mt-2">{t('Replace YOUR_TOKEN_HERE with the token above.')}</p>
               </div>
 
               {/* Security Warning */}
               <div className="p-4 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg">
                 <p className="text-sm text-yellow-800 dark:text-yellow-200">
-                  <strong>⚠️ Important:</strong> This token will not be shown again. Save it securely!
+                  <strong>⚠️ {t('Important:')}</strong>{' '}{t('This token will not be shown again. Save it securely!')}
                 </p>
               </div>
             </div>

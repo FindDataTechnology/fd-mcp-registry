@@ -1,6 +1,7 @@
 import React from 'react';
 import FormField from './FormField';
 import { fieldClass, FIELD_FOCUS } from './formClasses';
+import { useI18n } from '../../contexts/I18nContext';
 
 interface TagsFieldProps {
   /** Current tags. */
@@ -22,13 +23,14 @@ interface TagsFieldProps {
 const TagsField: React.FC<TagsFieldProps> = ({
   value,
   onChange,
-  label = 'Tags',
+  label,
   hint,
   placeholder = 'tag1,tag2,tag3',
   accent = 'purple',
 }) => {
+  const { t } = useI18n();
   return (
-    <FormField label={label} hint={hint}>
+    <FormField label={label ?? t('Tags')} hint={hint}>
       <input
         type="text"
         value={value.join(',')}
@@ -36,8 +38,8 @@ const TagsField: React.FC<TagsFieldProps> = ({
           onChange(
             e.target.value
               .split(',')
-              .map((t) => t.trim())
-              .filter((t) => t),
+              .map((tag) => tag.trim())
+              .filter((tag) => tag),
           )
         }
         className={fieldClass(accent)}

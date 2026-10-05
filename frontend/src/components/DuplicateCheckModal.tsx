@@ -7,6 +7,8 @@ import {
 import DetailsModal from './DetailsModal';
 import Button from './Button';
 import type { ExistingEntity, EntityType } from '../types/duplicateCheck';
+import { useI18n } from '../contexts/I18nContext';
+import type { TranslateFn } from '../i18n/t';
 
 
 interface DuplicateCheckModalProps {
@@ -36,10 +38,10 @@ const ENTITY_LABEL_PLURAL: Record<EntityType, string> = {
 };
 
 
-function pluralize(entityType: EntityType, count: number): string {
+function pluralize(t: TranslateFn, entityType: EntityType, count: number): string {
   return count === 1
-    ? ENTITY_LABEL[entityType]
-    : ENTITY_LABEL_PLURAL[entityType];
+    ? t(ENTITY_LABEL[entityType])
+    : t(ENTITY_LABEL_PLURAL[entityType]);
 }
 
 
@@ -53,16 +55,22 @@ function pluralize(entityType: EntityType, count: number): string {
  * otherwise fall back to entity-agnostic copy ("3 entries") to
  * avoid lying about the list's composition.
  */
-function describeMatches(matches: { entity_type: EntityType }[]): string {
+function describeMatches(t: TranslateFn, matches: { entity_type: EntityType }[]): string {
   if (matches.length === 0) {
     return '';
   }
   const types = new Set(matches.map((m) => m.entity_type));
   if (types.size === 1) {
     const onlyType = matches[0].entity_type;
-    return `${matches.length} ${pluralize(onlyType, matches.length)}`;
+    return t('{count} {label}', {
+      count: matches.length,
+      label: pluralize(t, onlyType, matches.length),
+    });
   }
-  return `${matches.length} ${matches.length === 1 ? 'entry' : 'entries'}`;
+  return t('{count} {label}', {
+    count: matches.length,
+    label: matches.length === 1 ? t('entry') : t('entries'),
+  });
 }
 
 
@@ -81,16 +89,14 @@ const EntityCard: React.FC<{
   onPick: () => void;
   variant: 'collision' | 'advisory';
 }> = ({ entity, onPick, variant }) => {
+  const { t } = useI18n();
   const isRedacted = !entity.path && !entity.name;
 
   if (isRedacted) {
     return (
       <li className="border border-gray-200 dark:border-gray-700 rounded-lg p-3 bg-gray-50 dark:bg-gray-900">
         <p className="text-sm italic text-gray-500 dark:text-gray-400">
-          A {ENTITY_LABEL[entity.entity_type]} at this URL is already
-          registered, but you don&apos;t have permission to view it.
-          Contact your registry administrator if this conflicts with
-          your registration.
+          {t('A {label} at this URL is already registered, but you don\'t have permission to view it. Contact your registry administrator if this conflicts with your registration.', { label: t(ENTITY_LABEL[entity.entity_type]) })}
         </p>
       </li>
     );
@@ -108,17 +114,17 @@ const EntityCard: React.FC<{
               {entity.path}
             </code>
             <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-200">
-              {ENTITY_LABEL[entity.entity_type]}
+              {t(ENTITY_LABEL[entity.entity_type])}
             </span>
           </div>
           {entity.owner && (
             <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-              Owner: {entity.owner}
+              {t('Owner: {owner}', { owner: entity.owner })}
             </p>
           )}
           {variant === 'advisory' && entity.relevance_score != null && (
             <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-              Relevance: {entity.relevance_score.toFixed(2)}
+              {t('Relevance: {score}', { score: entity.relevance_score.toFixed(2) })}
             </p>
           )}
           {entity.match_reason && (
@@ -132,7 +138,7 @@ const EntityCard: React.FC<{
           onClick={onPick}
           className="flex-shrink-0 inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700"
         >
-          View
+          {t('View')}
           <ArrowTopRightOnSquareIcon className="h-3.5 w-3.5" />
         </button>
       </div>
@@ -165,6 +171,7 @@ const DuplicateCheckModal: React.FC<DuplicateCheckModalProps> = ({
   advisoryMatches,
   isLoading = false,
 }) => {
+  const { t } = useI18n();
   const hasCollision = collisionWith.length > 0;
   const hasAdvisory = advisoryMatches.length > 0;
 
@@ -172,8 +179,8 @@ const DuplicateCheckModal: React.FC<DuplicateCheckModalProps> = ({
   // just the type the user is registering. Build the title from
   // what's actually in the list.
   const title = hasCollision
-    ? 'A matching entry already exists'
-    : `Similar ${describeMatches(advisoryMatches)} found`;
+    ? t('A matching entry already exists')
+    : t('Similar {matches} found', { matches: describeMatches(t, advisoryMatches) });
 
   return (
     <DetailsModal
@@ -189,12 +196,11 @@ const DuplicateCheckModal: React.FC<DuplicateCheckModalProps> = ({
             <div className="flex items-start gap-3 p-3 rounded-lg bg-red-50 border border-red-200 dark:bg-red-900/30 dark:border-red-700">
               <ExclamationTriangleIcon className="h-5 w-5 mt-0.5 text-red-600 dark:text-red-400 flex-shrink-0" />
               <p className="text-sm text-red-800 dark:text-red-200">
-                The URL you&apos;re registering matches{' '}
+                {t('The URL you\'re registering matches')}{' '}
                 {collisionWith.length === 1
-                  ? 'an existing entry'
-                  : `${collisionWith.length} existing entries`}
-                . You can pick the existing one, edit your entry, or register
-                a new one anyway.
+                  ? t('an existing entry')
+                  : t('{count} existing entries', { count: collisionWith.length })}
+                {t('. You can pick the existing one, edit your entry, or register a new one anyway.')}
               </p>
             </div>
             <ul className="space-y-3">
@@ -215,11 +221,11 @@ const DuplicateCheckModal: React.FC<DuplicateCheckModalProps> = ({
             <div className="flex items-start gap-3 p-3 rounded-lg bg-blue-50 border border-blue-200 dark:bg-blue-900/30 dark:border-blue-700">
               <InformationCircleIcon className="h-5 w-5 mt-0.5 text-blue-600 dark:text-blue-400 flex-shrink-0" />
               <p className="text-sm text-blue-800 dark:text-blue-200">
-                {hasCollision ? 'You may also want to consider these similar entries:' : (
+                {hasCollision ? t('You may also want to consider these similar entries:') : (
                   <>
-                    We found {describeMatches(advisoryMatches)} similar to
-                    what you&apos;re about to register. Pick an existing one,
-                    edit your entry, or register a new one anyway.
+                    {t('We found')}{' '}
+                    {describeMatches(t, advisoryMatches)}{' '}
+                    {t("similar to what you're about to register. Pick an existing one, edit your entry, or register a new one anyway.")}
                   </>
                 )}
               </p>
@@ -239,10 +245,10 @@ const DuplicateCheckModal: React.FC<DuplicateCheckModalProps> = ({
 
         <div className="flex justify-end gap-3 pt-2">
           <Button variant="secondary" onClick={onClose} disabled={isLoading}>
-            Edit my entry
+            {t('Edit my entry')}
           </Button>
           <Button variant="primary" onClick={onProceed} disabled={isLoading}>
-            {isLoading ? 'Registering...' : 'Register anyway'}
+            {isLoading ? t('Registering...') : t('Register anyway')}
           </Button>
         </div>
       </div>

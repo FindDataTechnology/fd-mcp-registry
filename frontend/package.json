@@ -8,7 +8,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "lint": "eslint \"src/**/*.{ts,tsx}\"",
-    "test": "jest"
+    "test": "jest",
+    "i18n:scan": "node scripts/i18n-scan.cjs"
   },
   "dependencies": {
     "@headlessui/react": "^1.7.17",

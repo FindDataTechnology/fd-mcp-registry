@@ -1,4 +1,5 @@
 import React, { useEffect, useRef } from 'react';
+import { useI18n } from '../contexts/I18nContext';
 
 interface FieldChange {
   field: string;
@@ -29,6 +30,7 @@ const PullCardPreviewModal: React.FC<PullCardPreviewModalProps> = ({
   result,
   agentName,
 }) => {
+  const { t } = useI18n();
   // U4: close on Escape and move focus into the dialog when it opens.
   const closeButtonRef = useRef<HTMLButtonElement>(null);
 
@@ -64,17 +66,17 @@ const PullCardPreviewModal: React.FC<PullCardPreviewModalProps> = ({
         <div
           role="dialog"
           aria-modal="true"
-          aria-label={`Pull agent card for ${agentName}`}
+          aria-label={t('Pull agent card for {name}', { name: agentName })}
           className="relative bg-white dark:bg-gray-800 rounded-xl shadow-2xl max-w-2xl w-full max-h-[80vh] flex flex-col"
         >
           {/* Header */}
           <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-700">
             <h3 className="text-lg font-bold text-gray-900 dark:text-white">
-              Pull Agent Card: {agentName}
+              {t('Pull Agent Card: {name}', { name: agentName })}
             </h3>
             {result && (
               <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-                Source: {result.remote_card_url}
+                {t('Source: {url}', { url: result.remote_card_url })}
               </p>
             )}
           </div>
@@ -84,18 +86,18 @@ const PullCardPreviewModal: React.FC<PullCardPreviewModalProps> = ({
             {loading && (
               <div className="flex items-center justify-center py-8">
                 <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-cyan-600" />
-                <span className="ml-3 text-gray-500">Fetching remote card...</span>
+                <span className="ml-3 text-gray-500">{t('Fetching remote card...')}</span>
               </div>
             )}
 
             {result && !result.has_changes && (
               <div className="text-center py-8">
                 <p className="text-gray-500 dark:text-gray-400">
-                  No changes detected. The local card matches the remote card.
+                  {t('No changes detected. The local card matches the remote card.')}
                 </p>
                 {remoteVersion && (
                   <p className="text-xs text-gray-400 dark:text-gray-500 mt-2">
-                    Remote card version: {String(remoteVersion)}
+                    {t('Remote card version: {version}', { version: String(remoteVersion) })}
                   </p>
                 )}
               </div>
@@ -104,7 +106,7 @@ const PullCardPreviewModal: React.FC<PullCardPreviewModalProps> = ({
             {result && result.has_changes && (
               <div className="space-y-4">
                 <p className="text-sm text-gray-600 dark:text-gray-300">
-                  {result.changes.length} field(s) will be updated:
+                  {t('{count} field(s) will be updated:', { count: result.changes.length })}
                 </p>
                 {result.changes.map((change, idx) => (
                   <div
@@ -117,7 +119,7 @@ const PullCardPreviewModal: React.FC<PullCardPreviewModalProps> = ({
                     <div className="grid grid-cols-2 gap-3">
                       <div>
                         <span className="text-xs font-medium text-red-600 dark:text-red-400">
-                          Current
+                          {t('Current')}
                         </span>
                         <pre className="mt-1 text-xs bg-red-50 dark:bg-red-900/20 text-red-800 dark:text-red-200 p-2 rounded overflow-x-auto max-h-32">
                           {formatValue(change.current_value)}
@@ -125,7 +127,7 @@ const PullCardPreviewModal: React.FC<PullCardPreviewModalProps> = ({
                       </div>
                       <div>
                         <span className="text-xs font-medium text-green-600 dark:text-green-400">
-                          Remote
+                          {t('Remote')}
                         </span>
                         <pre className="mt-1 text-xs bg-green-50 dark:bg-green-900/20 text-green-800 dark:text-green-200 p-2 rounded overflow-x-auto max-h-32">
                           {formatValue(change.remote_value)}
@@ -145,14 +147,14 @@ const PullCardPreviewModal: React.FC<PullCardPreviewModalProps> = ({
               onClick={onClose}
               className="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-lg transition-colors"
             >
-              Cancel
+              {t('Cancel')}
             </button>
             {result && result.has_changes && (
               <button
                 onClick={onApply}
                 className="px-4 py-2 text-sm font-medium text-white bg-cyan-600 hover:bg-cyan-700 rounded-lg transition-colors"
               >
-                Apply Changes
+                {t('Apply Changes')}
               </button>
             )}
           </div>

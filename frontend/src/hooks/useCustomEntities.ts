@@ -8,6 +8,7 @@ import {
   CustomTypeDescriptor,
 } from '../types/customEntity';
 import { useServerStats } from './useServerStats';
+import { useI18n } from '../contexts/I18nContext';
 
 interface UseCustomEntitiesReturn {
   /** The full type descriptor (fetched once per tab). Null until loaded. */
@@ -78,6 +79,7 @@ function _sortByName(records: CustomEntityRecord[]): CustomEntityRecord[] {
  * Mutations hit the API then refresh the shared context.
  */
 export const useCustomEntities = (typeName: string): UseCustomEntitiesReturn => {
+  const { t } = useI18n();
   const { customRecordsByType, loading: recordsLoading, refreshData: refreshStats } =
     useServerStats();
   const [descriptor, setDescriptor] = useState<CustomTypeDescriptor | null>(null);
@@ -123,7 +125,7 @@ export const useCustomEntities = (typeName: string): UseCustomEntitiesReturn => 
         } else {
           console.error(`Failed to load custom type ${typeName}:`, err);
           const detail = axios.isAxiosError(err) ? err.response?.data?.detail : undefined;
-          setError(detail || 'Failed to load type');
+          setError(detail || t('Failed to load type'));
         }
       })
       .finally(() => {
@@ -132,7 +134,9 @@ export const useCustomEntities = (typeName: string): UseCustomEntitiesReturn => 
     return () => {
       cancelled = true;
     };
-  }, [typeName]);
+    // t only affects the error copy; the descriptor itself is cached, so a
+    // language switch re-runs this effect against the cache, not the network.
+  }, [typeName, t]);
 
   const createRecord = useCallback(
     async (body: CustomEntityCreate): Promise<CustomEntityRecord> => {

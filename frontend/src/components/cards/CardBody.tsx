@@ -1,5 +1,6 @@
 import React from 'react';
 import clsx from 'clsx';
+import { useI18n } from '../../contexts/I18nContext';
 
 interface CardBodyProps {
   /** Line-clamped description. Falls back to a muted placeholder when empty. */
@@ -28,13 +29,15 @@ interface CardBodyProps {
  */
 const CardBody: React.FC<CardBodyProps> = ({
   description,
-  emptyText = 'No description available',
+  emptyText,
   clamp = 2,
   children,
   unwrapped = false,
   className,
 }) => {
-  const text = description || emptyText;
+  const { t } = useI18n();
+  const text =
+    description || (emptyText === undefined ? t('No description available') : emptyText);
 
   const content = (
     <>

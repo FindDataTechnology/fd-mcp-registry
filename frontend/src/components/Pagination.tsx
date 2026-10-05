@@ -1,4 +1,5 @@
 import React from 'react';
+import { useI18n } from '../contexts/I18nContext';
 
 interface PaginationProps {
   currentPage: number;
@@ -15,6 +16,7 @@ const Pagination: React.FC<PaginationProps> = ({
   pageSize,
   onPageChange,
 }) => {
+  const { t } = useI18n();
   if (totalPages <= 1) return null;
 
   const start = currentPage * pageSize + 1;
@@ -23,7 +25,7 @@ const Pagination: React.FC<PaginationProps> = ({
   return (
     <div className="flex items-center gap-3 text-sm">
       <span className="text-gray-400 dark:text-gray-500">
-        {start}-{end} of {totalItems}
+        {t('{start}-{end} of {total}', { start, end, total: totalItems })}
       </span>
       <div className="flex items-center gap-1">
         <button
@@ -31,7 +33,7 @@ const Pagination: React.FC<PaginationProps> = ({
           disabled={currentPage === 0}
           className="px-2 py-1 rounded border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors text-xs"
         >
-          Prev
+          {t('Prev')}
         </button>
         <span className="text-gray-500 dark:text-gray-400 px-1">
           {currentPage + 1}/{totalPages}
@@ -41,7 +43,7 @@ const Pagination: React.FC<PaginationProps> = ({
           disabled={currentPage >= totalPages - 1}
           className="px-2 py-1 rounded border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors text-xs"
         >
-          Next
+          {t('Next')}
         </button>
       </div>
     </div>

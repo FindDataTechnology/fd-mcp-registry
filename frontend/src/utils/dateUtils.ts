@@ -1,27 +1,33 @@
 import { formatDistanceToNow, parseISO, isValid } from 'date-fns';
+import { zhCN } from 'date-fns/locale';
+import { translate, type Locale } from '../i18n/t';
 
 /**
  * Format a date string or Date object as relative time (e.g., "2 hours ago", "3 days ago").
  *
  * @param date - ISO 8601 date string or Date object
+ * @param locale - console language; defaults to en so non-i18n callers are unaffected
  * @returns Formatted relative time string, or "Unknown" if invalid
  */
-export function formatRelativeTime(date: string | Date | null | undefined): string {
+export function formatRelativeTime(date: string | Date | null | undefined, locale: Locale = 'en'): string {
   if (!date) {
-    return 'Unknown';
+    return translate(locale, 'Unknown');
   }
 
   try {
     const dateObj = typeof date === 'string' ? parseISO(date) : date;
 
     if (!isValid(dateObj)) {
-      return 'Unknown';
+      return translate(locale, 'Unknown');
     }
 
-    return formatDistanceToNow(dateObj, { addSuffix: true });
+    return formatDistanceToNow(dateObj, {
+      addSuffix: true,
+      locale: locale === 'zh' ? zhCN : undefined,
+    });
   } catch (error) {
     console.error('Error formatting relative time:', error);
-    return 'Unknown';
+    return translate(locale, 'Unknown');
   }
 }
 
@@ -29,21 +35,22 @@ export function formatRelativeTime(date: string | Date | null | undefined): stri
  * Format a date string or Date object as absolute date (e.g., "Jan 15, 2025, 3:30 PM").
  *
  * @param date - ISO 8601 date string or Date object
+ * @param locale - console language; defaults to en so non-i18n callers are unaffected
  * @returns Formatted absolute date string, or "Unknown" if invalid
  */
-export function formatAbsoluteDate(date: string | Date | null | undefined): string {
+export function formatAbsoluteDate(date: string | Date | null | undefined, locale: Locale = 'en'): string {
   if (!date) {
-    return 'Unknown';
+    return translate(locale, 'Unknown');
   }
 
   try {
     const dateObj = typeof date === 'string' ? parseISO(date) : date;
 
     if (!isValid(dateObj)) {
-      return 'Unknown';
+      return translate(locale, 'Unknown');
     }
 
-    return new Intl.DateTimeFormat('en-US', {
+    return new Intl.DateTimeFormat(locale === 'zh' ? 'zh-CN' : 'en-US', {
       year: 'numeric',
       month: 'short',
       day: 'numeric',
@@ -52,7 +59,7 @@ export function formatAbsoluteDate(date: string | Date | null | undefined): stri
     }).format(dateObj);
   } catch (error) {
     console.error('Error formatting absolute date:', error);
-    return 'Unknown';
+    return translate(locale, 'Unknown');
   }
 }
 
@@ -60,15 +67,19 @@ export function formatAbsoluteDate(date: string | Date | null | undefined): stri
  * Format a date with both relative and absolute time for tooltips.
  *
  * @param date - ISO 8601 date string or Date object
+ * @param locale - console language; defaults to en so non-i18n callers are unaffected
  * @returns Object with relative and absolute formatted dates
  */
-export function formatDateWithTooltip(date: string | Date | null | undefined): {
+export function formatDateWithTooltip(
+  date: string | Date | null | undefined,
+  locale: Locale = 'en',
+): {
   relative: string;
   absolute: string;
 } {
   return {
-    relative: formatRelativeTime(date),
-    absolute: formatAbsoluteDate(date),
+    relative: formatRelativeTime(date, locale),
+    absolute: formatAbsoluteDate(date, locale),
   };
 }
 
@@ -81,10 +92,12 @@ export function formatDateWithTooltip(date: string | Date | null | undefined): {
  * missing or invalid timestamps so callers can omit the row entirely.
  *
  * @param timestamp - ISO 8601 date string
+ * @param locale - console language; defaults to en so non-i18n callers are unaffected
  * @returns Compact relative label, or null if absent/invalid
  */
 export function formatTimeSince(
-  timestamp: string | null | undefined
+  timestamp: string | null | undefined,
+  locale: Locale = 'en',
 ): string | null {
   if (!timestamp) {
     return null;
@@ -105,15 +118,15 @@ export function formatTimeSince(
     const diffDays = Math.floor(diffHours / 24);
 
     if (diffSeconds < 0) {
-      return 'just now';
+      return translate(locale, 'just now');
     } else if (diffDays > 0) {
-      return `${diffDays}d ago`;
+      return translate(locale, '{count}d ago', { count: diffDays });
     } else if (diffHours > 0) {
-      return `${diffHours}h ago`;
+      return translate(locale, '{count}h ago', { count: diffHours });
     } else if (diffMinutes > 0) {
-      return `${diffMinutes}m ago`;
+      return translate(locale, '{count}m ago', { count: diffMinutes });
     } else {
-      return `${diffSeconds}s ago`;
+      return translate(locale, '{count}s ago', { count: diffSeconds });
     }
   } catch (error) {
     console.error('formatTimeSince error:', error, 'for timestamp:', timestamp);

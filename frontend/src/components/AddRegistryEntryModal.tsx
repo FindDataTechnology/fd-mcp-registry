@@ -2,6 +2,8 @@ import React, { useState } from 'react';
 import axios from 'axios';
 import DetailsModal from './DetailsModal';
 import { LABEL } from './formFields';
+import { useI18n } from '../contexts/I18nContext';
+import { localizeError } from '../utils/apiError';
 
 
 /**
@@ -50,17 +52,6 @@ interface AiCatalogFormData {
  * All available descriptor types for AWS Registry.
  */
 const ALL_DESCRIPTOR_TYPES = ['MCP', 'A2A', 'CUSTOM', 'AGENT_SKILLS'];
-
-
-/**
- * Source type display labels.
- */
-const SOURCE_TITLES: Record<RegistrySourceType, string> = {
-  aws_registry: 'Add AWS Agent Registry',
-  anthropic: 'Add Anthropic Server',
-  asor: 'Add ASOR Agent',
-  ai_catalog: 'Add ARD Catalog Source',
-};
 
 
 /**
@@ -120,6 +111,13 @@ const AddRegistryEntryModal: React.FC<AddRegistryEntryModalProps> = ({
   onSuccess,
   onShowToast,
 }) => {
+  const { t } = useI18n();
+  const sourceTitles: Record<RegistrySourceType, string> = {
+    aws_registry: t('Add AWS Agent Registry'),
+    anthropic: t('Add Anthropic Server'),
+    asor: t('Add ASOR Agent'),
+    ai_catalog: t('Add ARD Catalog Source'),
+  };
   // Simple string fields for Anthropic/ASOR
   const [simpleValue, setSimpleValue] = useState('');
 
@@ -235,25 +233,25 @@ const AddRegistryEntryModal: React.FC<AddRegistryEntryModalProps> = ({
 
     if (sourceType === 'anthropic') {
       if (!simpleValue.trim()) {
-        newErrors.server_name = 'Server name is required';
+        newErrors.server_name = t('Server name is required');
       }
     } else if (sourceType === 'asor') {
       if (!simpleValue.trim()) {
-        newErrors.agent_id = 'Agent ID is required';
+        newErrors.agent_id = t('Agent ID is required');
       }
     } else if (sourceType === 'aws_registry') {
       if (!awsForm.registry_id.trim()) {
-        newErrors.registry_id = 'Registry ID is required';
+        newErrors.registry_id = t('Registry ID is required');
       }
       if (awsForm.descriptor_types.length === 0) {
-        newErrors.descriptor_types = 'At least one descriptor type is required';
+        newErrors.descriptor_types = t('At least one descriptor type is required');
       }
     } else if (sourceType === 'ai_catalog') {
       if (!aiCatalogForm.source_id.trim()) {
-        newErrors.source_id = 'Source ID is required';
+        newErrors.source_id = t('Source ID is required');
       }
       if (!aiCatalogForm.uri.trim() && !aiCatalogForm.domain.trim()) {
-        newErrors.uri_or_domain = 'Either a URI or a domain is required';
+        newErrors.uri_or_domain = t('Either a URI or a domain is required');
       }
     }
 
@@ -276,12 +274,12 @@ const AddRegistryEntryModal: React.FC<AddRegistryEntryModalProps> = ({
         await axios.post(
           `/api/federation/config/default/anthropic/servers?server_name=${encodeURIComponent(simpleValue.trim())}`
         );
-        onShowToast(`Server '${simpleValue.trim()}' added`, 'success');
+        onShowToast(t("Server '{name}' added", { name: simpleValue.trim() }), 'success');
       } else if (sourceType === 'asor') {
         await axios.post(
           `/api/federation/config/default/asor/agents?agent_id=${encodeURIComponent(simpleValue.trim())}`
         );
-        onShowToast(`Agent '${simpleValue.trim()}' added`, 'success');
+        onShowToast(t("Agent '{name}' added", { name: simpleValue.trim() }), 'success');
       } else if (sourceType === 'aws_registry') {
         const payload: Record<string, any> = {
           registry_id: awsForm.registry_id.trim(),
@@ -299,7 +297,7 @@ const AddRegistryEntryModal: React.FC<AddRegistryEntryModalProps> = ({
           payload.assume_role_arn = awsForm.assume_role_arn.trim();
         }
         await axios.post('/api/federation/config/default/aws_registry/registries', payload);
-        onShowToast(`Registry '${awsForm.registry_id.trim()}' added`, 'success');
+        onShowToast(t("Registry '{name}' added", { name: awsForm.registry_id.trim() }), 'success');
       } else if (sourceType === 'ai_catalog') {
         const payload: Record<string, any> = {
           source_id: aiCatalogForm.source_id.trim(),
@@ -315,12 +313,12 @@ const AddRegistryEntryModal: React.FC<AddRegistryEntryModalProps> = ({
           payload.expected_identity = aiCatalogForm.expected_identity.trim();
         }
         await axios.post('/api/federation/config/default/ai_catalog/sources', payload);
-        onShowToast(`Source '${aiCatalogForm.source_id.trim()}' added`, 'success');
+        onShowToast(t("Source '{name}' added", { name: aiCatalogForm.source_id.trim() }), 'success');
       }
       handleClose();
       onSuccess();
     } catch (err: any) {
-      const detail = err?.response?.data?.detail || 'Failed to add entry';
+      const detail = localizeError(err, t, 'Failed to add entry');
       onShowToast(detail, 'error');
     } finally {
       setIsSubmitting(false);
@@ -331,7 +329,7 @@ const AddRegistryEntryModal: React.FC<AddRegistryEntryModalProps> = ({
 
   return (
     <DetailsModal
-      title={SOURCE_TITLES[sourceType]}
+      title={sourceTitles[sourceType]}
       isOpen={isOpen}
       onClose={handleClose}
       maxWidth={maxWidth as any}
@@ -340,7 +338,7 @@ const AddRegistryEntryModal: React.FC<AddRegistryEntryModalProps> = ({
         {/* Anthropic: single server_name field */}
         {sourceType === 'anthropic' && (
           <div>
-            <label className={LABEL_CLASS}>Server Name</label>
+            <label className={LABEL_CLASS}>{t('Server Name')}</label>
             <input
               type="text"
               value={simpleValue}
@@ -357,7 +355,7 @@ const AddRegistryEntryModal: React.FC<AddRegistryEntryModalProps> = ({
               <p className="text-sm text-red-600 dark:text-red-400 mt-1">{errors.server_name}</p>
             )}
             <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-              The server identifier from the Anthropic MCP Registry
+              {t('The server identifier from the Anthropic MCP Registry')}
             </p>
           </div>
         )}
@@ -365,7 +363,7 @@ const AddRegistryEntryModal: React.FC<AddRegistryEntryModalProps> = ({
         {/* ASOR: single agent_id field */}
         {sourceType === 'asor' && (
           <div>
-            <label className={LABEL_CLASS}>Agent ID</label>
+            <label className={LABEL_CLASS}>{t('Agent ID')}</label>
             <input
               type="text"
               value={simpleValue}
@@ -382,7 +380,7 @@ const AddRegistryEntryModal: React.FC<AddRegistryEntryModalProps> = ({
               <p className="text-sm text-red-600 dark:text-red-400 mt-1">{errors.agent_id}</p>
             )}
             <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-              The agent identifier from the ASOR registry
+              {t('The agent identifier from the ASOR registry')}
             </p>
           </div>
         )}
@@ -393,7 +391,7 @@ const AddRegistryEntryModal: React.FC<AddRegistryEntryModalProps> = ({
             {/* Registry ID (required) */}
             <div>
               <label className={LABEL_CLASS}>
-                Registry ID <span className="text-red-500">*</span>
+                {t('Registry ID')} <span className="text-red-500">*</span>
               </label>
               <input
                 type="text"
@@ -413,7 +411,7 @@ const AddRegistryEntryModal: React.FC<AddRegistryEntryModalProps> = ({
             {/* Two-column layout for optional fields */}
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className={LABEL_CLASS}>AWS Account ID</label>
+                <label className={LABEL_CLASS}>{t('AWS Account ID')}</label>
                 <input
                   type="text"
                   name="aws_account_id"
@@ -425,7 +423,7 @@ const AddRegistryEntryModal: React.FC<AddRegistryEntryModalProps> = ({
                 />
               </div>
               <div>
-                <label className={LABEL_CLASS}>AWS Region</label>
+                <label className={LABEL_CLASS}>{t('AWS Region')}</label>
                 <input
                   type="text"
                   name="aws_region"
@@ -436,7 +434,7 @@ const AddRegistryEntryModal: React.FC<AddRegistryEntryModalProps> = ({
                   placeholder="us-east-1"
                 />
                 <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                  Leave empty to use the global region
+                  {t('Leave empty to use the global region')}
                 </p>
               </div>
             </div>
@@ -444,7 +442,7 @@ const AddRegistryEntryModal: React.FC<AddRegistryEntryModalProps> = ({
             {/* Assume Role ARN */}
             <div>
               <label className={LABEL_CLASS}>
-                Assume Role ARN <span className="text-gray-400 font-normal">(optional)</span>
+                {t('Assume Role ARN')} <span className="text-gray-400 font-normal">{t('(optional)')}</span>
               </label>
               <input
                 type="text"
@@ -456,13 +454,13 @@ const AddRegistryEntryModal: React.FC<AddRegistryEntryModalProps> = ({
                 placeholder="arn:aws:iam::123456789012:role/FederationReadOnly"
               />
               <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                Only needed if adding a registry from a different AWS account
+                {t('Only needed if adding a registry from a different AWS account')}
               </p>
             </div>
 
             {/* Descriptor Types checkboxes */}
             <div>
-              <label className={LABEL_CLASS}>Descriptor Types</label>
+              <label className={LABEL_CLASS}>{t('Descriptor Types')}</label>
               <div className="flex flex-wrap gap-3 mt-1">
                 {ALL_DESCRIPTOR_TYPES.map((dtype) => (
                   <label
@@ -490,7 +488,7 @@ const AddRegistryEntryModal: React.FC<AddRegistryEntryModalProps> = ({
 
             {/* Sync Status Filter */}
             <div>
-              <label className={LABEL_CLASS}>Sync Status Filter</label>
+              <label className={LABEL_CLASS}>{t('Sync Status Filter')}</label>
               <select
                 name="sync_status_filter"
                 value={awsForm.sync_status_filter}
@@ -512,7 +510,7 @@ const AddRegistryEntryModal: React.FC<AddRegistryEntryModalProps> = ({
             {/* Source ID (required) */}
             <div>
               <label className={LABEL_CLASS}>
-                Source ID <span className="text-red-500">*</span>
+                {t('Source ID')} <span className="text-red-500">*</span>
               </label>
               <input
                 type="text"
@@ -531,7 +529,7 @@ const AddRegistryEntryModal: React.FC<AddRegistryEntryModalProps> = ({
 
             {/* Catalog URI */}
             <div>
-              <label className={LABEL_CLASS}>Catalog URI</label>
+              <label className={LABEL_CLASS}>{t('Catalog URI')}</label>
               <input
                 type="text"
                 name="uri"
@@ -542,13 +540,13 @@ const AddRegistryEntryModal: React.FC<AddRegistryEntryModalProps> = ({
                 placeholder="https://acme.com/.well-known/ai-catalog.json"
               />
               <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                Provide either a catalog URI or a domain (at least one is required)
+                {t('Provide either a catalog URI or a domain (at least one is required)')}
               </p>
             </div>
 
             {/* Domain */}
             <div>
-              <label className={LABEL_CLASS}>Domain</label>
+              <label className={LABEL_CLASS}>{t('Domain')}</label>
               <input
                 type="text"
                 name="domain"
@@ -568,7 +566,7 @@ const AddRegistryEntryModal: React.FC<AddRegistryEntryModalProps> = ({
             {/* Expected Identity */}
             <div>
               <label className={LABEL_CLASS}>
-                Expected Identity <span className="text-gray-400 font-normal">(optional)</span>
+                {t('Expected Identity')} <span className="text-gray-400 font-normal">{t('(optional)')}</span>
               </label>
               <input
                 type="text"
@@ -580,7 +578,7 @@ const AddRegistryEntryModal: React.FC<AddRegistryEntryModalProps> = ({
                 placeholder="https://acme.com"
               />
               <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                Verify the catalog's declared identity matches this value
+                {t("Verify the catalog's declared identity matches this value")}
               </p>
             </div>
           </>
@@ -597,7 +595,7 @@ const AddRegistryEntryModal: React.FC<AddRegistryEntryModalProps> = ({
                        rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700
                        disabled:opacity-50 transition-colors"
           >
-            Cancel
+            {t('Cancel')}
           </button>
           <button
             type="submit"
@@ -606,7 +604,7 @@ const AddRegistryEntryModal: React.FC<AddRegistryEntryModalProps> = ({
                        rounded-lg hover:bg-purple-700 disabled:opacity-50
                        disabled:cursor-not-allowed transition-colors"
           >
-            {isSubmitting ? 'Adding...' : 'Add'}
+            {isSubmitting ? t('Adding...') : t('Add')}
           </button>
         </div>
       </form>

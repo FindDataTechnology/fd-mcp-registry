@@ -13,6 +13,7 @@ import {
 } from '@heroicons/react/24/outline';
 import axios from 'axios';
 import { useAuth } from '../contexts/AuthContext';
+import { useI18n } from '../contexts/I18nContext';
 import {
   type LocalRuntimeFormData,
   initialLocalRuntime,
@@ -240,6 +241,7 @@ const initialAgentForm: AgentFormData = {
 const RegisterPage: React.FC = () => {
   const navigate = useNavigate();
   const { user } = useAuth();
+  const { t } = useI18n();
   const [registrationType, setRegistrationType] = useState<RegistrationType>('server');
   const [registrationMode, setRegistrationMode] = useState<RegistrationMode>('form');
   const [serverForm, setServerForm] = useState<ServerFormData>(initialServerForm);
@@ -314,27 +316,27 @@ const RegisterPage: React.FC = () => {
     const newErrors: FormErrors = {};
 
     if (!serverForm.name.trim()) {
-      newErrors.name = 'Server name is required';
+      newErrors.name = t('Server name is required');
     }
 
     if (!serverForm.description.trim()) {
-      newErrors.description = 'Description is required';
+      newErrors.description = t('Description is required');
     }
 
     if (!serverForm.path.trim()) {
-      newErrors.path = 'Path is required';
+      newErrors.path = t('Path is required');
     } else if (!serverForm.path.startsWith('/')) {
-      newErrors.path = 'Path must start with /';
+      newErrors.path = t('Path must start with /');
     }
 
     if (serverForm.deployment === 'remote') {
       if (!serverForm.proxy_pass_url.trim()) {
-        newErrors.proxy_pass_url = 'Proxy URL is required for remote servers';
+        newErrors.proxy_pass_url = t('Proxy URL is required for remote servers');
       } else {
         try {
           new URL(serverForm.proxy_pass_url);
         } catch {
-          newErrors.proxy_pass_url = 'Invalid URL format';
+          newErrors.proxy_pass_url = t('Invalid URL format');
         }
       }
     } else {
@@ -342,58 +344,58 @@ const RegisterPage: React.FC = () => {
       const rt = serverForm.local_runtime;
       if (!rt.package.trim()) {
         newErrors.local_runtime_package =
-          rt.type === 'docker' ? 'Image reference is required'
-          : rt.type === 'command' ? 'Command path is required'
-          : 'Package name is required';
+          rt.type === 'docker' ? t('Image reference is required')
+          : rt.type === 'command' ? t('Command path is required')
+          : t('Package name is required');
       }
       if (rt.image_digest && !rt.image_digest.startsWith('sha256:')) {
-        newErrors.local_runtime_image_digest = "image_digest must start with 'sha256:'";
+        newErrors.local_runtime_image_digest = t("image_digest must start with 'sha256:'");
       }
       // required_env keys must not also appear in env values
       const envKeys = new Set(rt.envRows.filter(r => !r.required).map(r => r.key));
       const overlap = rt.envRows.filter(r => r.required && envKeys.has(r.key));
       if (overlap.length > 0) {
         newErrors.local_runtime_env =
-          'A row cannot be both "required from user" and have a literal value with the same key';
+          t('A row cannot be both "required from user" and have a literal value with the same key');
       }
     }
 
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
-  }, [serverForm]);
+  }, [serverForm, t]);
 
 
   const validateAgentForm = useCallback((): boolean => {
     const newErrors: FormErrors = {};
 
     if (!agentForm.name.trim()) {
-      newErrors.name = 'Agent name is required';
+      newErrors.name = t('Agent name is required');
     }
 
     if (!agentForm.description.trim()) {
-      newErrors.description = 'Description is required';
+      newErrors.description = t('Description is required');
     }
 
     if (!agentForm.url.trim()) {
-      newErrors.url = 'Agent URL is required';
+      newErrors.url = t('Agent URL is required');
     } else {
       try {
         const url = new URL(agentForm.url);
         if (!['http:', 'https:'].includes(url.protocol)) {
-          newErrors.url = 'URL must use HTTP or HTTPS protocol';
+          newErrors.url = t('URL must use HTTP or HTTPS protocol');
         }
       } catch {
-        newErrors.url = 'Invalid URL format';
+        newErrors.url = t('Invalid URL format');
       }
     }
 
     if (agentForm.path && !agentForm.path.startsWith('/')) {
-      newErrors.path = 'Path must start with /';
+      newErrors.path = t('Path must start with /');
     }
 
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
-  }, [agentForm]);
+  }, [agentForm, t]);
 
 
   const handleFileUpload = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
@@ -423,9 +425,9 @@ const RegisterPage: React.FC = () => {
 
         if (isMcpRegistrySchema) {
           setMcpRegistryNotice(
-            'This file uses the upstream MCP Registry server.json format. ' +
+            t('This file uses the upstream MCP Registry server.json format. ' +
             'Additional fields (repository, packages, remotes, _meta) will be stored ' +
-            'in the metadata field and preserved in the database.'
+            'in the metadata field and preserved in the database.')
           );
           // Unpack the registry's own internal _meta block (if any) into
           // bespoke top-level fields. Convention: any _meta key ending in
@@ -599,13 +601,13 @@ const RegisterPage: React.FC = () => {
           }));
         }
 
-        setToast({ message: 'JSON file loaded successfully', type: 'success' });
+        setToast({ message: t('JSON file loaded successfully'), type: 'success' });
       } catch {
-        setToast({ message: 'Invalid JSON file', type: 'error' });
+        setToast({ message: t('Invalid JSON file'), type: 'error' });
       }
     };
     reader.readAsText(file);
-  }, [registrationType]);
+  }, [registrationType, t]);
 
 
   const performServerRegistration = useCallback(async () => {
@@ -732,26 +734,26 @@ const RegisterPage: React.FC = () => {
         const cfgAxios = cfgErr as { response?: { data?: { detail?: string; error?: string } }; message?: string };
         const detail = cfgAxios.response?.data?.error || cfgAxios.response?.data?.detail || cfgAxios.message;
         setToast({
-          message: `Server registered, but its OAuth config failed to save (${detail || 'unknown error'}). Add it from Edit.`,
+          message: t('Server registered, but its OAuth config failed to save ({detail}). Add it from Edit.', { detail: detail || t('unknown error') }),
           type: 'error',
         });
         setTimeout(() => navigate('/'), 2500);
         return;
       }
 
-      setToast({ message: 'Server registered successfully!', type: 'success' });
+      setToast({ message: t('Server registered successfully!'), type: 'success' });
       setTimeout(() => navigate('/'), 1500);
     } catch (error: unknown) {
       const axiosError = error as { response?: { data?: { detail?: string; error?: string; reason?: string } } };
       const message = axiosError.response?.data?.error
         || axiosError.response?.data?.reason
         || axiosError.response?.data?.detail
-        || 'Failed to register server';
+        || t('Failed to register server');
       setToast({ message, type: 'error' });
     } finally {
       setLoading(false);
     }
-  }, [serverForm, navigate, egressFeatureAvailable]);
+  }, [serverForm, navigate, egressFeatureAvailable, t]);
 
 
   const performAgentRegistration = useCallback(async (): Promise<void> => {
@@ -760,11 +762,11 @@ const RegisterPage: React.FC = () => {
       try {
         parsedSkills = JSON.parse(agentForm.skills_json);
       } catch {
-        setErrors(prev => ({ ...prev, skills_json: 'Invalid JSON format' }));
+        setErrors(prev => ({ ...prev, skills_json: t('Invalid JSON format') }));
         return;
       }
       if (!Array.isArray(parsedSkills)) {
-        setErrors(prev => ({ ...prev, skills_json: 'Skills must be a JSON array' }));
+        setErrors(prev => ({ ...prev, skills_json: t('Skills must be a JSON array') }));
         return;
       }
     }
@@ -815,11 +817,11 @@ const RegisterPage: React.FC = () => {
         },
       });
 
-      setToast({ message: 'Agent registered successfully!', type: 'success' });
+      setToast({ message: t('Agent registered successfully!'), type: 'success' });
       setTimeout(() => navigate('/'), 1500);
     } catch (error: unknown) {
       const axiosError = error as { response?: { data?: { detail?: string | { message?: string } } } };
-      let message = 'Failed to register agent';
+      let message = t('Failed to register agent');
       if (axiosError.response?.data?.detail) {
         if (typeof axiosError.response.data.detail === 'string') {
           message = axiosError.response.data.detail;
@@ -831,7 +833,7 @@ const RegisterPage: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [agentForm, navigate]);
+  }, [agentForm, navigate, t]);
 
 
   const handleServerSubmit = useCallback(async (e: React.FormEvent) => {
@@ -956,26 +958,26 @@ const RegisterPage: React.FC = () => {
         {/* Required Fields */}
         <div className="md:col-span-2">
           <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-4 flex items-center">
-            <span className="bg-purple-100 dark:bg-purple-900 text-purple-600 dark:text-purple-300 px-2 py-1 rounded text-xs mr-2">Required</span>
-            Basic Information
+            <span className="bg-purple-100 dark:bg-purple-900 text-purple-600 dark:text-purple-300 px-2 py-1 rounded text-xs mr-2">{t('Required')}</span>
+            {t('Basic Information')}
           </h3>
         </div>
 
         <div>
-          <label className={labelClass}>Server Name *</label>
+          <label className={labelClass}>{t('Server Name *')}</label>
           <input
             type="text"
             required
             className={`${inputClass} ${errors.name ? 'border-red-500' : ''}`}
             value={serverForm.name}
             onChange={(e) => handleServerNameChange(e.target.value)}
-            placeholder="e.g., My Custom Server"
+            placeholder={t('e.g., My Custom Server')}
           />
           {errors.name && <p className={errorClass}>{errors.name}</p>}
         </div>
 
         <div>
-          <label className={labelClass}>Path *</label>
+          <label className={labelClass}>{t('Path *')}</label>
           <input
             type="text"
             required
@@ -984,12 +986,12 @@ const RegisterPage: React.FC = () => {
             onChange={(e) => setServerForm(prev => ({ ...prev, path: e.target.value }))}
             placeholder="/my-server"
           />
-          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">Auto-generated from name, but can be customized</p>
+          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">{t('Auto-generated from name, but can be customized')}</p>
           {errors.path && <p className={errorClass}>{errors.path}</p>}
         </div>
 
         <div className="md:col-span-2">
-          <label className={labelClass}>Deployment Type *</label>
+          <label className={labelClass}>{t('Deployment Type *')}</label>
           <div className="flex gap-2">
             <button
               type="button"
@@ -1000,7 +1002,7 @@ const RegisterPage: React.FC = () => {
               }`}
               onClick={() => setServerForm(prev => ({ ...prev, deployment: 'remote' }))}
             >
-              Remote (HTTP)
+              {t('Remote (HTTP)')}
             </button>
             <button
               type="button"
@@ -1021,18 +1023,17 @@ const RegisterPage: React.FC = () => {
                 }))
               }
             >
-              Local (stdio)
+              {t('Local (stdio)')}
             </button>
           </div>
           <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-            Local servers run on the developer&apos;s machine via a launch recipe (npx, docker, uvx, command).
-            Registry stores the recipe — it does NOT execute the server.
+            {t("Local servers run on the developer's machine via a launch recipe (npx, docker, uvx, command). Registry stores the recipe — it does NOT execute the server.")}
           </p>
         </div>
 
         {serverForm.deployment === 'remote' && (
           <div className="md:col-span-2">
-            <label className={labelClass}>Proxy URL *</label>
+            <label className={labelClass}>{t('Proxy URL *')}</label>
             <input
               type="url"
               className={`${inputClass} ${errors.proxy_pass_url ? 'border-red-500' : ''}`}
@@ -1062,14 +1063,14 @@ const RegisterPage: React.FC = () => {
         )}
 
         <div className="md:col-span-2">
-          <label className={labelClass}>Description *</label>
+          <label className={labelClass}>{t('Description *')}</label>
           <textarea
             required
             className={`${inputClass} ${errors.description ? 'border-red-500' : ''}`}
             rows={3}
             value={serverForm.description}
             onChange={(e) => setServerForm(prev => ({ ...prev, description: e.target.value }))}
-            placeholder="Brief description of the server and its capabilities"
+            placeholder={t('Brief description of the server and its capabilities')}
           />
             {errors.description && <p className={errorClass}>{errors.description}</p>}
         </div>
@@ -1077,13 +1078,13 @@ const RegisterPage: React.FC = () => {
         {/* Optional Fields */}
         <div className="md:col-span-2 mt-4">
           <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-4 flex items-center">
-            <span className="bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 px-2 py-1 rounded text-xs mr-2">Optional</span>
-            Additional Settings
+            <span className="bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 px-2 py-1 rounded text-xs mr-2">{t('Optional')}</span>
+            {t('Additional Settings')}
           </h3>
         </div>
 
         <div>
-          <label className={labelClass}>Tags</label>
+          <label className={labelClass}>{t('Tags')}</label>
           <input
             type="text"
             className={inputClass}
@@ -1091,24 +1092,24 @@ const RegisterPage: React.FC = () => {
             onChange={(e) => setServerForm(prev => ({ ...prev, tags: e.target.value }))}
             placeholder="tag1, tag2, tag3"
           />
-          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">Comma-separated list</p>
+          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">{t('Comma-separated list')}</p>
         </div>
 
         <div>
-          <label className={labelClass}>Visibility</label>
+          <label className={labelClass}>{t('Visibility')}</label>
           <select
             className={inputClass}
             value={serverForm.visibility}
             onChange={(e) => setServerForm(prev => ({ ...prev, visibility: e.target.value }))}
           >
-            <option value="public">Public</option>
-            <option value="private">Private</option>
-            <option value="group-restricted">Group Restricted</option>
+            <option value="public">{t('Public')}</option>
+            <option value="private">{t('Private')}</option>
+            <option value="group-restricted">{t('Group Restricted')}</option>
           </select>
         </div>
 
         <div className="md:col-span-2">
-          <label className={labelClass}>Repository URL</label>
+          <label className={labelClass}>{t('Repository URL')}</label>
           <input
             type="url"
             className={inputClass}
@@ -1165,9 +1166,7 @@ const RegisterPage: React.FC = () => {
                   onChange={(patch) => setServerForm((prev) => ({ ...prev, ...patch }))}
                   footer={
                     <p className="text-xs text-gray-500 dark:text-gray-400">
-                      After registering, open this server in Edit and use
-                      &ldquo;Connect account for discovery&rdquo; to grant the registry an
-                      account for headless discovery.
+                      {t('After registering, open this server in Edit and use “Connect account for discovery” to grant the registry an account for headless discovery.')}
                     </p>
                   }
                 />
@@ -1176,13 +1175,13 @@ const RegisterPage: React.FC = () => {
 
             <div className="md:col-span-2 mt-4">
               <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-4 flex items-center">
-                <span className="bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 px-2 py-1 rounded text-xs mr-2">Advanced</span>
-                Custom Endpoints
+                <span className="bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 px-2 py-1 rounded text-xs mr-2">{t('Advanced')}</span>
+                {t('Custom Endpoints')}
               </h3>
             </div>
 
             <div>
-              <label className={labelClass}>MCP Endpoint (optional)</label>
+              <label className={labelClass}>{t('MCP Endpoint (optional)')}</label>
               <input
                 type="url"
                 className={inputClass}
@@ -1190,11 +1189,11 @@ const RegisterPage: React.FC = () => {
                 onChange={(e) => setServerForm(prev => ({ ...prev, mcp_endpoint: e.target.value }))}
                 placeholder="http://server.com/custom-mcp-path"
               />
-              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">Override default /mcp endpoint path</p>
+              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">{t('Override default /mcp endpoint path')}</p>
             </div>
 
             <div>
-              <label className={labelClass}>SSE Endpoint (optional)</label>
+              <label className={labelClass}>{t('SSE Endpoint (optional)')}</label>
               <input
                 type="url"
                 className={inputClass}
@@ -1202,7 +1201,7 @@ const RegisterPage: React.FC = () => {
                 onChange={(e) => setServerForm(prev => ({ ...prev, sse_endpoint: e.target.value }))}
                 placeholder="http://server.com/custom-sse-path"
               />
-              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">Override default /sse endpoint path</p>
+              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">{t('Override default /sse endpoint path')}</p>
             </div>
           </>
         )}
@@ -1211,11 +1210,10 @@ const RegisterPage: React.FC = () => {
         {serverForm.deployment === 'remote' && (
           <div className="md:col-span-2 mt-4">
             <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-4">
-              Additional Headers
+              {t('Additional Headers')}
             </h3>
             <p className="text-sm text-gray-500 dark:text-gray-400 mb-3">
-              Fixed HTTP headers your MCP server requires beyond authentication.
-              Values are encrypted at rest and included in the Connect JSON.
+              {t('Fixed HTTP headers your MCP server requires beyond authentication. Values are encrypted at rest and included in the Connect JSON.')}
             </p>
             {(serverForm.custom_headers || []).map((h, idx) => (
               <div key={idx} className="flex gap-2 mb-2">
@@ -1232,7 +1230,7 @@ const RegisterPage: React.FC = () => {
                 />
                 <input
                   type="text"
-                  placeholder="header value"
+                  placeholder={t('header value')}
                   value={h.value}
                   onChange={(e) => {
                     const updated = [...serverForm.custom_headers];
@@ -1249,7 +1247,7 @@ const RegisterPage: React.FC = () => {
                   }}
                   className="px-3 py-2 text-sm text-red-600 hover:text-red-800 dark:text-red-400"
                 >
-                  Remove
+                  {t('Remove')}
                 </button>
               </div>
             ))}
@@ -1264,14 +1262,14 @@ const RegisterPage: React.FC = () => {
                 }}
                 className="text-sm text-blue-600 hover:text-blue-800 dark:text-blue-400"
               >
-                + Add header
+                {t('+ Add header')}
               </button>
             )}
           </div>
         )}
 
         <div className="md:col-span-2">
-          <label className={labelClass}>Metadata (optional, JSON)</label>
+          <label className={labelClass}>{t('Metadata (optional, JSON)')}</label>
           <textarea
             className={inputClass}
             rows={3}
@@ -1279,7 +1277,7 @@ const RegisterPage: React.FC = () => {
             onChange={(e) => setServerForm(prev => ({ ...prev, metadata: e.target.value }))}
             placeholder='{"team": "platform", "owner": "alice@example.com", "cost_center": "CC-1001"}'
           />
-          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">Custom key-value pairs for organization, compliance, or integration purposes</p>
+          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">{t('Custom key-value pairs for organization, compliance, or integration purposes')}</p>
         </div>
       </div>
 
@@ -1287,27 +1285,27 @@ const RegisterPage: React.FC = () => {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <div className="md:col-span-2">
           <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-4">
-            Lifecycle & Provider Information
+            {t('Lifecycle & Provider Information')}
           </h3>
         </div>
 
         <div>
-          <label className={labelClass}>Status</label>
+          <label className={labelClass}>{t('Status')}</label>
           <select
             className={inputClass}
             value={serverForm.status}
             onChange={(e) => setServerForm(prev => ({ ...prev, status: e.target.value }))}
           >
-            <option value="active">Active</option>
-            <option value="beta">Beta</option>
-            <option value="draft">Draft</option>
-            <option value="deprecated">Deprecated</option>
+            <option value="active">{t('Active')}</option>
+            <option value="beta">{t('Beta')}</option>
+            <option value="draft">{t('Draft')}</option>
+            <option value="deprecated">{t('Deprecated')}</option>
           </select>
-          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">Lifecycle status of this server</p>
+          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">{t('Lifecycle status of this server')}</p>
         </div>
 
         <div>
-          <label className={labelClass}>Provider Organization</label>
+          <label className={labelClass}>{t('Provider Organization')}</label>
           <input
             type="text"
             className={inputClass}
@@ -1315,11 +1313,11 @@ const RegisterPage: React.FC = () => {
             onChange={(e) => setServerForm(prev => ({ ...prev, provider_organization: e.target.value }))}
             placeholder="ACME Inc."
           />
-          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">Organization providing this server</p>
+          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">{t('Organization providing this server')}</p>
         </div>
 
         <div>
-          <label className={labelClass}>Provider URL</label>
+          <label className={labelClass}>{t('Provider URL')}</label>
           <input
             type="url"
             className={inputClass}
@@ -1327,17 +1325,17 @@ const RegisterPage: React.FC = () => {
             onChange={(e) => setServerForm(prev => ({ ...prev, provider_url: e.target.value }))}
             placeholder="https://example.com"
           />
-          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">Provider's website or documentation URL</p>
+          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">{t("Provider's website or documentation URL")}</p>
         </div>
 
       </div>
 
       <div className="flex justify-end space-x-3 pt-6 border-t border-gray-200 dark:border-gray-700">
         <Button variant="secondary" onClick={() => navigate('/')}>
-          Cancel
+          {t('Cancel')}
         </Button>
         <Button variant="primary" type="submit" disabled={loading} className="px-6">
-          {loading ? 'Registering...' : 'Register Server'}
+          {loading ? t('Registering...') : t('Register Server')}
         </Button>
       </div>
     </form>
@@ -1350,26 +1348,26 @@ const RegisterPage: React.FC = () => {
         {/* Required Fields */}
         <div className="md:col-span-2">
           <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-4 flex items-center">
-            <span className="bg-purple-100 dark:bg-purple-900 text-purple-600 dark:text-purple-300 px-2 py-1 rounded text-xs mr-2">Required</span>
-            Basic Information
+            <span className="bg-purple-100 dark:bg-purple-900 text-purple-600 dark:text-purple-300 px-2 py-1 rounded text-xs mr-2">{t('Required')}</span>
+            {t('Basic Information')}
           </h3>
         </div>
 
         <div>
-          <label className={labelClass}>Agent Name *</label>
+          <label className={labelClass}>{t('Agent Name *')}</label>
           <input
             type="text"
             required
             className={`${inputClass} ${errors.name ? 'border-red-500' : ''}`}
             value={agentForm.name}
             onChange={(e) => handleAgentNameChange(e.target.value)}
-            placeholder="e.g., My AI Agent"
+            placeholder={t('e.g., My AI Agent')}
           />
           {errors.name && <p className={errorClass}>{errors.name}</p>}
         </div>
 
         <div>
-          <label className={labelClass}>Path (auto-generated)</label>
+          <label className={labelClass}>{t('Path (auto-generated)')}</label>
           <input
             type="text"
             className={`${inputClass} ${errors.path ? 'border-red-500' : ''}`}
@@ -1377,12 +1375,12 @@ const RegisterPage: React.FC = () => {
             onChange={(e) => setAgentForm(prev => ({ ...prev, path: e.target.value }))}
             placeholder="/my-agent"
           />
-          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">Leave empty to auto-generate from name</p>
+          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">{t('Leave empty to auto-generate from name')}</p>
           {errors.path && <p className={errorClass}>{errors.path}</p>}
         </div>
 
         <div className="md:col-span-2">
-          <label className={labelClass}>Agent URL *</label>
+          <label className={labelClass}>{t('Agent URL *')}</label>
           <input
             type="url"
             required
@@ -1391,19 +1389,19 @@ const RegisterPage: React.FC = () => {
             onChange={(e) => setAgentForm(prev => ({ ...prev, url: e.target.value }))}
             placeholder="https://my-agent.example.com"
           />
-          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">The endpoint URL where the agent can be reached</p>
+          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">{t('The endpoint URL where the agent can be reached')}</p>
           {errors.url && <p className={errorClass}>{errors.url}</p>}
         </div>
 
         <div className="md:col-span-2">
-          <label className={labelClass}>Description *</label>
+          <label className={labelClass}>{t('Description *')}</label>
           <textarea
             required
             className={`${inputClass} ${errors.description ? 'border-red-500' : ''}`}
             rows={3}
             value={agentForm.description}
             onChange={(e) => setAgentForm(prev => ({ ...prev, description: e.target.value }))}
-            placeholder="Describe what your agent does and its capabilities"
+            placeholder={t('Describe what your agent does and its capabilities')}
           />
           {errors.description && <p className={errorClass}>{errors.description}</p>}
         </div>
@@ -1411,7 +1409,7 @@ const RegisterPage: React.FC = () => {
         {/* Supported Protocol */}
         <div className="md:col-span-2">
           <label className={labelClass}>
-            Supported Protocol <span className="text-red-500">*</span>
+            {t('Supported Protocol')} <span className="text-red-500">*</span>
           </label>
           <div className="flex items-center gap-4 mt-2">
             <label className="flex items-center gap-2 cursor-pointer">
@@ -1427,26 +1425,26 @@ const RegisterPage: React.FC = () => {
                            dark:bg-gray-700"
               />
               <span className="text-sm text-gray-700 dark:text-gray-300">
-                This agent supports the A2A protocol
+                {t('This agent supports the A2A protocol')}
               </span>
             </label>
           </div>
           <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-            Check if this agent implements the
+            {t('Check if this agent implements the')}{' '}
             <a href="https://a2a-protocol.org/latest/specification/"
                target="_blank" rel="noopener noreferrer"
                className="text-cyan-600 hover:underline ml-1">
-              A2A (Agent-to-Agent) protocol
-            </a>.
-            The A2A agent card schema is used for all agents as a standardized representation.
+              {t('A2A (Agent-to-Agent) protocol')}
+            </a>
+            {t('. The A2A agent card schema is used for all agents as a standardized representation.')}
           </p>
         </div>
 
         {/* Optional Fields */}
         <div className="md:col-span-2 mt-4">
           <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-4 flex items-center">
-            <span className="bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 px-2 py-1 rounded text-xs mr-2">Optional</span>
-            Additional Settings
+            <span className="bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 px-2 py-1 rounded text-xs mr-2">{t('Optional')}</span>
+            {t('Additional Settings')}
           </h3>
         </div>
 
@@ -1461,7 +1459,7 @@ const RegisterPage: React.FC = () => {
         </div>
 
         <div>
-          <label className={labelClass}>Protocol Version</label>
+          <label className={labelClass}>{t('Protocol Version')}</label>
           <input
             type="text"
             className={inputClass}
@@ -1472,7 +1470,7 @@ const RegisterPage: React.FC = () => {
         </div>
 
         <div>
-          <label className={labelClass}>Agent Version</label>
+          <label className={labelClass}>{t('Agent Version')}</label>
           <input
             type="text"
             className={inputClass}
@@ -1483,7 +1481,7 @@ const RegisterPage: React.FC = () => {
         </div>
 
         <div>
-          <label className={labelClass}>Tags</label>
+          <label className={labelClass}>{t('Tags')}</label>
           <input
             type="text"
             className={inputClass}
@@ -1491,11 +1489,11 @@ const RegisterPage: React.FC = () => {
             onChange={(e) => setAgentForm(prev => ({ ...prev, tags: e.target.value }))}
             placeholder="ai, assistant, nlp"
           />
-          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">Comma-separated list</p>
+          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">{t('Comma-separated list')}</p>
         </div>
 
         <div className="md:col-span-2">
-          <label className={labelClass}>Custom Metadata (JSON, optional)</label>
+          <label className={labelClass}>{t('Custom Metadata (JSON, optional)')}</label>
           <textarea
             className={inputClass}
             rows={3}
@@ -1504,12 +1502,12 @@ const RegisterPage: React.FC = () => {
             placeholder='{"team": "platform", "owner": "alice@example.com", "cost_center": "CC-1001"}'
           />
           <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-            Custom key-value pairs for organization, compliance, or integration purposes
+            {t('Custom key-value pairs for organization, compliance, or integration purposes')}
           </p>
         </div>
 
         <div className="md:col-span-2">
-          <label className={labelClass}>Skills (JSON array, optional)</label>
+          <label className={labelClass}>{t('Skills (JSON array, optional)')}</label>
           <textarea
             className={`${inputClass} font-mono text-xs ${errors.skills_json ? 'border-red-500 dark:border-red-400' : ''}`}
             rows={8}
@@ -1531,39 +1529,39 @@ const RegisterPage: React.FC = () => {
             <p className="mt-1 text-xs text-red-600 dark:text-red-400">{errors.skills_json}</p>
           )}
           <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-            Each skill needs at least: id, name, description.
+            {t('Each skill needs at least: id, name, description.')}
           </p>
         </div>
 
         <div>
-          <label className={labelClass}>Visibility</label>
+          <label className={labelClass}>{t('Visibility')}</label>
           <select
             className={inputClass}
             value={agentForm.visibility}
             onChange={(e) => setAgentForm(prev => ({ ...prev, visibility: e.target.value }))}
           >
-            <option value="public">Public</option>
-            <option value="private">Private</option>
-            <option value="group-restricted">Group Restricted</option>
+            <option value="public">{t('Public')}</option>
+            <option value="private">{t('Private')}</option>
+            <option value="group-restricted">{t('Group Restricted')}</option>
           </select>
         </div>
 
         {agentForm.visibility === 'group-restricted' && (
           <div>
-            <label className={labelClass}>Allowed Groups</label>
+            <label className={labelClass}>{t('Allowed Groups')}</label>
             <input
               type="text"
               className={inputClass}
               value={agentForm.allowed_groups}
               onChange={(e) => setAgentForm(prev => ({ ...prev, allowed_groups: e.target.value }))}
-              placeholder="e.g. finance-team, engineering"
+              placeholder={t('e.g. finance-team, engineering')}
             />
             <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-              Comma-separated list of groups that can access this agent
+              {t('Comma-separated list of groups that can access this agent')}
             </p>
             {agentForm.allowed_groups.trim() === '' && (
               <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
-                At least one group is required for group-restricted visibility
+                {t('At least one group is required for group-restricted visibility')}
               </p>
             )}
           </div>
@@ -1571,16 +1569,16 @@ const RegisterPage: React.FC = () => {
 
         {/* Trust Level */}
         <div>
-          <label className={labelClass}>Trust Level</label>
+          <label className={labelClass}>{t('Trust Level')}</label>
           <select
             value={agentForm.trust_level}
             onChange={(e) => setAgentForm(prev => ({ ...prev, trust_level: e.target.value }))}
             className={inputClass}
           >
-            <option value="community">Community</option>
-            <option value="unverified">Unverified</option>
-            <option value="verified">Verified</option>
-            <option value="trusted">Trusted</option>
+            <option value="community">{t('Community')}</option>
+            <option value="unverified">{t('Unverified')}</option>
+            <option value="verified">{t('Verified')}</option>
+            <option value="trusted">{t('Trusted')}</option>
           </select>
         </div>
 
@@ -1592,12 +1590,12 @@ const RegisterPage: React.FC = () => {
               checked={agentForm.streaming}
               onChange={(e) => setAgentForm(prev => ({ ...prev, streaming: e.target.checked }))}
             />
-            <span className="ml-2 text-sm text-gray-700 dark:text-gray-200">Supports streaming responses</span>
+            <span className="ml-2 text-sm text-gray-700 dark:text-gray-200">{t('Supports streaming responses')}</span>
           </label>
         </div>
 
         <div className="md:col-span-2">
-          <label className={labelClass}>Repository URL</label>
+          <label className={labelClass}>{t('Repository URL')}</label>
           <input
             type="url"
             className={inputClass}
@@ -1612,27 +1610,27 @@ const RegisterPage: React.FC = () => {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <div className="md:col-span-2">
           <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-4">
-            Lifecycle & Provider Information
+            {t('Lifecycle & Provider Information')}
           </h3>
         </div>
 
         <div>
-          <label className={labelClass}>Status</label>
+          <label className={labelClass}>{t('Status')}</label>
           <select
             className={inputClass}
             value={agentForm.status}
             onChange={(e) => setAgentForm(prev => ({ ...prev, status: e.target.value }))}
           >
-            <option value="active">Active</option>
-            <option value="beta">Beta</option>
-            <option value="draft">Draft</option>
-            <option value="deprecated">Deprecated</option>
+            <option value="active">{t('Active')}</option>
+            <option value="beta">{t('Beta')}</option>
+            <option value="draft">{t('Draft')}</option>
+            <option value="deprecated">{t('Deprecated')}</option>
           </select>
-          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">Lifecycle status of this agent</p>
+          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">{t('Lifecycle status of this agent')}</p>
         </div>
 
         <div>
-          <label className={labelClass}>Provider Organization</label>
+          <label className={labelClass}>{t('Provider Organization')}</label>
           <input
             type="text"
             className={inputClass}
@@ -1640,11 +1638,11 @@ const RegisterPage: React.FC = () => {
             onChange={(e) => setAgentForm(prev => ({ ...prev, provider_organization: e.target.value }))}
             placeholder="ACME Inc."
           />
-          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">Organization providing this agent</p>
+          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">{t('Organization providing this agent')}</p>
         </div>
 
         <div>
-          <label className={labelClass}>Provider URL</label>
+          <label className={labelClass}>{t('Provider URL')}</label>
           <input
             type="url"
             className={inputClass}
@@ -1652,11 +1650,11 @@ const RegisterPage: React.FC = () => {
             onChange={(e) => setAgentForm(prev => ({ ...prev, provider_url: e.target.value }))}
             placeholder="https://example.com"
           />
-          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">Provider's website or documentation URL</p>
+          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">{t("Provider's website or documentation URL")}</p>
         </div>
 
         <div className="col-span-2">
-          <label className={labelClass}>ANS Agent ID (Optional)</label>
+          <label className={labelClass}>{t('ANS Agent ID (Optional)')}</label>
           <input
             type="text"
             className={inputClass}
@@ -1665,8 +1663,7 @@ const RegisterPage: React.FC = () => {
             placeholder="ans://v1.0.0.myagent.example.com"
           />
           <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-            If your agent is registered with GoDaddy ANS (Agent Name Service), enter the ANS Agent ID to display a verification badge.
-            The ID will be verified against the ANS registry during registration.
+            {t('If your agent is registered with GoDaddy ANS (Agent Name Service), enter the ANS Agent ID to display a verification badge. The ID will be verified against the ANS registry during registration.')}
           </p>
         </div>
 
@@ -1674,10 +1671,10 @@ const RegisterPage: React.FC = () => {
 
       <div className="flex justify-end space-x-3 pt-6 border-t border-gray-200 dark:border-gray-700">
         <Button variant="secondary" onClick={() => navigate('/')}>
-          Cancel
+          {t('Cancel')}
         </Button>
         <Button variant="primary" type="submit" disabled={loading} className="px-6">
-          {loading ? 'Registering...' : 'Register Agent'}
+          {loading ? t('Registering...') : t('Register Agent')}
         </Button>
       </div>
     </form>
@@ -1692,9 +1689,9 @@ const RegisterPage: React.FC = () => {
         <div className="mt-4">
           <label htmlFor="json-upload" className="cursor-pointer">
             <span className="text-purple-600 dark:text-purple-400 hover:text-purple-500 font-medium">
-              Upload a file
+              {t('Upload a file')}
             </span>
-            <span className="text-gray-500 dark:text-gray-400"> or drag and drop</span>
+            <span className="text-gray-500 dark:text-gray-400">{' '}{t('or drag and drop')}</span>
           </label>
           <input
             id="json-upload"
@@ -1705,14 +1702,14 @@ const RegisterPage: React.FC = () => {
           />
         </div>
         <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
-          {registrationType === 'server' ? 'modelcard.json' : 'agentcard.json'} (JSON format)
+          {registrationType === 'server' ? 'modelcard.json' : 'agentcard.json'}{' '}{t('(JSON format)')}
         </p>
       </div>
 
       {/* JSON Preview */}
       {jsonContent && (
         <div>
-          <label className={labelClass}>JSON Preview</label>
+          <label className={labelClass}>{t('JSON Preview')}</label>
           <div className="relative">
             <pre className="bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg p-4 overflow-auto max-h-64 text-sm text-gray-800 dark:text-gray-200">
               {jsonContent}
@@ -1728,7 +1725,7 @@ const RegisterPage: React.FC = () => {
             <InformationCircleIcon className="h-5 w-5 text-amber-500 flex-shrink-0" />
             <div className="ml-3">
               <h4 className="text-sm font-medium text-amber-800 dark:text-amber-200">
-                MCP Registry Format Detected
+                {t('MCP Registry Format Detected')}
               </h4>
               <p className="mt-1 text-sm text-amber-700 dark:text-amber-300">
                 {mcpRegistryNotice}
@@ -1744,11 +1741,10 @@ const RegisterPage: React.FC = () => {
           <InformationCircleIcon className="h-5 w-5 text-blue-400 flex-shrink-0" />
           <div className="ml-3">
             <h4 className="text-sm font-medium text-blue-800 dark:text-blue-200">
-              About JSON Upload
+              {t('About JSON Upload')}
             </h4>
             <p className="mt-1 text-sm text-blue-700 dark:text-blue-300">
-              Upload a {registrationType === 'server' ? 'modelcard.json' : 'agentcard.json'} file to automatically populate the form fields.
-              You can then review and modify the values before submitting.
+              {t('Upload a {file} file to automatically populate the form fields. You can then review and modify the values before submitting.', { file: registrationType === 'server' ? 'modelcard.json' : 'agentcard.json' })}
             </p>
           </div>
         </div>
@@ -1758,7 +1754,7 @@ const RegisterPage: React.FC = () => {
       {jsonContent && (
         <div className="pt-6 border-t border-gray-200 dark:border-gray-700">
           <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-4">
-            Review and Submit
+            {t('Review and Submit')}
           </h3>
           {registrationType === 'server' ? renderServerForm() : renderAgentForm()}
         </div>
@@ -1768,7 +1764,7 @@ const RegisterPage: React.FC = () => {
       {!jsonContent && (
         <div className="flex justify-end pt-6 border-t border-gray-200 dark:border-gray-700">
           <Button variant="secondary" onClick={() => navigate('/')}>
-            Cancel
+            {t('Cancel')}
           </Button>
         </div>
       )}
@@ -1786,17 +1782,16 @@ const RegisterPage: React.FC = () => {
         <div className="bg-yellow-50 dark:bg-yellow-900/30 border border-yellow-200 dark:border-yellow-800 rounded-lg p-6 text-center">
           <ExclamationCircleIcon className="mx-auto h-12 w-12 text-yellow-400" />
           <h3 className="mt-4 text-lg font-medium text-yellow-800 dark:text-yellow-200">
-            Permission Required
+            {t('Permission Required')}
           </h3>
           <p className="mt-2 text-sm text-yellow-700 dark:text-yellow-300">
-            You do not have permission to register servers or agents.
-            Please contact an administrator to request access.
+            {t('You do not have permission to register servers or agents. Please contact an administrator to request access.')}
           </p>
           <button
             onClick={() => navigate('/')}
             className="mt-4 px-4 py-2 text-sm font-medium text-yellow-800 dark:text-yellow-200 bg-yellow-100 dark:bg-yellow-900 hover:bg-yellow-200 dark:hover:bg-yellow-800 rounded-md transition-colors"
           >
-            Return to Dashboard
+            {t('Return to Dashboard')}
           </button>
         </div>
       </div>
@@ -1832,20 +1827,20 @@ const RegisterPage: React.FC = () => {
           className="flex items-center text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white mb-4 transition-colors"
         >
           <ArrowLeftIcon className="h-4 w-4 mr-2" />
-          Back to Dashboard
+          {t('Back to Dashboard')}
         </button>
         <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
-          Register New Service
+          {t('Register New Service')}
         </h1>
         <p className="mt-2 text-gray-600 dark:text-gray-400">
-          Register a new MCP server or A2A agent to the gateway registry.
+          {t('Register a new MCP server or A2A agent to the gateway registry.')}
         </p>
       </div>
 
       {/* Registration Type Selector */}
       <div className="mb-8">
         <label className="block text-sm font-medium text-gray-700 dark:text-gray-200 mb-3">
-          What would you like to register?
+          {t('What would you like to register?')}
         </label>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <button
@@ -1865,10 +1860,10 @@ const RegisterPage: React.FC = () => {
               <p className={`font-medium ${
                 registrationType === 'server' ? 'text-purple-900 dark:text-purple-100' : 'text-gray-900 dark:text-white'
               }`}>
-                MCP Server
+                {t('MCP Server')}
               </p>
               <p className="text-sm text-gray-500 dark:text-gray-400">
-                Model Context Protocol server
+                {t('Model Context Protocol server')}
               </p>
             </div>
             {registrationType === 'server' && (
@@ -1893,10 +1888,10 @@ const RegisterPage: React.FC = () => {
               <p className={`font-medium ${
                 registrationType === 'agent' ? 'text-purple-900 dark:text-purple-100' : 'text-gray-900 dark:text-white'
               }`}>
-                A2A Agent
+                {t('A2A Agent')}
               </p>
               <p className="text-sm text-gray-500 dark:text-gray-400">
-                Agent-to-Agent protocol agent
+                {t('Agent-to-Agent protocol agent')}
               </p>
             </div>
             {registrationType === 'agent' && (
@@ -1909,7 +1904,7 @@ const RegisterPage: React.FC = () => {
       {/* Registration Mode Selector */}
       <div className="mb-8">
         <label className="block text-sm font-medium text-gray-700 dark:text-gray-200 mb-3">
-          Registration Method
+          {t('Registration Method')}
         </label>
         <div className="flex space-x-4">
           <button
@@ -1922,7 +1917,7 @@ const RegisterPage: React.FC = () => {
             }`}
           >
             <DocumentTextIcon className="h-5 w-5 mr-2" />
-            Quick Form
+            {t('Quick Form')}
           </button>
           <button
             type="button"
@@ -1934,7 +1929,7 @@ const RegisterPage: React.FC = () => {
             }`}
           >
             <CloudArrowUpIcon className="h-5 w-5 mr-2" />
-            JSON Upload
+            {t('JSON Upload')}
           </button>
         </div>
       </div>

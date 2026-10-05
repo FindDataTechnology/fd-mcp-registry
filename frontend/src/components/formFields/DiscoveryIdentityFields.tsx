@@ -1,5 +1,6 @@
 import React from 'react';
 import { FIELD, LABEL } from './formClasses';
+import { useI18n } from '../../contexts/I18nContext';
 
 /**
  * The subset of server-form state this block reads/writes. Both the register
@@ -41,38 +42,37 @@ interface Props {
  * gates on. Persisted via `PUT/DELETE /servers/{path}/oauth-discovery`. Shared
  * by the register form and the server edit modal so the two never drift.
  */
-const DiscoveryIdentityFields: React.FC<Props> = ({ values, onChange, editing, footer }) => (
+const DiscoveryIdentityFields: React.FC<Props> = ({ values, onChange, editing, footer }) => {
+  const { t } = useI18n();
+  return (
   <div className="border-t border-gray-200 dark:border-gray-700 pt-4 mt-4">
     <h4 className="text-sm font-semibold text-gray-900 dark:text-white mb-2">
-      Discovery Identity (OAuth 2.1)
+      {t('Discovery Identity (OAuth 2.1)')}
     </h4>
     <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
-      For OAuth 2.1 servers with no machine grant, the registry borrows THIS
-      admin&apos;s connected account for its own headless health checks and tool
-      discovery. Discovery reflects that account&apos;s visibility and pauses if the
-      token expires. Saving designates you.
+      {t('For OAuth 2.1 servers with no machine grant, the registry borrows THIS admin\'s connected account for its own headless health checks and tool discovery. Discovery reflects that account\'s visibility and pauses if the token expires. Saving designates you.')}
     </p>
     <div className="space-y-3">
       <div>
-        <label className={LABEL}>Provider</label>
+        <label className={LABEL}>{t('Provider')}</label>
         <select
           value={values.oauth_discovery_provider}
           onChange={(e) => onChange({ oauth_discovery_provider: e.target.value })}
           className={FIELD}
         >
-          <option value="">Select…</option>
+          <option value="">{t('Select…')}</option>
           <option value="github">GitHub</option>
           <option value="google">Google</option>
           <option value="atlassian">Atlassian</option>
           <option value="microsoft">Microsoft</option>
           <option value="slack">Slack</option>
-          <option value="custom">Custom (OAuth 2.1)</option>
+          <option value="custom">{t('Custom (OAuth 2.1)')}</option>
         </select>
       </div>
       {values.oauth_discovery_provider && (
         <>
           <div>
-            <label className={LABEL}>Client ID</label>
+            <label className={LABEL}>{t('Client ID')}</label>
             <input
               type="text"
               value={values.oauth_discovery_client_id}
@@ -87,19 +87,19 @@ const DiscoveryIdentityFields: React.FC<Props> = ({ values, onChange, editing, f
             values.oauth_discovery_custom_token_auth_style === 'none'
           ) && (
             <div>
-              <label className={LABEL}>Client Secret</label>
+              <label className={LABEL}>{t('Client Secret')}</label>
               <input
                 type="password"
                 value={values.oauth_discovery_client_secret}
                 onChange={(e) => onChange({ oauth_discovery_client_secret: e.target.value })}
-                placeholder={editing ? 'leave blank to keep current' : ''}
+                placeholder={editing ? t('leave blank to keep current') : ''}
                 autoComplete="new-password"
                 className={FIELD}
               />
             </div>
           )}
           <div>
-            <label className={LABEL}>Scopes</label>
+            <label className={LABEL}>{t('Scopes')}</label>
             <input
               type="text"
               value={values.oauth_discovery_scopes}
@@ -111,7 +111,7 @@ const DiscoveryIdentityFields: React.FC<Props> = ({ values, onChange, editing, f
           {values.oauth_discovery_provider === 'custom' && (
             <>
               <div>
-                <label className={LABEL}>Authorize URL</label>
+                <label className={LABEL}>{t('Authorize URL')}</label>
                 <input
                   type="text"
                   value={values.oauth_discovery_custom_authorize_url}
@@ -123,7 +123,7 @@ const DiscoveryIdentityFields: React.FC<Props> = ({ values, onChange, editing, f
                 />
               </div>
               <div>
-                <label className={LABEL}>Token URL</label>
+                <label className={LABEL}>{t('Token URL')}</label>
                 <input
                   type="text"
                   value={values.oauth_discovery_custom_token_url}
@@ -135,19 +135,19 @@ const DiscoveryIdentityFields: React.FC<Props> = ({ values, onChange, editing, f
                 />
               </div>
               <div>
-                <label className={LABEL}>Scope Separator</label>
+                <label className={LABEL}>{t('Scope Separator')}</label>
                 <input
                   type="text"
                   value={values.oauth_discovery_custom_scope_separator}
                   onChange={(e) =>
                     onChange({ oauth_discovery_custom_scope_separator: e.target.value })
                   }
-                  placeholder="space (default) or comma"
+                  placeholder={t('space (default) or comma')}
                   className={FIELD}
                 />
               </div>
               <div>
-                <label className={LABEL}>Token Endpoint Authentication</label>
+                <label className={LABEL}>{t('Token Endpoint Authentication')}</label>
                 <select
                   value={values.oauth_discovery_custom_token_auth_style || 'post_body'}
                   onChange={(e) =>
@@ -155,13 +155,13 @@ const DiscoveryIdentityFields: React.FC<Props> = ({ values, onChange, editing, f
                   }
                   className={FIELD}
                 >
-                  <option value="post_body">Client secret in POST body</option>
-                  <option value="basic_header">Client secret in Basic header</option>
-                  <option value="none">None — public client (PKCE only)</option>
+                  <option value="post_body">{t('Client secret in POST body')}</option>
+                  <option value="basic_header">{t('Client secret in Basic header')}</option>
+                  <option value="none">{t('None — public client (PKCE only)')}</option>
                 </select>
               </div>
               <div>
-                <label className={LABEL}>Resource (RFC 8707, optional)</label>
+                <label className={LABEL}>{t('Resource (RFC 8707, optional)')}</label>
                 <input
                   type="text"
                   value={values.oauth_discovery_custom_resource}
@@ -179,6 +179,7 @@ const DiscoveryIdentityFields: React.FC<Props> = ({ values, onChange, editing, f
       {footer}
     </div>
   </div>
-);
+  );
+};
 
 export default DiscoveryIdentityFields;

@@ -17,6 +17,7 @@ import CustomEntityDetail from './CustomEntityDetail';
 import CustomEntityForm from './CustomEntityForm';
 import SemanticSearchResults from './SemanticSearchResults';
 import ConfirmModal from './ConfirmModal';
+import { useI18n } from '../contexts/I18nContext';
 
 interface CurrentUser {
   username?: string;
@@ -51,6 +52,7 @@ const CustomEntityTab: React.FC<CustomEntityTabProps> = ({
   authToken,
   onShowToast,
 }) => {
+  const { t } = useI18n();
   const {
     descriptor,
     records,
@@ -104,7 +106,7 @@ const CustomEntityTab: React.FC<CustomEntityTabProps> = ({
       ? records
       : records.filter((record) => {
           if (!record.tags || record.tags.length === 0) return false;
-          const lowerTags = record.tags.map((t) => t.toLowerCase());
+          const lowerTags = record.tags.map((tag) => tag.toLowerCase());
           return selectedTags.every((st) => lowerTags.includes(st.toLowerCase()));
         });
 
@@ -114,7 +116,7 @@ const CustomEntityTab: React.FC<CustomEntityTabProps> = ({
     ? tagFiltered.filter((record) => {
         if (record.name.toLowerCase().includes(query)) return true;
         if ((record.description || '').toLowerCase().includes(query)) return true;
-        if (record.tags.some((t) => t.toLowerCase().includes(query))) return true;
+        if (record.tags.some((tag) => tag.toLowerCase().includes(query))) return true;
         return Object.values(record.attributes).some((v) =>
           String(v ?? '').toLowerCase().includes(query),
         );
@@ -155,7 +157,7 @@ const CustomEntityTab: React.FC<CustomEntityTabProps> = ({
       if (body.is_proxied) {
         await rotateRecordHeaders(uuid, customHeaders ?? []);
       }
-      onShowToast?.(`Updated ${body.name}`, 'success');
+      onShowToast?.(t('Updated {name}', { name: body.name }), 'success');
     } else {
       // Create accepts custom_headers inline on the payload.
       const createBody =
@@ -163,7 +165,7 @@ const CustomEntityTab: React.FC<CustomEntityTabProps> = ({
           ? { ...body, custom_headers: customHeaders }
           : body;
       await createRecord(createBody);
-      onShowToast?.(`Created ${body.name}`, 'success');
+      onShowToast?.(t('Created {name}', { name: body.name }), 'success');
     }
     setShowForm(false);
     setEditing(null);
@@ -174,11 +176,11 @@ const CustomEntityTab: React.FC<CustomEntityTabProps> = ({
     setDeleteLoading(true);
     try {
       await deleteRecord(uuidFromPath(deleting.path));
-      onShowToast?.(`Deleted ${deleting.name}`, 'success');
+      onShowToast?.(t('Deleted {name}', { name: deleting.name }), 'success');
       setDeleting(null);
     } catch (err: unknown) {
       const detail = axios.isAxiosError(err) ? err.response?.data?.detail : undefined;
-      onShowToast?.(detail || 'Failed to delete', 'error');
+      onShowToast?.(detail || t('Failed to delete'), 'error');
     } finally {
       setDeleteLoading(false);
     }
@@ -188,7 +190,7 @@ const CustomEntityTab: React.FC<CustomEntityTabProps> = ({
     return (
       <div className="flex items-center justify-center py-16 text-gray-500 dark:text-gray-400">
         <ArrowPathIcon className="h-5 w-5 animate-spin mr-2" />
-        Loading {displayName}…
+        {t('Loading {name}…', { name: displayName })}
       </div>
     );
   }
@@ -198,7 +200,7 @@ const CustomEntityTab: React.FC<CustomEntityTabProps> = ({
     return (
       <div className="text-center py-16">
         <p className="text-gray-500 dark:text-gray-400">
-          This type no longer exists — refresh to update your tabs.
+          {t('This type no longer exists — refresh to update your tabs.')}
         </p>
       </div>
     );
@@ -222,7 +224,7 @@ const CustomEntityTab: React.FC<CustomEntityTabProps> = ({
                 setCommittedQuery(searchTerm.trim());
               }
             }}
-            placeholder={`Search ${displayName}… (Press Enter for semantic search; typing filters locally.)`}
+            placeholder={t('Search {name}… (Press Enter for semantic search; typing filters locally.)', { name: displayName })}
             className="input pl-10 pr-9 w-full"
           />
           {searchTerm && (
@@ -234,7 +236,7 @@ const CustomEntityTab: React.FC<CustomEntityTabProps> = ({
               }}
               className="absolute inset-y-0 right-0 flex items-center pr-3
                 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
-              aria-label="Clear search"
+              aria-label={t('Clear search')}
             >
               <XMarkIcon className="h-4 w-4" />
             </button>
@@ -247,7 +249,7 @@ const CustomEntityTab: React.FC<CustomEntityTabProps> = ({
           className="btn-primary flex items-center space-x-2 flex-shrink-0"
         >
           <PlusIcon className="h-4 w-4" />
-          <span>Create</span>
+          <span>{t('Create')}</span>
         </button>
       </div>
 
@@ -256,10 +258,13 @@ const CustomEntityTab: React.FC<CustomEntityTabProps> = ({
         <div className="flex items-center justify-between">
           <p className="text-sm text-gray-500 dark:text-gray-300">
             {visibleRecords.length === 0
-              ? `Showing 0 ${displayName}`
-              : `Showing ${safePage * PAGE_SIZE + 1}–${
-                  safePage * PAGE_SIZE + pagedRecords.length
-                } of ${visibleRecords.length} ${displayName}`}
+              ? t('Showing 0 {name}', { name: displayName })
+              : t('Showing {start}–{end} of {total} {name}', {
+                  start: safePage * PAGE_SIZE + 1,
+                  end: safePage * PAGE_SIZE + pagedRecords.length,
+                  total: visibleRecords.length,
+                  name: displayName,
+                })}
           </p>
           {descriptor.description && (
             <p className="text-xs text-gray-400 dark:text-gray-500">
@@ -291,17 +296,17 @@ const CustomEntityTab: React.FC<CustomEntityTabProps> = ({
         selectedTags.length > 0 || query ? (
           <div className="text-center py-16 border border-dashed border-gray-300 dark:border-gray-700 rounded-xl">
             <p className="text-gray-500 dark:text-gray-400">
-              No {displayName} match your {query && selectedTags.length > 0
-                ? 'search and selected tags'
+              {query && selectedTags.length > 0
+                ? t('No {name} match your search and selected tags.', { name: displayName })
                 : query
-                ? 'search'
-                : 'selected tags'}.
+                  ? t('No {name} match your search.', { name: displayName })
+                  : t('No {name} match your selected tags.', { name: displayName })}
             </p>
           </div>
         ) : (
           <div className="text-center py-16 border border-dashed border-gray-300 dark:border-gray-700 rounded-xl">
             <p className="text-gray-500 dark:text-gray-400 mb-4">
-              No {displayName} yet — create one.
+              {t('No {name} yet — create one.', { name: displayName })}
             </p>
             <button
               type="button"
@@ -310,7 +315,7 @@ const CustomEntityTab: React.FC<CustomEntityTabProps> = ({
                          bg-teal-600 rounded-lg hover:bg-teal-700 transition-colors"
             >
               <PlusIcon className="h-4 w-4" />
-              Create {labelFor({ name: descriptor.name })}
+              {t('Create {name}', { name: labelFor({ name: descriptor.name }) })}
             </button>
           </div>
         )
@@ -345,10 +350,10 @@ const CustomEntityTab: React.FC<CustomEntityTabProps> = ({
                            disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <ChevronLeftIcon className="h-4 w-4" />
-                Previous
+                {t('Previous')}
               </button>
               <span className="text-sm text-gray-500 dark:text-gray-400">
-                Page {safePage + 1} of {totalPages}
+                {t('Page {page} of {total}', { page: safePage + 1, total: totalPages })}
               </span>
               <button
                 type="button"
@@ -359,7 +364,7 @@ const CustomEntityTab: React.FC<CustomEntityTabProps> = ({
                            hover:bg-gray-200 dark:hover:bg-gray-800 transition-colors
                            disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                Next
+                {t('Next')}
                 <ChevronRightIcon className="h-4 w-4" />
               </button>
             </div>
@@ -391,10 +396,10 @@ const CustomEntityTab: React.FC<CustomEntityTabProps> = ({
         isOpen={!!deleting}
         onClose={() => setDeleting(null)}
         onConfirm={handleDelete}
-        title={`Delete ${displayName}`}
-        message={`Are you sure you want to delete "${deleting?.name}"? This cannot be undone.`}
-        confirmLabel="Delete"
-        loadingLabel="Deleting..."
+        title={t('Delete {name}', { name: displayName })}
+        message={t('Are you sure you want to delete "{name}"? This cannot be undone.', { name: deleting?.name ?? '' })}
+        confirmLabel={t('Delete')}
+        loadingLabel={t('Deleting...')}
         isDestructive
         isLoading={deleteLoading}
       />

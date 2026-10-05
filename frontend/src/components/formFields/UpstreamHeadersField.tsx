@@ -1,6 +1,8 @@
 import React from 'react';
 import FormField from './FormField';
 import { fieldClass, FIELD_FOCUS } from './formClasses';
+import { useI18n } from '../../contexts/I18nContext';
+import type { TranslateFn } from '../../i18n/t';
 
 /** One upstream custom header row in the editor. */
 export interface UpstreamHeader {
@@ -90,21 +92,22 @@ const RESERVED_LOWER = new Set(
 export function upstreamHeaderRowError(
   h: UpstreamHeader,
   editMode = false,
+  t: TranslateFn = (source) => source,
 ): string | null {
   const name = h.name.trim();
   if (!name) {
     // An all-blank row is ignored on submit, not an error.
-    return h.value.trim() || h.overridable ? 'Header name is required.' : null;
+    return h.value.trim() || h.overridable ? t('Header name is required.') : null;
   }
   const lower = name.toLowerCase();
   if (lower === 'authorization' && !h.overridable) {
-    return 'Authorization is only allowed as a caller-overridable header — enable "Caller can override", or use the egress credential vault for a fixed token.';
+    return t('Authorization is only allowed as a caller-overridable header — enable "Caller can override", or use the egress credential vault for a fixed token.');
   }
   if (RESERVED_LOWER.has(lower)) {
-    return `"${name}" is managed by the gateway and cannot be a custom upstream header.`;
+    return t('"{name}" is managed by the gateway and cannot be a custom upstream header.', { name });
   }
   if (!h.value.trim() && !h.overridable && !editMode) {
-    return 'A fixed header needs a value (or enable "Caller can override" for a caller-supplied slot).';
+    return t('A fixed header needs a value (or enable "Caller can override" for a caller-supplied slot).');
   }
   return null;
 }
@@ -129,6 +132,7 @@ const UpstreamHeadersField: React.FC<UpstreamHeadersFieldProps> = ({
   max = MAX_DEFAULT,
   editMode = false,
 }) => {
+  const { t } = useI18n();
   const update = (idx: number, patch: Partial<UpstreamHeader>) => {
     const next = headers.map((h, i) => (i === idx ? { ...h, ...patch } : h));
     onChange(next);
@@ -139,12 +143,12 @@ const UpstreamHeadersField: React.FC<UpstreamHeadersFieldProps> = ({
 
   return (
     <FormField
-      label="Upstream headers"
-      hint="Headers the gateway presents to the proxied backend. A value is an operator-set header; enable “Caller can override” to let the request supply or replace it (a value-less overridable row is a caller-only slot). Values are encrypted and never shown again."
+      label={t('Upstream headers')}
+      hint={t('Headers the gateway presents to the proxied backend. A value is an operator-set header; enable “Caller can override” to let the request supply or replace it (a value-less overridable row is a caller-only slot). Values are encrypted and never shown again.')}
     >
       <div className="space-y-3">
         {headers.map((h, idx) => {
-          const err = upstreamHeaderRowError(h, editMode);
+          const err = upstreamHeaderRowError(h, editMode, t);
           const isAuth = h.name.trim().toLowerCase() === 'authorization';
           return (
             <div
@@ -154,7 +158,7 @@ const UpstreamHeadersField: React.FC<UpstreamHeadersFieldProps> = ({
               <div className="flex gap-2">
                 <input
                   type="text"
-                  aria-label={`Header name (row ${idx + 1})`}
+                  aria-label={t('Header name (row {row})', { row: idx + 1 })}
                   placeholder="X-Api-Key"
                   value={h.name}
                   onChange={(e) => update(idx, { name: e.target.value })}
@@ -162,25 +166,25 @@ const UpstreamHeadersField: React.FC<UpstreamHeadersFieldProps> = ({
                 />
                 <button
                   type="button"
-                  aria-label={`Remove header (row ${idx + 1})`}
+                  aria-label={t('Remove header (row {row})', { row: idx + 1 })}
                   onClick={() => remove(idx)}
                   className="px-3 py-2 text-sm text-red-600 hover:text-red-800 dark:text-red-400"
                 >
-                  Remove
+                  {t('Remove')}
                 </button>
               </div>
               <input
                 type="password"
-                aria-label={`Header value (row ${idx + 1})`}
+                aria-label={t('Header value (row {row})', { row: idx + 1 })}
                 placeholder={
                   editMode
                     ? // On edit a blank value keeps the stored value (write-only).
                       // To drop a stored value entirely, Remove the row and re-add
                       // it (as an overridable caller-only slot if desired).
-                      'Blank = keep stored value'
+                      t('Blank = keep stored value')
                     : h.overridable
-                      ? 'Optional default value (blank = caller-supplied only)'
-                      : 'Header value'
+                      ? t('Optional default value (blank = caller-supplied only)')
+                      : t('Header value')
                 }
                 value={h.value}
                 onChange={(e) => update(idx, { value: e.target.value })}
@@ -194,14 +198,12 @@ const UpstreamHeadersField: React.FC<UpstreamHeadersFieldProps> = ({
                   className="h-4 w-4 rounded border-gray-300 dark:border-gray-600"
                 />
                 <span className="text-xs text-gray-600 dark:text-gray-400">
-                  Caller can override / supply this header
+                  {t('Caller can override / supply this header')}
                 </span>
               </label>
               {isAuth && h.overridable && (
                 <p className="text-xs text-amber-600 dark:text-amber-400">
-                  The caller’s Authorization is forwarded to the backend. The
-                  gateway credential is never leaked (an equal-token guard rejects
-                  a request that reuses it).
+                  {t('The caller’s Authorization is forwarded to the backend. The gateway credential is never leaked (an equal-token guard rejects a request that reuses it).')}
                 </p>
               )}
               {err && (
@@ -216,7 +218,7 @@ const UpstreamHeadersField: React.FC<UpstreamHeadersFieldProps> = ({
             onClick={add}
             className="text-sm text-purple-600 hover:text-purple-800 dark:text-purple-400"
           >
-            + Add header
+            {t('+ Add header')}
           </button>
         )}
       </div>

@@ -1,6 +1,7 @@
 import React from 'react';
 import FormField from './FormField';
 import { FIELD_BASE, FIELD_FOCUS } from './formClasses';
+import { useI18n } from '../../contexts/I18nContext';
 
 interface MetadataFieldProps {
   value: string;
@@ -12,8 +13,8 @@ interface MetadataFieldProps {
   accent?: keyof typeof FIELD_FOCUS;
 }
 
-const DEFAULT_HINT =
-  'Custom key-value pairs in JSON format for searchable metadata';
+const DEFAULT_PLACEHOLDER =
+  '{"team": "platform", "owner": "alice@example.com"}';
 
 /**
  * The "Custom Metadata (JSON, optional)" textarea shared by the server, agent,
@@ -22,14 +23,18 @@ const DEFAULT_HINT =
 const MetadataField: React.FC<MetadataFieldProps> = ({
   value,
   onChange,
-  label = 'Custom Metadata (JSON, optional)',
-  hint = DEFAULT_HINT,
-  placeholder = '{"team": "platform", "owner": "alice@example.com"}',
+  label,
+  hint,
+  placeholder = DEFAULT_PLACEHOLDER,
   rows = 4,
   accent = 'purple',
 }) => {
+  const { t } = useI18n();
   return (
-    <FormField label={label} hint={hint}>
+    <FormField
+      label={label ?? t('Custom Metadata (JSON, optional)')}
+      hint={hint ?? t('Custom key-value pairs in JSON format for searchable metadata')}
+    >
       <textarea
         value={value}
         onChange={(e) => onChange(e.target.value)}

@@ -1,11 +1,13 @@
 import React, { useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
+import { useI18n } from '../contexts/I18nContext';
 
 const OAuthCallback: React.FC = () => {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const { user, loading } = useAuth();
+  const { t } = useI18n();
 
   useEffect(() => {
     // Check if there's an error parameter from the auth server
@@ -36,7 +38,7 @@ const OAuthCallback: React.FC = () => {
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900 flex flex-col justify-center items-center">
       <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-purple-600 mb-4"></div>
       <p className="text-gray-600 dark:text-gray-400">
-        Completing authentication...
+        {t('Completing authentication...')}
       </p>
     </div>
   );

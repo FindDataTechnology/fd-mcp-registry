@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
 import axios from 'axios';
+import { useI18n } from '../contexts/I18nContext';
+import { localizeError } from '../utils/apiError';
 
 type EntityType = 'mcp_server' | 'tool' | 'a2a_agent' | 'skill' | 'virtual_server';
 
@@ -171,6 +173,7 @@ export const useSemanticSearch = (
   query: string,
   options: UseSemanticSearchOptions = {}
 ): UseSemanticSearchReturn => {
+  const { t } = useI18n();
   const [results, setResults] = useState<SemanticSearchResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -234,11 +237,7 @@ export const useSemanticSearch = (
         }
       } catch (err: any) {
         if (axios.isCancel(err) || cancelled) return;
-        const message =
-          err.response?.data?.detail ||
-          err.message ||
-          'Semantic search failed.';
-        setError(message);
+        setError(localizeError(err, t, 'Semantic search failed.'));
         setResults(null);
       } finally {
         if (!cancelled) {
@@ -253,7 +252,7 @@ export const useSemanticSearch = (
       cancelled = true;
       controller.abort();
     };
-  }, [debouncedQuery, enabled, minLength, maxResults, entityTypesKey, tagsKey]);
+  }, [debouncedQuery, enabled, minLength, maxResults, entityTypesKey, tagsKey, t]);
 
   return { results, loading, error, debouncedQuery };
 };

@@ -31,6 +31,8 @@ import useEscapeKey from '../hooks/useEscapeKey';
 import { formatRelativeTime, formatTimeSince } from '../utils/dateUtils';
 import { normalizeHealthStatus } from '../utils/healthStatus';
 import { useAuth } from '../contexts/AuthContext';
+import { useI18n } from '../contexts/I18nContext';
+import type { TranslateFn } from '../i18n/t';
 import { toScanSummary } from '../utils/securityScan';
 import type { LocalRuntime } from '../types/server';
 import {
@@ -48,6 +50,7 @@ import {
   ENTITY_ACCENTS,
   type StatusTone,
 } from './cards';
+import { localizeError } from '../utils/apiError';
 
 const ACCENT = ENTITY_ACCENTS.server;
 
@@ -55,24 +58,26 @@ const ACCENT = ENTITY_ACCENTS.server;
 function serverHealthDot(
   status: string | undefined,
   isLocal: boolean,
+  t: TranslateFn,
 ): { tone: StatusTone; label: string; title?: string } {
   if (isLocal) {
     return {
       tone: 'emerald',
-      label: 'Local',
-      title:
+      label: t('Local'),
+      title: t(
         'Runs on the developer’s machine via stdio launch recipe — registry does not health-check',
+      ),
     };
   }
   switch (status) {
     case 'healthy':
-      return { tone: 'emerald', label: 'Healthy' };
+      return { tone: 'emerald', label: t('Healthy') };
     case 'healthy-auth-expired':
-      return { tone: 'orange', label: 'Healthy (Auth Expired)' };
+      return { tone: 'orange', label: t('Healthy (Auth Expired)') };
     case 'unhealthy':
-      return { tone: 'red', label: 'Unhealthy' };
+      return { tone: 'red', label: t('Unhealthy') };
     default:
-      return { tone: 'amber', label: 'Unknown' };
+      return { tone: 'amber', label: t('Unknown') };
   }
 }
 
@@ -208,22 +213,23 @@ function EgressConnectButton({
   onShowToast?: (message: string, type: 'success' | 'error') => void;
 }) {
   const navigate = useNavigate();
+  const { t } = useI18n();
   const connected = state.connected;
 
   let label: string;
   let tooltip: string;
   if (state.needsReconnect) {
-    label = 'Reconnect';
-    tooltip = 'Connection expired or failed — reconnect';
+    label = t('Reconnect');
+    tooltip = t('Connection expired or failed — reconnect');
   } else if (connected) {
-    label = 'Connected';
-    tooltip = 'Account connected — manage on Connected Accounts';
+    label = t('Connected');
+    tooltip = t('Account connected — manage on Connected Accounts');
   } else if (state.mode === 'pat') {
-    label = 'Submit token';
-    tooltip = 'Submit a personal access token for this server';
+    label = t('Submit token');
+    tooltip = t('Submit a personal access token for this server');
   } else {
-    label = 'Link account';
-    tooltip = 'Link your account for this server';
+    label = t('Link account');
+    tooltip = t('Link your account for this server');
   }
 
   const handleClick = () => {
@@ -238,7 +244,7 @@ function EgressConnectButton({
     // is server-built but is technically influenceable via a crafted admin path,
     // so never open it unguarded. Fail closed on unsafe/empty.
     if (!isSafeUrl(state.connectUrl)) {
-      onShowToast?.('Cannot open the connect URL for this server.', 'error');
+      onShowToast?.(t('Cannot open the connect URL for this server.'), 'error');
       return;
     }
     window.open(state.connectUrl, '_blank', 'noopener,noreferrer');
@@ -256,7 +262,7 @@ function EgressConnectButton({
       onClick={handleClick}
       className="p-2 hover:bg-gray-50 dark:hover:bg-gray-700/50 rounded-lg transition-all duration-200 flex-shrink-0"
       title={tooltip}
-      aria-label={`${label} for ${serverName}`}
+      aria-label={t('{action} for {name}', { action: label, name: serverName })}
     >
       <PlugIcon className={iconClass} />
     </button>
@@ -265,6 +271,7 @@ function EgressConnectButton({
 
 const ServerCard: React.FC<ServerCardProps> = React.memo(({ server, onToggle, onEdit, canModify, canHealthCheck = true, canToggle = true, canDelete, onRefreshSuccess, onShowToast, onServerUpdate, onDelete, authToken, egressConnect: egressConnectProp, onEgressChanged: onEgressChangedProp }) => {
   const { user } = useAuth();
+  const { t, locale } = useI18n();
   const isAdmin = user?.is_admin === true;
   // Egress connect state: prefer the explicit prop (dashboard grid passes it),
   // else fall back to the shared context so render paths that don't thread the
@@ -326,12 +333,12 @@ const ServerCard: React.FC<ServerCardProps> = React.memo(({ server, onToggle, on
     } catch (error) {
       console.error('Failed to fetch tools:', error);
       if (onShowToast) {
-        onShowToast('Failed to fetch tools', 'error');
+        onShowToast(t('Failed to fetch tools'), 'error');
       }
     } finally {
       setLoadingTools(false);
     }
-  }, [server.path, loadingTools, onShowToast]);
+  }, [server.path, loadingTools, onShowToast, t]);
 
   /**
    * Block or unblock one tool on this server.
@@ -361,30 +368,35 @@ const ServerCard: React.FC<ServerCardProps> = React.memo(({ server, onToggle, on
         // the gateway reads block state fresh on every call, so there is no cache
         // to wait on.
         setTools((prev) =>
-          prev.map((t) =>
-            t.name === toolName
+          prev.map((tool) =>
+            tool.name === toolName
               ? {
-                  ...t,
+                  ...tool,
                   blocked: !enabled,
-                  block_reason: enabled ? null : 'Disabled by admin',
+                  block_reason: enabled ? null : t('Disabled by admin'),
                   block_source: enabled ? null : 'admin',
                 }
-              : t
+              : tool
           )
         );
-        onShowToast?.(`Tool '${toolName}' ${enabled ? 'enabled' : 'blocked'}`, 'success');
+        onShowToast?.(
+          enabled
+            ? t("Tool '{name}' enabled", { name: toolName })
+            : t("Tool '{name}' blocked", { name: toolName }),
+          'success',
+        );
       } catch (error) {
         console.error('Failed to toggle tool:', error);
         const detail =
           axios.isAxiosError(error) && error.response?.data?.detail
             ? String(error.response.data.detail)
-            : 'Failed to update tool';
+            : t('Failed to update tool');
         onShowToast?.(detail, 'error');
       } finally {
         setTogglingTool(null);
       }
     },
-    [server.path, onShowToast]
+    [server.path, onShowToast, t]
   );
 
 
@@ -413,17 +425,17 @@ const ServerCard: React.FC<ServerCardProps> = React.memo(({ server, onToggle, on
       }
 
       if (onShowToast) {
-        onShowToast('Health status refreshed successfully', 'success');
+        onShowToast(t('Health status refreshed successfully'), 'success');
       }
     } catch (error: any) {
       console.error('Failed to refresh health:', error);
       if (onShowToast) {
-        onShowToast(error.response?.data?.detail || 'Failed to refresh health status', 'error');
+        onShowToast(localizeError(error, t, 'Failed to refresh health status'), 'error');
       }
     } finally {
       setLoadingRefresh(false);
     }
-  }, [server.path, loadingRefresh, onRefreshSuccess, onShowToast, onServerUpdate]);
+  }, [server.path, loadingRefresh, onRefreshSuccess, onShowToast, onServerUpdate, t]);
 
   const handleViewSecurityScan = useCallback(async () => {
     if (loadingSecurityScan) return;
@@ -441,14 +453,14 @@ const ServerCard: React.FC<ServerCardProps> = React.memo(({ server, onToggle, on
       if (error.response?.status !== 404) {
         console.error('Failed to fetch security scan:', error);
         if (onShowToast) {
-          onShowToast('Failed to load security scan results', 'error');
+          onShowToast(t('Failed to load security scan results'), 'error');
         }
       }
       setSecurityScanResult(null);
     } finally {
       setLoadingSecurityScan(false);
     }
-  }, [server.path, authToken, loadingSecurityScan, onShowToast]);
+  }, [server.path, authToken, loadingSecurityScan, onShowToast, t]);
 
   const handleRescan = useCallback(async () => {
     const headers = authToken ? { Authorization: `Bearer ${authToken}` } : undefined;
@@ -505,20 +517,20 @@ const ServerCard: React.FC<ServerCardProps> = React.memo(({ server, onToggle, on
     try {
       const cleanPath = server.path.replace(/^\/+/, '');
       await axios.post(`/api/clear-security-pending-local/${cleanPath}`);
-      onShowToast?.('Marked as security-reviewed', 'success');
+      onShowToast?.(t('Marked as security-reviewed'), 'success');
       if (onServerUpdate) {
         onServerUpdate(server.path, {
-          tags: (server.tags || []).filter(t => t !== 'security-pending-local'),
+          tags: (server.tags || []).filter(tag => tag !== 'security-pending-local'),
         });
       }
       setShowClearSecurityPendingConfirm(false);
     } catch (err: unknown) {
       const e = err as { response?: { data?: { detail?: string } } };
-      onShowToast?.(e.response?.data?.detail || 'Failed to clear tag', 'error');
+      onShowToast?.(localizeError(e, t, 'Failed to clear tag'), 'error');
     } finally {
       setClearingSecurityPending(false);
     }
-  }, [server.path, server.tags, clearingSecurityPending, onServerUpdate, onShowToast]);
+  }, [server.path, server.tags, clearingSecurityPending, onServerUpdate, onShowToast, t]);
 
   const getSecurityIconState = () => {
     // Local (stdio) servers can't be auto-scanned. Their security state is
@@ -530,33 +542,33 @@ const ServerCard: React.FC<ServerCardProps> = React.memo(({ server, onToggle, on
         return {
           Icon: ShieldExclamationIcon,
           color: 'text-amber-500 dark:text-amber-400',
-          title: 'Pending manual security review (local server)',
+          title: t('Pending manual security review (local server)'),
         };
       }
       return {
         Icon: ShieldCheckIcon,
         color: 'text-green-500 dark:text-green-400',
-        title: 'Local server marked as security-reviewed',
+        title: t('Local server marked as security-reviewed'),
       };
     }
 
     // Gray: no scan result yet
     if (!securityScanResult) {
-      return { Icon: ShieldCheckIcon, color: 'text-gray-400 dark:text-gray-500', title: 'View security scan results' };
+      return { Icon: ShieldCheckIcon, color: 'text-gray-400 dark:text-gray-500', title: t('View security scan results') };
     }
     // Red: scan failed or any vulnerabilities found
     if (securityScanResult.scan_failed) {
-      return { Icon: ShieldExclamationIcon, color: 'text-red-500 dark:text-red-400', title: 'Security scan failed' };
+      return { Icon: ShieldExclamationIcon, color: 'text-red-500 dark:text-red-400', title: t('Security scan failed') };
     }
     const hasVulnerabilities = securityScanResult.critical_issues > 0 ||
       securityScanResult.high_severity > 0 ||
       securityScanResult.medium_severity > 0 ||
       securityScanResult.low_severity > 0;
     if (hasVulnerabilities) {
-      return { Icon: ShieldExclamationIcon, color: 'text-red-500 dark:text-red-400', title: 'Security issues found' };
+      return { Icon: ShieldExclamationIcon, color: 'text-red-500 dark:text-red-400', title: t('Security issues found') };
     }
     // Green: scan passed with no vulnerabilities
-    return { Icon: ShieldCheckIcon, color: 'text-green-500 dark:text-green-400', title: 'Security scan passed' };
+    return { Icon: ShieldCheckIcon, color: 'text-green-500 dark:text-green-400', title: t('Security scan passed') };
   };
 
   // Generate MCP configuration for the server
@@ -592,7 +604,7 @@ const ServerCard: React.FC<ServerCardProps> = React.memo(({ server, onToggle, on
   // Link back to the original server.json on the source registry, if published.
   const ardSourceUrl = server.ard_source_url || server.sync_metadata?.upstream_path;
 
-  const health = serverHealthDot(server.status, isLocal);
+  const health = serverHealthDot(server.status, isLocal, t);
 
   return (
     <>
@@ -621,13 +633,13 @@ const ServerCard: React.FC<ServerCardProps> = React.memo(({ server, onToggle, on
                 {server.deployment === 'local' && (
                   <span
                     className="px-2 py-0.5 text-xs font-semibold bg-gradient-to-r from-emerald-100 to-teal-100 text-emerald-700 dark:from-emerald-900/30 dark:to-teal-900/30 dark:text-emerald-300 rounded-full flex-shrink-0 border border-emerald-200 dark:border-emerald-600"
-                    title="Local (stdio) — runs on your machine via launch recipe"
+                    title={t('Local (stdio) — runs on your machine via launch recipe')}
                   >
-                    LOCAL
+                    {t('LOCAL')}
                   </span>
                 )}
                 {server.official && (
-                  <Badge tone="purple">OFFICIAL</Badge>
+                  <Badge tone="purple">{t('OFFICIAL')}</Badge>
                 )}
                 {isAnthropicServer && (
                   <span className="px-2 py-0.5 text-xs font-semibold bg-gradient-to-r from-purple-100 to-indigo-100 text-purple-700 dark:from-purple-900/30 dark:to-indigo-900/30 dark:text-purple-300 rounded-full flex-shrink-0 border border-purple-200 dark:border-purple-600">
@@ -642,7 +654,7 @@ const ServerCard: React.FC<ServerCardProps> = React.memo(({ server, onToggle, on
                 )}
                 {isSecurityPending && (
                   <span className="px-2 py-0.5 text-xs font-semibold bg-gradient-to-r from-amber-100 to-orange-100 text-amber-700 dark:from-amber-900/30 dark:to-orange-900/30 dark:text-amber-300 rounded-full flex-shrink-0 border border-amber-200 dark:border-amber-600">
-                    SECURITY PENDING
+                    {t('SECURITY PENDING')}
                   </span>
                 )}
                 {isSecurityPendingLocal && (
@@ -651,27 +663,27 @@ const ServerCard: React.FC<ServerCardProps> = React.memo(({ server, onToggle, on
                       type="button"
                       onClick={() => setShowClearSecurityPendingConfirm(true)}
                       className="px-2 py-0.5 text-xs font-semibold bg-gradient-to-r from-amber-100 to-orange-100 text-amber-700 dark:from-amber-900/30 dark:to-orange-900/30 dark:text-amber-300 rounded-full flex-shrink-0 border border-amber-200 dark:border-amber-600 hover:from-amber-200 hover:to-orange-200 transition"
-                      title="Click to mark as security-reviewed (admin only)"
+                      title={t('Click to mark as security-reviewed (admin only)')}
                     >
-                      SECURITY PENDING (LOCAL) ×
+                      {t('SECURITY PENDING (LOCAL) ×')}
                     </button>
                   ) : (
                     <span
                       className="px-2 py-0.5 text-xs font-semibold bg-gradient-to-r from-amber-100 to-orange-100 text-amber-700 dark:from-amber-900/30 dark:to-orange-900/30 dark:text-amber-300 rounded-full flex-shrink-0 border border-amber-200 dark:border-amber-600"
-                      title="Pending security review by an admin (local server)"
+                      title={t('Pending security review by an admin (local server)')}
                     >
-                      SECURITY PENDING (LOCAL)
+                      {t('SECURITY PENDING (LOCAL)')}
                     </span>
                   )
                 )}
                 {/* ANS badge moved to trust bar below description */}
                 {/* Registry source badge - only show for federated (peer registry) items */}
                 {isFederatedServer && (
-                  <span className="px-2 py-0.5 text-xs font-semibold bg-gradient-to-r from-cyan-100 to-blue-100 text-cyan-700 dark:from-cyan-900/30 dark:to-blue-900/30 dark:text-cyan-300 rounded-full flex-shrink-0 border border-cyan-200 dark:border-cyan-600" title={`Synced from ${peerRegistryId}`}>
+                  <span className="px-2 py-0.5 text-xs font-semibold bg-gradient-to-r from-cyan-100 to-blue-100 text-cyan-700 dark:from-cyan-900/30 dark:to-blue-900/30 dark:text-cyan-300 rounded-full flex-shrink-0 border border-cyan-200 dark:border-cyan-600" title={t('Synced from {peer}', { peer: peerRegistryId ?? '' })}>
                     {peerRegistryId?.toUpperCase().replace('PEER-REGISTRY-', '').replace('PEER-', '')}
                     {/* ARD marker — this peer is an ai-catalog (ARD) registry. */}
                     {isArdDiscovery && (
-                      <span className="ml-1 text-[10px] font-bold text-cyan-500 dark:text-cyan-400" title="ARD (ai-catalog.json) registry">
+                      <span className="ml-1 text-[10px] font-bold text-cyan-500 dark:text-cyan-400" title={t('ARD (ai-catalog.json) registry')}>
                         ARD
                       </span>
                     )}
@@ -679,25 +691,25 @@ const ServerCard: React.FC<ServerCardProps> = React.memo(({ server, onToggle, on
                 )}
                 {/* Orphaned badge - server no longer exists on peer registry */}
                 {isOrphanedServer && (
-                  <span className="px-2 py-0.5 text-xs font-semibold bg-gradient-to-r from-red-100 to-rose-100 text-red-700 dark:from-red-900/30 dark:to-rose-900/30 dark:text-red-300 rounded-full flex-shrink-0 border border-red-200 dark:border-red-600" title="No longer exists on peer registry">
-                    ORPHANED
+                  <span className="px-2 py-0.5 text-xs font-semibold bg-gradient-to-r from-red-100 to-rose-100 text-red-700 dark:from-red-900/30 dark:to-rose-900/30 dark:text-red-300 rounded-full flex-shrink-0 border border-red-200 dark:border-red-600" title={t('No longer exists on peer registry')}>
+                    {t('ORPHANED')}
                   </span>
                 )}
                 {/* Discovery badge - ARD discovery-only import (metadata only) */}
                 {isArdDiscovery && (
-                  <span className="px-2 py-0.5 text-xs font-semibold bg-gradient-to-r from-slate-100 to-gray-100 text-slate-700 dark:from-slate-900/30 dark:to-gray-900/30 dark:text-slate-300 rounded-full flex-shrink-0 border border-slate-200 dark:border-slate-600" title="Discovery-only import — resolve and connect at the source registry">
-                    Discovery
+                  <span className="px-2 py-0.5 text-xs font-semibold bg-gradient-to-r from-slate-100 to-gray-100 text-slate-700 dark:from-slate-900/30 dark:to-gray-900/30 dark:text-slate-300 rounded-full flex-shrink-0 border border-slate-200 dark:border-slate-600" title={t('Discovery-only import — resolve and connect at the source registry')}>
+                    {t('Discovery')}
                   </span>
                 )}
                 {/* Backend auth scheme badge */}
                 {server.auth_scheme && server.auth_scheme !== 'none' && server.auth_scheme === 'bearer' && (
-                  <span className="px-2 py-0.5 text-xs font-semibold bg-gradient-to-r from-blue-100 to-indigo-100 text-blue-700 dark:from-blue-900/30 dark:to-indigo-900/30 dark:text-blue-300 rounded-full flex-shrink-0 border border-blue-200 dark:border-blue-600" title="Backend uses Bearer token authentication">
-                    BEARER AUTH
+                  <span className="px-2 py-0.5 text-xs font-semibold bg-gradient-to-r from-blue-100 to-indigo-100 text-blue-700 dark:from-blue-900/30 dark:to-indigo-900/30 dark:text-blue-300 rounded-full flex-shrink-0 border border-blue-200 dark:border-blue-600" title={t('Backend uses Bearer token authentication')}>
+                    {t('BEARER AUTH')}
                   </span>
                 )}
                 {server.auth_scheme && server.auth_scheme === 'api_key' && (
-                  <span className="px-2 py-0.5 text-xs font-semibold bg-gradient-to-r from-yellow-100 to-amber-100 text-yellow-700 dark:from-yellow-900/30 dark:to-amber-900/30 dark:text-yellow-300 rounded-full flex-shrink-0 border border-yellow-200 dark:border-yellow-600" title={`Backend uses API Key authentication (header: ${server.auth_header_name || 'X-API-Key'})`}>
-                    API KEY AUTH
+                  <span className="px-2 py-0.5 text-xs font-semibold bg-gradient-to-r from-yellow-100 to-amber-100 text-yellow-700 dark:from-yellow-900/30 dark:to-amber-900/30 dark:text-yellow-300 rounded-full flex-shrink-0 border border-yellow-200 dark:border-yellow-600" title={t('Backend uses API Key authentication (header: {header})', { header: server.auth_header_name || 'X-API-Key' })}>
+                    {t('API KEY AUTH')}
                   </span>
                 )}
             </>
@@ -708,8 +720,8 @@ const ServerCard: React.FC<ServerCardProps> = React.memo(({ server, onToggle, on
               <button
                 className="p-2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50 rounded-lg transition-all duration-200 flex-shrink-0"
                 onClick={() => onEdit?.(server)}
-                title="Edit server"
-                aria-label={`Edit ${server.name}`}
+                title={t('Edit server')}
+                aria-label={t('Edit {name}', { name: server.name })}
               >
                 <PencilIcon className="h-4 w-4" />
               </button>
@@ -721,11 +733,11 @@ const ServerCard: React.FC<ServerCardProps> = React.memo(({ server, onToggle, on
               <button
                 onClick={() => setShowConfig(true)}
                 className="flex items-center gap-1 px-2 py-1.5 text-xs font-medium text-green-600 dark:text-green-400 hover:bg-green-50 dark:hover:bg-green-700/50 rounded-lg transition-all duration-200 flex-shrink-0 border border-green-200 dark:border-green-700"
-                title="Get connection details and mcp.json configuration"
-                aria-label={`Connect to ${server.name}`}
+                title={t('Get connection details and mcp.json configuration')}
+                aria-label={t('Connect to {name}', { name: server.name })}
               >
                 <LinkIcon className="h-3.5 w-3.5" />
-                Connect
+                {t('Connect')}
               </button>
             )}
 
@@ -763,8 +775,8 @@ const ServerCard: React.FC<ServerCardProps> = React.memo(({ server, onToggle, on
                   }
                 }}
                 className="p-2 text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-700/50 rounded-lg transition-all duration-200 flex-shrink-0"
-                title="View full server JSON from database"
-                aria-label={`View full details for ${server.name}`}
+                title={t('View full server JSON from database')}
+                aria-label={t('View full details for {name}', { name: server.name })}
               >
                 <InformationCircleIcon className="h-4 w-4" />
               </button>
@@ -774,7 +786,7 @@ const ServerCard: React.FC<ServerCardProps> = React.memo(({ server, onToggle, on
                 onClick={handleViewSecurityScan}
                 className={`p-2 hover:bg-gray-50 dark:hover:bg-gray-700/50 rounded-lg transition-all duration-200 flex-shrink-0 ${getSecurityIconState().color}`}
                 title={getSecurityIconState().title}
-                aria-label="View security scan results"
+                aria-label={t('View security scan results')}
               >
                 {React.createElement(getSecurityIconState().Icon, { className: "h-4 w-4" })}
               </button>
@@ -786,8 +798,8 @@ const ServerCard: React.FC<ServerCardProps> = React.memo(({ server, onToggle, on
               <button
                 onClick={() => setShowDeleteConfirm(true)}
                 className="p-2 text-gray-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-700/50 rounded-lg transition-all duration-200 flex-shrink-0"
-                title="Delete server"
-                aria-label={`Delete ${server.name}`}
+                title={t('Delete server')}
+                aria-label={t('Delete {name}', { name: server.name })}
               >
                 <TrashIcon className="h-4 w-4" />
               </button>
@@ -818,7 +830,7 @@ const ServerCard: React.FC<ServerCardProps> = React.memo(({ server, onToggle, on
                 className="mb-4 inline-flex items-center gap-1 text-xs text-blue-600 dark:text-blue-400 hover:underline"
               >
                 <LinkIcon className="h-3.5 w-3.5" />
-                View at source ↗
+                {t('View at source ↗')}
               </SafeLink>
             )}
           </CardBody>
@@ -852,14 +864,14 @@ const ServerCard: React.FC<ServerCardProps> = React.memo(({ server, onToggle, on
                   onClick={handleViewTools}
                   disabled={loadingTools}
                   className={`flex items-center gap-2 disabled:opacity-50 px-2 py-1 -mx-2 -my-1 rounded transition-all ${ACCENTS[cardAccent].interactive}`}
-                  title="View tools"
+                  title={t('View tools')}
                 >
                   <div className={`p-1.5 rounded ${ACCENTS[cardAccent].iconChip}`}>
                     <WrenchScrewdriverIcon className="h-4 w-4" />
                   </div>
                   <div>
                     <div className="text-sm font-semibold">{server.num_tools}</div>
-                    <div className="text-xs">Tools</div>
+                    <div className="text-xs">{t('Tools')}</div>
                   </div>
                 </button>
               ) : (
@@ -869,7 +881,7 @@ const ServerCard: React.FC<ServerCardProps> = React.memo(({ server, onToggle, on
                   </div>
                   <div>
                     <div className="text-sm font-semibold">{server.num_tools || 0}</div>
-                    <div className="text-xs">Tools</div>
+                    <div className="text-xs">{t('Tools')}</div>
                   </div>
                 </div>
               )}
@@ -889,15 +901,18 @@ const ServerCard: React.FC<ServerCardProps> = React.memo(({ server, onToggle, on
                   className="inline-flex items-center px-2 py-0.5 text-xs font-medium bg-gray-50 text-gray-600 dark:bg-gray-800 dark:text-gray-400 rounded"
                   title={
                     server.mcp_server_version_previous
-                      ? `MCP Server Version: ${server.mcp_server_version} (previously ${server.mcp_server_version_previous})`
-                      : `MCP Server Version: ${server.mcp_server_version}`
+                      ? t('MCP Server Version: {version} (previously {previous})', {
+                          version: server.mcp_server_version,
+                          previous: server.mcp_server_version_previous,
+                        })
+                      : t('MCP Server Version: {version}', { version: server.mcp_server_version })
                   }
                 >
-                  <span className="text-gray-400 dark:text-gray-500 mr-1">srv</span>
+                  <span className="text-gray-400 dark:text-gray-500 mr-1">{t('srv')}</span>
                   {server.mcp_server_version}
                   {server.mcp_server_version_updated_at &&
                     (Date.now() - new Date(server.mcp_server_version_updated_at).getTime()) < 24 * 60 * 60 * 1000 && (
-                    <span className="ml-1 h-1.5 w-1.5 rounded-full bg-green-500 inline-block" title="Recently updated" />
+                    <span className="ml-1 h-1.5 w-1.5 rounded-full bg-green-500 inline-block" title={t('Recently updated')} />
                   )}
                 </span>
               )}
@@ -914,7 +929,7 @@ const ServerCard: React.FC<ServerCardProps> = React.memo(({ server, onToggle, on
             <>
               <StatusDot
                 tone={server.enabled ? 'green' : 'off'}
-                label={server.enabled ? 'Enabled' : 'Disabled'}
+                label={server.enabled ? t('Enabled') : t('Disabled')}
               />
               <StatusDivider accent={cardAccent} />
               <StatusDot tone={health.tone} label={health.label} title={health.title} />
@@ -928,14 +943,14 @@ const ServerCard: React.FC<ServerCardProps> = React.memo(({ server, onToggle, on
                 <div className="text-xs text-gray-500 dark:text-gray-300 flex items-center gap-1.5">
                   <ClockIcon className="h-3.5 w-3.5" />
                   <span title={new Date(server.source_updated_at).toLocaleString()}>
-                    {formatRelativeTime(server.source_updated_at)}
+                    {formatRelativeTime(server.source_updated_at, locale)}
                   </span>
                 </div>
               )}
 
               {/* Last Checked */}
               {(() => {
-                const timeText = formatTimeSince(server.last_checked_time);
+                const timeText = formatTimeSince(server.last_checked_time, locale);
                 return server.last_checked_time && timeText && !server.source_updated_at ? (
                   <div className="text-xs text-gray-500 dark:text-gray-300 flex items-center gap-1.5">
                     <ClockIcon className="h-3.5 w-3.5" />
@@ -953,8 +968,8 @@ const ServerCard: React.FC<ServerCardProps> = React.memo(({ server, onToggle, on
                   onClick={handleRefreshHealth}
                   disabled={loadingRefresh}
                   className="p-2.5 text-gray-500 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-lg transition-all duration-200 disabled:opacity-50"
-                  title="Refresh health status"
-                  aria-label={`Refresh health status for ${server.name}`}
+                  title={t('Refresh health status')}
+                  aria-label={t('Refresh health status for {name}', { name: server.name })}
                 >
                   <ArrowPathIcon className={`h-4 w-4 ${loadingRefresh ? 'animate-spin' : ''}`} />
                 </button>
@@ -967,7 +982,7 @@ const ServerCard: React.FC<ServerCardProps> = React.memo(({ server, onToggle, on
                 <ToggleSwitch
                   checked={server.enabled}
                   onChange={(checked) => onToggle(server.path, checked)}
-                  ariaLabel={`Enable ${server.name}`}
+                  ariaLabel={t('Enable {name}', { name: server.name })}
                   accent={cardAccent}
                 />
               )}
@@ -993,7 +1008,7 @@ const ServerCard: React.FC<ServerCardProps> = React.memo(({ server, onToggle, on
           >
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
-                Tools for {server.name}
+                {t('Tools for {name}', { name: server.name })}
               </h3>
               <button
                 onClick={() => {
@@ -1040,19 +1055,23 @@ const ServerCard: React.FC<ServerCardProps> = React.memo(({ server, onToggle, on
                             {tool.name}
                             {tool.blocked && (
                               <span className="text-xs font-semibold uppercase tracking-wide px-2 py-0.5 rounded bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200 no-underline">
-                                Blocked
+                                {t('Blocked')}
                               </span>
                             )}
                           </h4>
                         {canToggle && !isArdDiscovery && (
                           <div className="flex items-center gap-2 shrink-0">
                             <span className="text-xs text-gray-500 dark:text-gray-400">
-                              {tool.blocked ? 'Blocked' : 'Enabled'}
+                              {tool.blocked ? t('Blocked') : t('Enabled')}
                             </span>
                             <ToggleSwitch
                               checked={!tool.blocked}
                               onChange={(checked) => handleToggleTool(tool.name, checked)}
-                              ariaLabel={`${tool.blocked ? 'Enable' : 'Block'} tool ${tool.name}`}
+                              ariaLabel={
+                                tool.blocked
+                                  ? t('Enable tool {name}', { name: tool.name })
+                                  : t('Block tool {name}', { name: tool.name })
+                              }
                               accent={cardAccent}
                               disabled={togglingTool === tool.name}
                             />
@@ -1061,12 +1080,12 @@ const ServerCard: React.FC<ServerCardProps> = React.memo(({ server, onToggle, on
                       </div>
                       {tool.blocked && (
                         <p className="text-xs text-red-700 dark:text-red-300 mb-2">
-                          Calls to this tool are rejected
+                          {t('Calls to this tool are rejected')}
                           {tool.block_reason ? `: ${tool.block_reason}` : ''}
                           {tool.block_source === 'security_scan'
-                            ? ' (blocked automatically by a security scan)'
+                            ? t(' (blocked automatically by a security scan)')
                             : tool.block_source === 'admin'
-                              ? ' (blocked by an administrator)'
+                              ? t(' (blocked by an administrator)')
                               : ''}
                         </p>
                       )}
@@ -1080,7 +1099,7 @@ const ServerCard: React.FC<ServerCardProps> = React.memo(({ server, onToggle, on
                               onClick={toggleExpand}
                               className="text-xs text-blue-600 dark:text-blue-400 hover:underline mt-1"
                             >
-                              {isExpanded ? 'Show less' : 'Show more'}
+                              {isExpanded ? t('Show less') : t('Show more')}
                             </button>
                           )}
                         </div>
@@ -1088,7 +1107,7 @@ const ServerCard: React.FC<ServerCardProps> = React.memo(({ server, onToggle, on
                       {tool.schema && (
                         <details className="text-xs">
                           <summary className="cursor-pointer text-gray-500 dark:text-gray-300">
-                            View Schema
+                            {t('View Schema')}
                           </summary>
                           <pre className="mt-2 p-3 bg-gray-50 dark:bg-gray-900 border dark:border-gray-700 rounded overflow-x-auto text-gray-900 dark:text-gray-100">
                             {JSON.stringify(tool.schema, null, 2)}
@@ -1100,10 +1119,10 @@ const ServerCard: React.FC<ServerCardProps> = React.memo(({ server, onToggle, on
                 })
               ) : server.enabled && (server.status === 'healthy' || server.status === 'healthy-auth-expired') ? (
                 <p className="text-gray-500 dark:text-gray-300">
-                  No tools available to you on this server. Ask your administrator if you need access.
+                  {t('No tools available to you on this server. Ask your administrator if you need access.')}
                 </p>
               ) : (
-                <p className="text-gray-500 dark:text-gray-300">No tools available for this server.</p>
+                <p className="text-gray-500 dark:text-gray-300">{t('No tools available for this server.')}</p>
               )}
             </div>
           </div>
@@ -1133,7 +1152,7 @@ const ServerCard: React.FC<ServerCardProps> = React.memo(({ server, onToggle, on
         canRescan={canModify && !isLocal}
         unscannableReason={
           isLocal
-            ? 'Local (stdio) servers cannot be scanned automatically — the registry has no HTTP endpoint to probe. These servers carry the “security-pending-local” tag and require manual review of the launch recipe (package, args, env) before being marked as reviewed.'
+            ? t('Local (stdio) servers cannot be scanned automatically — the registry has no HTTP endpoint to probe. These servers carry the “security-pending-local” tag and require manual review of the launch recipe (package, args, env) before being marked as reviewed.')
             : undefined
         }
         onShowToast={onShowToast}
@@ -1143,16 +1162,16 @@ const ServerCard: React.FC<ServerCardProps> = React.memo(({ server, onToggle, on
         isOpen={showClearSecurityPendingConfirm}
         onClose={() => setShowClearSecurityPendingConfirm(false)}
         onConfirm={handleClearSecurityPending}
-        title={`Mark "${server.name}" as security-reviewed?`}
-        message={
+        title={t('Mark "{name}" as security-reviewed?', { name: server.name })}
+        message={t(
           'Local servers are not auto-scanned because the registry has no HTTP ' +
-          'endpoint to probe. Clearing this tag asserts that you have manually ' +
-          'reviewed the launch recipe (package, args, env) and consider it safe ' +
-          'for distribution to developers.'
-        }
-        confirmLabel="Mark as reviewed"
-        cancelLabel="Cancel"
-        loadingLabel="Marking..."
+            'endpoint to probe. Clearing this tag asserts that you have manually ' +
+            'reviewed the launch recipe (package, args, env) and consider it safe ' +
+            'for distribution to developers.',
+        )}
+        confirmLabel={t('Mark as reviewed')}
+        cancelLabel={t('Cancel')}
+        loadingLabel={t('Marking...')}
         isLoading={clearingSecurityPending}
       />
 

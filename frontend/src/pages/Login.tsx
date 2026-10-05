@@ -2,6 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import axios from 'axios';
 import { ExclamationTriangleIcon } from '@heroicons/react/24/outline';
+import LanguageSwitcher from '../components/LanguageSwitcher';
+import { useI18n } from '../contexts/I18nContext';
 import { useUiTitle } from '../hooks/useUiTitle';
 import { isSafeUrl } from '../utils/safeUrl';
 
@@ -17,10 +19,11 @@ const Login: React.FC = () => {
   const [authServerUrl, setAuthServerUrl] = useState<string>('');
   const [searchParams] = useSearchParams();
   const uiTitle = useUiTitle();
+  const { t } = useI18n();
 
   useEffect(() => {
-    document.title = uiTitle;
-  }, [uiTitle]);
+    document.title = t(uiTitle);
+  }, [uiTitle, t]);
 
   useEffect(() => {
     console.log('[Login] Component mounted, fetching OAuth providers...');
@@ -81,13 +84,16 @@ const Login: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-gray-900 flex flex-col justify-center py-12 sm:px-6 lg:px-8">
+    <div className="min-h-screen bg-gray-50 dark:bg-gray-900 flex flex-col justify-center py-12 sm:px-6 lg:px-8 relative">
+      <div className="absolute top-4 right-4 sm:top-6 sm:right-6">
+        <LanguageSwitcher />
+      </div>
       <div className="sm:mx-auto sm:w-full sm:max-w-md">
         <h2 className="text-center text-3xl font-bold text-gray-900 dark:text-white">
-          Sign in to {uiTitle}
+          {t('Sign in to {title}', { title: uiTitle })}
         </h2>
         <p className="mt-2 text-center text-sm text-gray-600 dark:text-gray-400">
-          Access your AI management dashboard
+          {t('Access your AI management dashboard')}
         </p>
       </div>
 
@@ -109,7 +115,7 @@ const Login: React.FC = () => {
                   onClick={() => handleOAuthLogin(provider.name)}
                   className="w-full flex items-center justify-center px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-lg shadow-sm text-sm font-medium text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 transition-all duration-200 hover:shadow-md"
                 >
-                  <span>寻数科技账号登录</span>
+                  <span>{t('Sign in with FindData account')}</span>
                 </button>
               ))}
             </div>
@@ -119,10 +125,10 @@ const Login: React.FC = () => {
           {oauthProviders.length === 0 && (
             <div className="text-center py-4">
               <p className="text-sm text-gray-500 dark:text-gray-400">
-                No login methods are currently configured.
+                {t('No login methods are currently configured.')}
               </p>
               <p className="text-sm text-gray-500 dark:text-gray-400 mt-2">
-                Please contact your administrator.
+                {t('Please contact your administrator.')}
               </p>
             </div>
           )}

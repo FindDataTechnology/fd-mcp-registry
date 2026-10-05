@@ -2,6 +2,7 @@ import React from 'react';
 import { XMarkIcon } from '@heroicons/react/24/outline';
 import clsx from 'clsx';
 import useEscapeKey from '../../hooks/useEscapeKey';
+import { useI18n } from '../../contexts/I18nContext';
 
 export type ModalMaxWidth = 'sm' | 'md' | 'lg' | 'xl' | '2xl' | '3xl' | '4xl';
 
@@ -66,6 +67,7 @@ const EntityModal: React.FC<EntityModalProps> = ({
   layout = 'padded',
   children,
 }) => {
+  const { t } = useI18n();
   useEscapeKey(onClose, isOpen);
 
   if (!isOpen) {
@@ -116,7 +118,7 @@ const EntityModal: React.FC<EntityModalProps> = ({
             <button
               onClick={onClose}
               className="p-2 text-gray-400 hover:text-gray-600 dark:text-gray-400 dark:hover:text-gray-200 rounded-lg transition-colors"
-              aria-label="Close"
+              aria-label={t('Close')}
             >
               <XMarkIcon className="h-5 w-5" />
             </button>
@@ -128,7 +130,7 @@ const EntityModal: React.FC<EntityModalProps> = ({
           <div className="flex items-center justify-center py-12">
             <div className="flex flex-col items-center gap-3">
               <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-blue-600 dark:border-blue-400"></div>
-              <p className="text-sm text-gray-600 dark:text-gray-400">Loading details...</p>
+              <p className="text-sm text-gray-600 dark:text-gray-400">{t('Loading details...')}</p>
             </div>
           </div>
         )}
@@ -137,7 +139,7 @@ const EntityModal: React.FC<EntityModalProps> = ({
         {!loading && error && (
           <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4 mb-4">
             <h4 className="font-medium text-red-900 dark:text-red-100 mb-1">
-              Error Loading Details
+              {t('Error Loading Details')}
             </h4>
             <p className="text-sm text-red-800 dark:text-red-200">{error}</p>
           </div>

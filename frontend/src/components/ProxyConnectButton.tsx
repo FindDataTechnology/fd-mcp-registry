@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { LinkIcon } from '@heroicons/react/24/outline';
 import { CopyButton } from './modals';
 import { gatewayClientUrl } from '../utils/gatewayClientUrl';
+import { useI18n } from '../contexts/I18nContext';
 
 // Shown when the resource is not served through the gateway, so there is no
 // client URL to hand out. Deliberately short: on the icon-only card control it
@@ -48,6 +49,9 @@ const ProxyConnectButton: React.FC<ProxyConnectButtonProps> = ({
   connectNotes,
   label,
 }) => {
+  const { t } = useI18n();
+  const disabledHint = t(DISABLED_HINT);
+  const disabledSuffix = t(DISABLED_SUFFIX);
   const [open, setOpen] = useState(false);
   const wrapperRef = useRef<HTMLDivElement>(null);
 
@@ -96,11 +100,11 @@ const ProxyConnectButton: React.FC<ProxyConnectButtonProps> = ({
         aria-disabled={!enabled}
         onClick={() => setOpen((v) => !v)}
         className={triggerClass}
-        title={enabled ? 'Show the client URL for this resource' : DISABLED_HINT}
+        title={enabled ? t('Show the client URL for this resource') : disabledHint}
         aria-label={
           enabled
-            ? 'Connect: show the client URL for this proxied resource'
-            : `Connect unavailable: ${DISABLED_HINT}`
+            ? t('Connect: show the client URL for this proxied resource')
+            : t('Connect unavailable: {hint}', { hint: disabledHint })
         }
         aria-expanded={enabled ? open : undefined}
         aria-haspopup={enabled ? 'dialog' : undefined}
@@ -109,20 +113,20 @@ const ProxyConnectButton: React.FC<ProxyConnectButtonProps> = ({
         {inline && <span>{label}</span>}
       </button>
       {inline && !enabled && (
-        <span className="text-xs text-gray-400 dark:text-gray-500" title={DISABLED_HINT}>
-          &mdash; {DISABLED_SUFFIX}
+        <span className="text-xs text-gray-400 dark:text-gray-500" title={disabledHint}>
+          &mdash; {disabledSuffix}
         </span>
       )}
       {open && enabled && (
         <div
           role="dialog"
-          aria-label="Connection details"
+          aria-label={t('Connection details')}
           className={`absolute ${
             inline ? 'left-0' : 'right-0'
           } z-20 mt-1 w-80 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-lg p-3 text-left`}
         >
-          <p className="text-xs font-semibold text-gray-900 dark:text-white mb-1">Connect</p>
-          <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">Clients connect at:</p>
+          <p className="text-xs font-semibold text-gray-900 dark:text-white mb-1">{t('Connect')}</p>
+          <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">{t('Clients connect at:')}</p>
           <div className="flex items-start gap-2">
             <code className="flex-1 text-xs break-all bg-gray-50 dark:bg-gray-900 rounded px-2 py-1 text-gray-800 dark:text-gray-200">
               {fullUrl}
@@ -132,12 +136,12 @@ const ProxyConnectButton: React.FC<ProxyConnectButtonProps> = ({
               label="Copy"
               copiedLabel="Copied"
               getText={() => fullUrl}
-              title="Copy the client URL"
+              title={t('Copy the client URL')}
             />
           </div>
           {targetUrl && (
             <p className="text-xs text-gray-500 dark:text-gray-400 mt-2 break-all">
-              Forwards to {targetUrl}
+              {t('Forwards to {url}', { url: targetUrl })}
             </p>
           )}
           {connectNotes && (
@@ -149,8 +153,7 @@ const ProxyConnectButton: React.FC<ProxyConnectButtonProps> = ({
             </p>
           )}
           <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
-            Send the gateway token in the X-Authorization header; the backend credential goes in
-            Authorization.
+            {t('Send the gateway token in the X-Authorization header; the backend credential goes in Authorization.')}
           </p>
         </div>
       )}

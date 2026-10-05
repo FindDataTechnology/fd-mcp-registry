@@ -1,16 +1,18 @@
 import React, { useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { CheckCircleIcon } from '@heroicons/react/24/outline';
+import { useI18n } from '../contexts/I18nContext';
 import { useUiTitle } from '../hooks/useUiTitle';
 import Button from '../components/Button';
 
 const Logout: React.FC = () => {
   const navigate = useNavigate();
   const uiTitle = useUiTitle();
+  const { t } = useI18n();
 
   useEffect(() => {
-    document.title = uiTitle;
-  }, [uiTitle]);
+    document.title = t(uiTitle);
+  }, [uiTitle, t]);
 
   useEffect(() => {
     // Auto redirect to login after 5 seconds
@@ -28,10 +30,10 @@ const Logout: React.FC = () => {
           <CheckCircleIcon className="h-16 w-16 text-green-500" />
         </div>
         <h2 className="text-center text-3xl font-bold text-gray-900 dark:text-white">
-          Successfully Logged Out
+          {t('Successfully Logged Out')}
         </h2>
         <p className="mt-2 text-center text-sm text-gray-600 dark:text-gray-400">
-          You have been logged out from all sessions
+          {t('You have been logged out from all sessions')}
         </p>
       </div>
 
@@ -39,7 +41,7 @@ const Logout: React.FC = () => {
         <div className="card p-8">
           <div className="text-center space-y-6">
             <p className="text-gray-700 dark:text-gray-300">
-              Your session has been terminated and you've been logged out from the identity provider.
+              {t("Your session has been terminated and you've been logged out from the identity provider.")}
             </p>
 
             <div className="pt-4">
@@ -49,19 +51,19 @@ const Logout: React.FC = () => {
                 onClick={() => navigate('/login')}
                 className="py-3 shadow-sm hover:shadow-md focus:ring-2 focus:ring-offset-2 focus:ring-purple-500"
               >
-                Return to Login
+                {t('Return to Login')}
               </Button>
             </div>
 
             <p className="text-xs text-gray-500 dark:text-gray-400">
-              Redirecting to login in 5 seconds...
+              {t('Redirecting to login in 5 seconds...')}
             </p>
           </div>
         </div>
 
         <div className="mt-6 text-center">
           <p className="text-xs text-gray-500 dark:text-gray-400">
-            {uiTitle} - Secure Access Management
+            {t('{title} - Secure Access Management', { title: uiTitle })}
           </p>
         </div>
       </div>

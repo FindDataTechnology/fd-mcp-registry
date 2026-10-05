@@ -1,5 +1,6 @@
 import React from 'react';
 import { FIELD, LABEL } from './formClasses';
+import { useI18n } from '../../contexts/I18nContext';
 
 /**
  * The subset of server-form state this block reads/writes. Both the register
@@ -30,18 +31,19 @@ interface Props {
  * `PUT /servers/{path}/oauth-config`. Shared by the register form and the
  * server edit modal so the two never drift.
  */
-const OAuthClientCredentialsFields: React.FC<Props> = ({ values, onChange, editing }) => (
+const OAuthClientCredentialsFields: React.FC<Props> = ({ values, onChange, editing }) => {
+  const { t } = useI18n();
+  return (
   <div className="border-t border-gray-200 dark:border-gray-700 pt-4 mt-4">
     <h4 className="text-sm font-semibold text-gray-900 dark:text-white mb-2">
-      OAuth Client Credentials
+      {t('OAuth Client Credentials')}
     </h4>
     <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
-      The registry authenticates to this server as an OAuth2 client
-      (client_credentials grant) for health checks and tool discovery.
+      {t('The registry authenticates to this server as an OAuth2 client (client_credentials grant) for health checks and tool discovery.')}
     </p>
     <div className="space-y-3">
       <div>
-        <label className={LABEL}>Token URL</label>
+        <label className={LABEL}>{t('Token URL')}</label>
         <input
           type="text"
           value={values.oauth_token_url}
@@ -51,7 +53,7 @@ const OAuthClientCredentialsFields: React.FC<Props> = ({ values, onChange, editi
         />
       </div>
       <div>
-        <label className={LABEL}>Client ID</label>
+        <label className={LABEL}>{t('Client ID')}</label>
         <input
           type="text"
           value={values.oauth_client_id}
@@ -60,32 +62,32 @@ const OAuthClientCredentialsFields: React.FC<Props> = ({ values, onChange, editi
         />
       </div>
       <div>
-        <label className={LABEL}>Token Endpoint Authentication</label>
+        <label className={LABEL}>{t('Token Endpoint Authentication')}</label>
         <select
           value={values.oauth_token_auth_style || 'post_body'}
           onChange={(e) => onChange({ oauth_token_auth_style: e.target.value })}
           className={FIELD}
         >
-          <option value="post_body">Client secret in POST body</option>
-          <option value="basic_header">Client secret in Basic header</option>
-          <option value="none">None — public client (no secret)</option>
+          <option value="post_body">{t('Client secret in POST body')}</option>
+          <option value="basic_header">{t('Client secret in Basic header')}</option>
+          <option value="none">{t('None — public client (no secret)')}</option>
         </select>
       </div>
       {values.oauth_token_auth_style !== 'none' && (
         <div>
-          <label className={LABEL}>Client Secret</label>
+          <label className={LABEL}>{t('Client Secret')}</label>
           <input
             type="password"
             value={values.oauth_client_secret}
             onChange={(e) => onChange({ oauth_client_secret: e.target.value })}
-            placeholder={editing ? 'leave blank to keep current' : ''}
+            placeholder={editing ? t('leave blank to keep current') : ''}
             autoComplete="new-password"
             className={FIELD}
           />
         </div>
       )}
       <div>
-        <label className={LABEL}>Scopes</label>
+        <label className={LABEL}>{t('Scopes')}</label>
         <input
           type="text"
           value={values.oauth_scopes}
@@ -95,7 +97,7 @@ const OAuthClientCredentialsFields: React.FC<Props> = ({ values, onChange, editi
         />
       </div>
       <div>
-        <label className={LABEL}>Resource (RFC 8707, optional)</label>
+        <label className={LABEL}>{t('Resource (RFC 8707, optional)')}</label>
         <input
           type="text"
           value={values.oauth_resource}
@@ -106,6 +108,7 @@ const OAuthClientCredentialsFields: React.FC<Props> = ({ values, onChange, editi
       </div>
     </div>
   </div>
-);
+  );
+};
 
 export default OAuthClientCredentialsFields;

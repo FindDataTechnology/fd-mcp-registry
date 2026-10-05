@@ -45,6 +45,7 @@ import ServerRegisterModal, {
 import { useEntityToggle } from '../hooks/useEntityToggle';
 import { filterEntities } from '../utils/entityFilters';
 import { upstreamHeaderRowError } from '../components/formFields';
+import { useI18n } from '../contexts/I18nContext';
 
 // Federated-registry header accents (local groups are always green/emerald).
 const SERVER_REGISTRY_ACCENT: RegistryAccent = {
@@ -84,6 +85,7 @@ import Pagination from '../components/Pagination';
 import DuplicateCheckModal from '../components/DuplicateCheckModal';
 import { useDuplicateCheck } from '../hooks/useDuplicateCheck';
 import type { ExistingEntity } from '../types/duplicateCheck';
+import { localizeError } from '../utils/apiError';
 
 
 interface SyncMetadata {
@@ -219,6 +221,7 @@ interface DashboardProps {
 }
 
 const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFilter, selectedTags = [] }) => {
+  const { t } = useI18n();
   const navigate = useNavigate();
   const { servers, agents: agentsFromStats, customRecordsByType: customEntityRecordsByType, loading, error, refreshData, setServers, setAgents } = useServerStats();
   const { skills, setSkills, loading: skillsLoading, error: skillsError, refreshData: refreshSkills } = useSkills();
@@ -448,7 +451,7 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
     // that the user lacks list access to.
     if (viewFilter.startsWith('custom:')) {
       const typeName = viewFilter.slice('custom:'.length);
-      const exists = (registryConfig?.custom_types ?? []).some((t) => t.name === typeName);
+      const exists = (registryConfig?.custom_types ?? []).some((ct) => ct.name === typeName);
       if (registryConfig && (!exists || !hasListAccess(`list_${typeName}_entity`))) {
         setViewFilter('discover');
       }
@@ -927,7 +930,7 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
   const matchesSelectedTags = useCallback((entityTags: string[] | undefined) => {
     if (selectedTags.length === 0) return true;
     if (!entityTags || entityTags.length === 0) return false;
-    const lowerTags = entityTags.map(t => t.toLowerCase());
+    const lowerTags = entityTags.map(tag => tag.toLowerCase());
     return selectedTags.every(st => lowerTags.includes(st.toLowerCase()));
   }, [selectedTags]);
 
@@ -1009,7 +1012,7 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
   const matchesHashTags = useCallback((entityTags: string[] | undefined) => {
     if (parsedSearch.hashTags.length === 0) return true;
     if (!entityTags || entityTags.length === 0) return false;
-    const lowerTags = entityTags.map(t => t.toLowerCase());
+    const lowerTags = entityTags.map(tag => tag.toLowerCase());
     return parsedSearch.hashTags.every(ht =>
       lowerTags.some(tag => tag.startsWith(ht))
     );
@@ -1134,12 +1137,17 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
   const handleToggleVirtualServer = useCallback(async (path: string, enabled: boolean) => {
     try {
       await toggleVirtualServer(path, enabled);
-      showToast(`Virtual server ${enabled ? 'enabled' : 'disabled'} successfully`, 'success');
+      showToast(
+        enabled
+          ? t('Virtual server enabled successfully')
+          : t('Virtual server disabled successfully'),
+        'success',
+      );
     } catch (err) {
       console.error('Failed to toggle virtual server:', err);
-      showToast('Failed to toggle virtual server', 'error');
+      showToast(t('Failed to toggle virtual server'), 'error');
     }
-  }, [toggleVirtualServer]);
+  }, [toggleVirtualServer, t]);
 
   // State for virtual server delete confirmation on Dashboard
   const [deleteVirtualServerTarget, setDeleteVirtualServerTarget] = useState<VirtualServerInfo | null>(null);
@@ -1160,17 +1168,17 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
     setDeletingVirtualServer(true);
     try {
       await deleteVirtualServer(deleteVirtualServerTarget.path);
-      showToast('Virtual server deleted successfully', 'success');
+      showToast(t('Virtual server deleted successfully'), 'success');
       notifyDataChanged();
       setDeleteVirtualServerTarget(null);
       setDeleteVirtualServerTypedName('');
     } catch (err) {
       console.error('Failed to delete virtual server:', err);
-      showToast('Failed to delete virtual server', 'error');
+      showToast(t('Failed to delete virtual server'), 'error');
     } finally {
       setDeletingVirtualServer(false);
     }
-  }, [deleteVirtualServerTarget, deleteVirtualServerTypedName, deleteVirtualServer]);
+  }, [deleteVirtualServerTarget, deleteVirtualServerTypedName, deleteVirtualServer, t]);
 
   const handleEditVirtualServer = useCallback((vs: VirtualServerInfo) => {
     setEditingVirtualServerPath(vs.path);
@@ -1183,16 +1191,16 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
     if (!editingVirtualServerPath) return;
     try {
       await updateVirtualServer(editingVirtualServerPath, data as UpdateVirtualServerRequest);
-      showToast('Virtual server updated successfully', 'success');
+      showToast(t('Virtual server updated successfully'), 'success');
       notifyDataChanged();
       setShowVirtualServerForm(false);
       setEditingVirtualServerPath(undefined);
       refreshVirtualServers();
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'An unexpected error occurred';
-      showToast(`Failed to save virtual server: ${message}`, 'error');
+      const message = err instanceof Error ? err.message : t('An unexpected error occurred');
+      showToast(t('Failed to save virtual server: {message}', { message }), 'error');
     }
-  }, [editingVirtualServerPath, updateVirtualServer, refreshVirtualServers]);
+  }, [editingVirtualServerPath, updateVirtualServer, refreshVirtualServers, t]);
 
   const handleCancelVirtualServerEdit = useCallback(() => {
     setShowVirtualServerForm(false);
@@ -1256,7 +1264,7 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
   const currentCustomType = useMemo(() => {
     if (!viewFilter.startsWith('custom:')) return null;
     const typeName = viewFilter.slice('custom:'.length);
-    return (registryConfig?.custom_types ?? []).find((t) => t.name === typeName) ?? null;
+    return (registryConfig?.custom_types ?? []).find((ct) => ct.name === typeName) ?? null;
   }, [viewFilter, registryConfig]);
 
   // Notify Layout to refresh the sidebar tag list after data changes
@@ -1284,13 +1292,17 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
       // Check the success field in the response body
       if (result.success) {
         setToast({
-          message: `Synced ${result.servers_synced || 0} servers and ${result.agents_synced || 0} agents from ${peerId}`,
+          message: t('Synced {servers} servers and {agents} agents from {peerId}', {
+            servers: result.servers_synced || 0,
+            agents: result.agents_synced || 0,
+            peerId,
+          }),
           type: 'success'
         });
       } else {
         // Sync failed - show error message from response
         setToast({
-          message: result.error_message || `Failed to sync from ${peerId}`,
+          message: result.error_message || t('Failed to sync from {peerId}', { peerId }),
           type: 'error'
         });
       }
@@ -1300,7 +1312,7 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
       notifyDataChanged();
     } catch (error) {
       console.error('Failed to sync peer:', error);
-      setToast({ message: `Failed to sync from ${peerId}`, type: 'error' });
+      setToast({ message: t('Failed to sync from {peerId}', { peerId }), type: 'error' });
     } finally {
       setSyncingPeer(null);
     }
@@ -1502,15 +1514,15 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
       const { typeName, record } = customEditing;
       if (record) {
         await axios.put(`/api/custom/${typeName}/${uuidFromPath(record.path)}`, body);
-        showToast(`Updated ${body.name ?? record.name}`, 'success');
+        showToast(t('Updated {name}', { name: body.name ?? record.name }), 'success');
       } else {
         await axios.post(`/api/custom/${typeName}`, body);
-        showToast(`Created ${body.name}`, 'success');
+        showToast(t('Created {name}', { name: body.name ?? '' }), 'success');
       }
       setCustomEditing(null);
       await refreshData();
     },
-    [customEditing, refreshData, showToast],
+    [customEditing, refreshData, showToast, t],
   );
 
   const handleCustomDelete = useCallback(async () => {
@@ -1520,15 +1532,15 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
       await axios.delete(
         `/api/custom/${customDeleting.typeName}/${uuidFromPath(customDeleting.record.path)}`,
       );
-      showToast(`Deleted ${customDeleting.record.name}`, 'success');
+      showToast(t('Deleted {name}', { name: customDeleting.record.name }), 'success');
       setCustomDeleting(null);
       await refreshData();
     } catch (err: any) {
-      showToast(err.response?.data?.detail || 'Failed to delete', 'error');
+      showToast(localizeError(err, t, 'Failed to delete'), 'error');
     } finally {
       setCustomDeleteLoading(false);
     }
-  }, [customDeleting, refreshData, showToast]);
+  }, [customDeleting, refreshData, showToast, t]);
 
   const handleSaveEdit = async () => {
     if (editLoading || !editingServer) return;
@@ -1541,9 +1553,9 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
     if (isLocal && !editForm.local_runtime.package.trim()) {
       const rt = editForm.local_runtime;
       showToast(
-        rt.type === 'docker' ? 'Image reference is required'
-        : rt.type === 'command' ? 'Command path is required'
-        : 'Package name is required',
+        rt.type === 'docker' ? t('Image reference is required')
+        : rt.type === 'command' ? t('Command path is required')
+        : t('Package name is required'),
         'error',
       );
       return;
@@ -1633,7 +1645,7 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
           );
         } catch (oauthErr: unknown) {
           console.error('Backend OAuth config failed to apply:', oauthErr);
-          failedParts.push('backend OAuth config');
+          failedParts.push(t('backend OAuth config'));
         }
       }
 
@@ -1696,7 +1708,7 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
           }
         } catch (egressErr: unknown) {
           console.error('Egress auth config failed to apply:', egressErr);
-          failedParts.push('egress auth');
+          failedParts.push(t('egress auth'));
         }
       }
 
@@ -1750,7 +1762,7 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
           }
         } catch (discoveryErr: unknown) {
           console.error('Discovery identity config failed to apply:', discoveryErr);
-          failedParts.push('discovery identity');
+          failedParts.push(t('discovery identity'));
         }
       }
 
@@ -1760,11 +1772,11 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
 
       if (failedParts.length > 0) {
         showToast(
-          `Server saved, but these did not apply: ${failedParts.join(', ')}`,
+          t('Server saved, but these did not apply: {parts}', { parts: failedParts.join(', ') }),
           'error',
         );
       } else {
-        showToast('Server updated successfully!', 'success');
+        showToast(t('Server updated successfully!'), 'success');
       }
       notifyDataChanged();
     } catch (error: any) {
@@ -1773,7 +1785,7 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
       const message =
         typeof detail === 'string' ? detail
         : detail && typeof detail === 'object' ? JSON.stringify(detail)
-        : 'Failed to update server';
+        : t('Failed to update server');
       showToast(message, 'error');
     } finally {
       setEditLoading(false);
@@ -1788,12 +1800,12 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
     try {
       parsedSkills = JSON.parse(editAgentForm.skillsJson);
       if (!Array.isArray(parsedSkills)) {
-        setSkillsJsonError('Skills must be a JSON array');
+        setSkillsJsonError(t('Skills must be a JSON array'));
         return;
       }
       setSkillsJsonError(null);
     } catch {
-      setSkillsJsonError('Invalid JSON format');
+      setSkillsJsonError(t('Invalid JSON format'));
       return;
     }
 
@@ -1852,11 +1864,11 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
       await refreshData();
 
       setEditingAgent(null);
-      showToast('Agent updated successfully!', 'success');
+      showToast(t('Agent updated successfully!'), 'success');
     } catch (error: any) {
       console.error('Failed to update agent:', error);
       const detail = error.response?.data?.detail;
-      const message = typeof detail === 'object' ? detail.message || JSON.stringify(detail) : detail || 'Failed to update agent';
+      const message = typeof detail === 'object' ? detail.message || JSON.stringify(detail) : detail || t('Failed to update agent');
       showToast(message, 'error');
     } finally {
       setEditAgentLoading(false);
@@ -1866,7 +1878,7 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
   const handleToggleServer = useEntityToggle({
     setItems: setServers,
     enabledField: 'enabled',
-    label: 'Server',
+    label: t('Server'),
     showToast,
     apiCall: async (path, enabled) => {
       const formData = new FormData();
@@ -1887,23 +1899,23 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
 
     // Remove from local state immediately for responsive UI
     setServers(prevServers => prevServers.filter(s => s.path !== path));
-    showToast('Server deleted successfully', 'success');
+    showToast(t('Server deleted successfully'), 'success');
     notifyDataChanged();
-  }, [setServers, showToast]);
+  }, [setServers, showToast, t]);
 
   const handleDeleteAgent = useCallback(async (path: string) => {
     await axios.delete(`/api/agents${path}`);
 
     // Remove from local state immediately for responsive UI
     setAgents(prevAgents => prevAgents.filter(a => a.path !== path));
-    showToast('Agent deleted successfully', 'success');
+    showToast(t('Agent deleted successfully'), 'success');
     notifyDataChanged();
-  }, [setAgents, showToast]);
+  }, [setAgents, showToast, t]);
 
   const handleToggleAgent = useEntityToggle({
     setItems: setAgents,
     enabledField: 'enabled',
-    label: 'Agent',
+    label: t('Agent'),
     showToast,
     apiCall: async (path, enabled) => {
       await axios.post(`/api/agents${path}/toggle?enabled=${enabled}`);
@@ -1923,7 +1935,7 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
   const handleToggleSkill = useEntityToggle({
     setItems: setSkills,
     enabledField: 'is_enabled',
-    label: 'Skill',
+    label: t('Skill'),
     showToast,
     apiCall: async (path, enabled) => {
       // Convert full path to API path (e.g., /skills/pdf -> /pdf)
@@ -2037,24 +2049,24 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
           tags: data.tags?.length > 0 ? data.tags.join(', ') : prev.tags,
           repository_url: data.repository_url || prev.repository_url,
         }));
-        showToast('Parsed SKILL.md successfully!', 'success');
+        showToast(t('Parsed SKILL.md successfully!'), 'success');
       } else {
-        showToast('Failed to parse SKILL.md', 'error');
+        showToast(t('Failed to parse SKILL.md'), 'error');
       }
     } catch (error: any) {
       console.error('Failed to parse SKILL.md:', error);
-      showToast(error.response?.data?.detail || 'Failed to parse SKILL.md', 'error');
+      showToast(localizeError(error, t, 'Failed to parse SKILL.md'), 'error');
     } finally {
       setSkillParseLoading(false);
     }
-  }, [skillForm.skill_md_url, skillForm.auth_scheme, skillForm.auth_credential, skillForm.auth_header_name, skillParseLoading, showToast]);
+  }, [skillForm.skill_md_url, skillForm.auth_scheme, skillForm.auth_credential, skillForm.auth_header_name, skillParseLoading, showToast, t]);
 
   const performSkillSave = useCallback(async (): Promise<void> => {
     // A skill has no native backend URL, so a proxied skill must carry an
     // explicit target. Block here with an inline toast rather than letting the
     // backend reject it with a 422 the user can't easily map to a field.
     if (skillForm.is_proxied && !skillForm.proxy_target_url.trim()) {
-      showToast('A proxy target URL is required when proxying is enabled', 'error');
+      showToast(t('A proxy target URL is required when proxying is enabled'), 'error');
       return;
     }
 
@@ -2078,7 +2090,7 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
 
       // Parse comma-separated strings into arrays
       const parseTags = (str: string): string[] =>
-        str.split(',').map(t => t.trim()).filter(t => t.length > 0);
+        str.split(',').map(tag => tag.trim()).filter(tag => tag.length > 0);
 
       // Parse optional metadata JSON
       let parsedMetadata: Record<string, any> | undefined = undefined;
@@ -2086,7 +2098,7 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
         try {
           parsedMetadata = JSON.parse(skillForm.metadata);
         } catch {
-          showToast('Invalid JSON in metadata field', 'error');
+          showToast(t('Invalid JSON in metadata field'), 'error');
           setSkillFormLoading(false);
           return;
         }
@@ -2149,7 +2161,7 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
             custom_headers: upstreamHeaders,
           });
         }
-        showToast('Skill updated successfully!', 'success');
+        showToast(t('Skill updated successfully!'), 'success');
         notifyDataChanged();
       } else {
         // Create new skill (custom_headers accepted on the create payload).
@@ -2157,7 +2169,7 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
           payload.custom_headers = upstreamHeaders;
         }
         await axios.post('/api/skills', payload);
-        showToast('Skill registered successfully!', 'success');
+        showToast(t('Skill registered successfully!'), 'success');
         notifyDataChanged();
       }
 
@@ -2166,12 +2178,12 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
       handleCloseSkillModal();
     } catch (error: any) {
       console.error('Failed to save skill:', error);
-      const errorMsg = error.response?.data?.detail || 'Failed to save skill';
+      const errorMsg = localizeError(error, t, 'Failed to save skill');
       showToast(errorMsg, 'error');
     } finally {
       setSkillFormLoading(false);
     }
-  }, [skillForm, editingSkill, refreshSkills, showToast, notifyDataChanged, handleCloseSkillModal]);
+  }, [skillForm, editingSkill, refreshSkills, showToast, notifyDataChanged, handleCloseSkillModal, t]);
 
 
   const handleSaveSkill = useCallback(async (e: React.FormEvent) => {
@@ -2181,7 +2193,7 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
     // Validate name format (lowercase, numbers, hyphens only)
     const nameRegex = /^[a-z0-9]+(-[a-z0-9]+)*$/;
     if (!nameRegex.test(skillForm.name)) {
-      showToast('Name must be lowercase letters, numbers, and hyphens only (e.g., "my-skill-name")', 'error');
+      showToast(t('Name must be lowercase letters, numbers, and hyphens only (e.g., "my-skill-name")'), 'error');
       return;
     }
 
@@ -2219,6 +2231,7 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
     showToast,
     performSkillSave,
     runSkillDuplicateCheck,
+    t,
   ]);
 
   const handleSkillDuplicateProceed = useCallback(async () => {
@@ -2268,14 +2281,14 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
       // path may be shortened (e.g. "/add") while s.path is full (e.g. "/skills/add")
       const fullPath = path.startsWith('/skills/') ? path : `/skills${path}`;
       setSkills(prevSkills => prevSkills.filter(s => s.path !== path && s.path !== fullPath));
-      showToast('Skill deleted successfully', 'success');
+      showToast(t('Skill deleted successfully'), 'success');
       notifyDataChanged();
       setShowDeleteSkillConfirm(null);
     } catch (error: any) {
       console.error('Failed to delete skill:', error);
-      showToast(error.response?.data?.detail || 'Failed to delete skill', 'error');
+      showToast(localizeError(error, t, 'Failed to delete skill'), 'error');
     }
-  }, [setSkills, showToast]);
+  }, [setSkills, showToast, t]);
 
   const handleRegisterServer = useCallback(() => {
     navigate('/servers/register');
@@ -2316,15 +2329,15 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
       // Refresh server list
       await refreshData();
 
-      showToast('Server registered successfully!', 'success');
+      showToast(t('Server registered successfully!'), 'success');
       notifyDataChanged();
     } catch (error: any) {
       console.error('Failed to register server:', error);
-      showToast(error.response?.data?.detail || 'Failed to register server', 'error');
+      showToast(localizeError(error, t, 'Failed to register server'), 'error');
     } finally {
       setRegisterLoading(false);
     }
-  }, [registerForm, registerLoading, refreshData, showToast]);
+  }, [registerForm, registerLoading, refreshData, showToast, t]);
 
   const renderDashboardCollections = () => (
     <>
@@ -2334,18 +2347,18 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
           <div className="mb-8">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-xl font-bold text-gray-900 dark:text-white">
-                MCP Servers
+                {t('MCP Servers')}
               </h2>
 
               {/* Registry Quick Navigation - Only show if there are multiple registries */}
               {registryIds.length > 1 && filteredServers.length > 0 && (
                 <div className="flex items-center gap-2">
-                  <span className="text-xs text-gray-500 dark:text-gray-400 mr-1">Jump to:</span>
+                  <span className="text-xs text-gray-500 dark:text-gray-400 mr-1">{t('Jump to:')}</span>
                   {registryIds.map(registryId => {
                     const count = (serversByRegistry[registryId] || []).length;
                     if (count === 0) return null;
                     const displayName = registryId === 'local'
-                      ? 'Local'
+                      ? t('Local')
                       : registryId.replace('peer-registry-', '').replace('peer-', '').toUpperCase();
                     const isLocal = registryId === 'local';
 
@@ -2395,9 +2408,9 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
                         setExpandedRegistries(prev => ({ ...prev, ...newExpanded }));
                       }}
                       className="px-2 py-1 text-xs text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
-                      title={registryIds.every(id => expandedRegistries[id] !== false) ? 'Collapse all' : 'Expand all'}
+                      title={registryIds.every(id => expandedRegistries[id] !== false) ? t('Collapse all') : t('Expand all')}
                     >
-                      {registryIds.every(id => expandedRegistries[id] !== false) ? 'Collapse All' : 'Expand All'}
+                      {registryIds.every(id => expandedRegistries[id] !== false) ? t('Collapse All') : t('Expand All')}
                     </button>
                   </div>
                 </div>
@@ -2406,15 +2419,15 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
 
             {egressEnabled && (
               <p className="text-xs text-gray-500 dark:text-gray-400 -mt-2 mb-4">
-                Some servers require per-user authentication (e.g. Slack, Atlassian).{' '}
+                {t('Some servers require per-user authentication (e.g. Slack, Atlassian).')}{' '}
                 <button
                   type="button"
                   onClick={() => navigate('/connected-accounts')}
                   className="text-purple-600 dark:text-purple-400 underline hover:text-purple-700 dark:hover:text-purple-300 focus:outline-none"
                 >
-                  Click here to connect your accounts
+                  {t('Click here to connect your accounts')}
                 </button>{' '}
-                before adding those servers to your coding assistant.
+                {t('before adding those servers to your coding assistant.')}
               </p>
             )}
 
@@ -2432,13 +2445,13 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
 
             {filteredServers.length === 0 ? (
               <div className="text-center py-12 bg-gray-50 dark:bg-gray-800 rounded-lg">
-                <div className="text-gray-400 text-lg mb-2">No servers found</div>
+                <div className="text-gray-400 text-lg mb-2">{t('No servers found')}</div>
                 <p className="text-gray-500 dark:text-gray-300 text-sm">
                   {selectedTags.length > 0
-                    ? `No servers match the selected tag${selectedTags.length > 1 ? 's' : ''}`
+                    ? t(selectedTags.length > 1 ? 'No servers match the selected tags' : 'No servers match the selected tag')
                     : searchTerm || activeFilter !== 'all'
-                      ? 'Press Enter in the search bar to search semantically'
-                      : 'No servers are registered yet'}
+                      ? t('Press Enter in the search bar to search semantically')
+                      : t('No servers are registered yet')}
                 </p>
                 {!searchTerm && activeFilter === 'all' && selectedTags.length === 0 && (
                   <button
@@ -2446,7 +2459,7 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
                     className="mt-4 inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-lg text-white bg-blue-600 hover:bg-blue-700 transition-colors"
                   >
                     <PlusIcon className="h-4 w-4 mr-2" />
-                    Register Server
+                    {t('Register Server')}
                   </button>
                 )}
               </div>
@@ -2483,8 +2496,8 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
 
                   const isExpanded = expandedRegistries[registryId] !== false;  // Default to expanded
                   const displayName = registryId === 'local'
-                    ? 'Local Registry'
-                    : registryId.replace('peer-registry-', '').replace('peer-', '').toUpperCase() + ' (Federated)';
+                    ? t('Local Registry')
+                    : t('{name} (Federated)', { name: registryId.replace('peer-registry-', '').replace('peer-', '').toUpperCase() });
 
                   // When there's only one registry (local), skip the collapsible wrapper
                   const showRegistryHeader = registryIds.length > 1 || registryId !== 'local';
@@ -2543,7 +2556,9 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
                       renderCard={renderServerCard}
                       showHeader={showRegistryHeader}
                       endpointUrl={registryId === 'local' ? localRegistryUrl : peerRegistryEndpoints[registryId]}
-                      countLabel={`${serverCount} server${serverCount !== 1 ? 's' : ''}`}
+                      countLabel={serverCount !== 1
+                        ? t('{count} servers', { count: serverCount })
+                        : t('{count} server', { count: serverCount })}
                       displayName={displayName}
                       accent={SERVER_REGISTRY_ACCENT}
                       onResync={(e) => handleSyncPeer(registryId, e)}
@@ -2564,18 +2579,18 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
           <div className="mb-8">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-xl font-bold text-gray-900 dark:text-white">
-                Agents
+                {t('Agents')}
               </h2>
 
               {/* Registry Quick Navigation for Agents - Only show if there are multiple registries */}
               {agentRegistryIds.length > 1 && filteredAgents.length > 0 && (
                 <div className="flex items-center gap-2">
-                  <span className="text-xs text-gray-500 dark:text-gray-400 mr-1">Jump to:</span>
+                  <span className="text-xs text-gray-500 dark:text-gray-400 mr-1">{t('Jump to:')}</span>
                   {agentRegistryIds.map(registryId => {
                     const count = (agentsByRegistry[registryId] || []).length;
                     if (count === 0) return null;
                     const displayName = registryId === 'local'
-                      ? 'Local'
+                      ? t('Local')
                       : registryId.replace('peer-registry-', '').replace('peer-', '').toUpperCase();
                     const isLocal = registryId === 'local';
 
@@ -2631,7 +2646,7 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
 
             {agentsError ? (
               <div className="text-center py-12 bg-red-50 dark:bg-red-900/20 rounded-lg border border-red-200 dark:border-red-800">
-                <div className="text-red-500 text-lg mb-2">Failed to load agents</div>
+                <div className="text-red-500 text-lg mb-2">{t('Failed to load agents')}</div>
                 <p className="text-red-600 dark:text-red-400 text-sm">{agentsError}</p>
               </div>
             ) : loading ? (
@@ -2643,28 +2658,27 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
                 {!hasListAccess('list_agents') ? (
                   <>
                     <div className="text-gray-400 text-lg mb-2">
-                      You don't have access to view agents
+                      {t("You don't have access to view agents")}
                     </div>
                     <p className="text-gray-500 dark:text-gray-300 text-sm max-w-md mx-auto">
-                      Agent discovery is managed by your registry administrator. Ask them to
-                      grant your group the "list_agents" permission so agents appear here.{' '}
+                      {t('Agent discovery is managed by your registry administrator. Ask them to grant your group the "list_agents" permission so agents appear here.')}{' '}
                       <a
                         href="https://github.com/agentic-community/mcp-gateway-registry/blob/main/docs/faq/granting-skill-and-agent-discovery-permissions.md"
                         target="_blank"
                         rel="noopener noreferrer"
                         className="text-cyan-600 dark:text-cyan-400 hover:underline"
                       >
-                        Learn more
+                        {t('Learn more')}
                       </a>
                     </p>
                   </>
                 ) : (
                   <>
-                    <div className="text-gray-400 text-lg mb-2">No agents found</div>
+                    <div className="text-gray-400 text-lg mb-2">{t('No agents found')}</div>
                     <p className="text-gray-500 dark:text-gray-300 text-sm">
                       {searchTerm || activeFilter !== 'all'
-                        ? 'Press Enter in the search bar to search semantically'
-                        : 'No agents are registered yet'}
+                        ? t('Press Enter in the search bar to search semantically')
+                        : t('No agents are registered yet')}
                     </p>
                   </>
                 )}
@@ -2702,8 +2716,8 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
 
                   const isExpanded = expandedRegistries[`agents-${registryId}`] !== false;  // Default to expanded
                   const displayName = registryId === 'local'
-                    ? 'Local Registry'
-                    : registryId.replace('peer-registry-', '').replace('peer-', '').toUpperCase() + ' (Federated)';
+                    ? t('Local Registry')
+                    : t('{name} (Federated)', { name: registryId.replace('peer-registry-', '').replace('peer-', '').toUpperCase() });
 
                   // When there's only one registry (local), skip the collapsible wrapper
                   const showRegistryHeader = agentRegistryIds.length > 1 || registryId !== 'local';
@@ -2747,7 +2761,9 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
                       renderCard={renderAgentCard}
                       showHeader={showRegistryHeader}
                       endpointUrl={registryId === 'local' ? localRegistryUrl : peerRegistryEndpoints[registryId]}
-                      countLabel={`${filteredRegistryAgents.length} agent${filteredRegistryAgents.length !== 1 ? 's' : ''}`}
+                      countLabel={filteredRegistryAgents.length !== 1
+                        ? t('{count} agents', { count: filteredRegistryAgents.length })
+                        : t('{count} agent', { count: filteredRegistryAgents.length })}
                       displayName={displayName}
                       accent={AGENT_REGISTRY_ACCENT}
                       onResync={(e) => handleSyncPeer(registryId, e)}
@@ -2887,11 +2903,16 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
         (viewFilter === 'virtual' && filteredVirtualServers.length === 0)) &&
         (searchTerm || activeFilter !== 'all' || selectedTags.length > 0) && (
           <div className="text-center py-16">
-            <div className="text-gray-400 text-xl mb-4">No items found</div>
+            <div className="text-gray-400 text-xl mb-4">{t('No items found')}</div>
             <p className="text-gray-500 dark:text-gray-300 text-base max-w-md mx-auto">
               {selectedTags.length > 0
-                ? `No items match the selected tag${selectedTags.length > 1 ? 's' : ''}: ${selectedTags.join(', ')}`
-                : 'Press Enter in the search bar to search semantically'}
+                ? t(
+                    selectedTags.length > 1
+                      ? 'No items match the selected tags: {tags}'
+                      : 'No items match the selected tag: {tags}',
+                    { tags: selectedTags.join(', ') },
+                  )
+                : t('Press Enter in the search bar to search semantically')}
             </p>
           </div>
         )}
@@ -2902,14 +2923,14 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
   if (error && agentsError) {
     return (
       <div className="flex flex-col items-center justify-center h-64 space-y-4">
-        <div className="text-red-500 text-lg">Failed to load servers and agents</div>
+        <div className="text-red-500 text-lg">{t('Failed to load servers and agents')}</div>
         <p className="text-gray-500 text-center">{error}</p>
         <p className="text-gray-500 text-center">{agentsError}</p>
         <button
           onClick={handleRefreshHealth}
           className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors"
         >
-          Try Again
+          {t('Try Again')}
         </button>
       </div>
     );
@@ -2949,7 +2970,7 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
                   : 'border-transparent text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'
               }`}
             >
-              Discover
+              {t('Discover')}
             </button>
             {registryConfig?.features.mcp_servers !== false && hasListAccess('list_service') && (
               <button
@@ -2960,7 +2981,7 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
                     : 'border-transparent text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'
                 }`}
               >
-                MCP Servers
+                {t('MCP Servers')}
               </button>
             )}
             {registryConfig?.features.virtual_servers !== false && (
@@ -2972,7 +2993,7 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
                     : 'border-transparent text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'
                 }`}
               >
-                Virtual MCP Servers
+                {t('Virtual MCP Servers')}
               </button>
             )}
             {registryConfig?.features.agents !== false && (
@@ -2984,7 +3005,7 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
                     : 'border-transparent text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'
                 }`}
               >
-                Agents
+                {t('Agents')}
               </button>
             )}
             {registryConfig?.features.skills !== false && (
@@ -2996,7 +3017,7 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
                     : 'border-transparent text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'
                 }`}
               >
-                Agent Skills
+                {t('Agent Skills')}
               </button>
             )}
             {/* Custom entity type tabs render before External Registries, which
@@ -3029,7 +3050,7 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
                     : 'border-transparent text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'
                 }`}
               >
-                External Registries
+                {t('External Registries')}
               </button>
             )}
           </div>
@@ -3044,7 +3065,7 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
               </div>
               <input
                 type="text"
-                placeholder="Search servers, agents, descriptions, or tags… (Press Enter to run semantic search; typing filters locally.)"
+                placeholder={t('Search servers, agents, descriptions, or tags… (Press Enter to run semantic search; typing filters locally.)')}
                 className="input pl-10 w-full"
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
@@ -3072,7 +3093,7 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
                 className="btn-primary flex items-center space-x-2 flex-shrink-0"
               >
                 <PlusIcon className="h-4 w-4" />
-                <span>Register</span>
+                <span>{t('Register')}</span>
               </button>
             )}
 
@@ -3082,7 +3103,7 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
               className="btn-secondary flex items-center space-x-2 flex-shrink-0"
             >
               <ArrowPathIcon className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />
-              <span>Refresh Health</span>
+              <span>{t('Refresh Health')}</span>
             </button>
           </div>
 
@@ -3092,21 +3113,24 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
               <p className="text-sm text-gray-500 dark:text-gray-300">
                 {semanticSectionVisible ? (
                   <>
-                    Showing {semanticServers.length} servers, {semanticAgents.length} agents
+                    {t('Showing {servers} servers, {agents} agents', {
+                      servers: semanticServers.length,
+                      agents: semanticAgents.length,
+                    })}
                   </>
                 ) : (
                   <>
-                    Showing{' '}
+                    {t('Showing')}{' '}
                     {registryConfig?.features.mcp_servers !== false && (
-                      <>{filteredServers.length} servers</>
+                      <>{t('{count} servers', { count: filteredServers.length })}</>
                     )}
                     {registryConfig?.features.mcp_servers !== false && registryConfig?.features.agents !== false && ', '}
                     {registryConfig?.features.agents !== false && (
-                      <>{filteredAgents.length} agents</>
+                      <>{t('{count} agents', { count: filteredAgents.length })}</>
                     )}
                     {(registryConfig?.features.mcp_servers !== false || registryConfig?.features.agents !== false) && registryConfig?.features.skills !== false && ', '}
                     {registryConfig?.features.skills !== false && (
-                      <>{filteredSkills.length} skills</>
+                      <>{t('{count} skills', { count: filteredSkills.length })}</>
                     )}
                     {customCounts.map((ct) => (
                       <React.Fragment key={ct.name}>
@@ -3118,7 +3142,7 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
               </p>
             </div>
             <p className="text-xs text-gray-400 dark:text-gray-500">
-              Press Enter to run semantic search; typing filters locally.
+              {t('Press Enter to run semantic search; typing filters locally.')}
             </p>
           </div>
           </>
@@ -3182,11 +3206,11 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
                     <div className="border-t border-gray-200 dark:border-gray-700 pt-6">
                       <div className="flex items-center justify-between mb-4">
                         <h4 className="text-base font-semibold text-gray-900 dark:text-gray-200">
-                          Keyword search fallback
+                          {t('Keyword search fallback')}
                         </h4>
                         {semanticError && (
                           <span className="text-xs font-medium text-red-500">
-                            Showing local matches because semantic search is unavailable
+                            {t('Showing local matches because semantic search is unavailable')}
                           </span>
                         )}
                       </div>
@@ -3272,23 +3296,23 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
           <div className="bg-white dark:bg-gray-800 rounded-lg p-6 w-full max-w-sm">
             <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-2">
-              Delete Skill
+              {t('Delete Skill')}
             </h3>
             <p className="text-gray-600 dark:text-gray-300 mb-4">
-              Are you sure you want to delete this skill? This action cannot be undone.
+              {t('Are you sure you want to delete this skill? This action cannot be undone.')}
             </p>
             <div className="flex space-x-3">
               <button
                 onClick={() => handleDeleteSkill(showDeleteSkillConfirm)}
                 className="flex-1 px-4 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded-md transition-colors"
               >
-                Delete
+                {t('Delete')}
               </button>
               <button
                 onClick={() => setShowDeleteSkillConfirm(null)}
                 className="flex-1 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-800 rounded-md transition-colors"
               >
-                Cancel
+                {t('Cancel')}
               </button>
             </div>
           </div>
@@ -3301,18 +3325,17 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
           role="dialog"
           aria-modal="true"
-          aria-label="Delete virtual server confirmation"
+          aria-label={t('Delete virtual server confirmation')}
         >
           <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-md w-full mx-4 p-6">
             <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-2">
-              Delete Virtual Server
+              {t('Delete Virtual Server')}
             </h3>
             <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
-              This action is irreversible. The virtual server and all its tool
-              mappings will be permanently removed.
+              {t('This action is irreversible. The virtual server and all its tool mappings will be permanently removed.')}
             </p>
             <p className="text-sm text-gray-600 dark:text-gray-400 mb-3">
-              Type <strong>{deleteVirtualServerTarget.server_name}</strong> to confirm:
+              {t('Type')} <strong>{deleteVirtualServerTarget.server_name}</strong> {t('to confirm:')}
             </p>
             <input
               type="text"
@@ -3340,7 +3363,7 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
                 className="px-4 py-2 bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200
                            rounded-lg hover:bg-gray-300 dark:hover:bg-gray-800 disabled:opacity-50"
               >
-                Cancel
+                {t('Cancel')}
               </button>
               <button
                 onClick={confirmDeleteVirtualServer}
@@ -3351,7 +3374,7 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
                 {deletingVirtualServer && (
                   <ArrowPathIcon className="h-4 w-4 mr-2 animate-spin" />
                 )}
-                Delete
+                {t('Delete')}
               </button>
             </div>
           </div>
@@ -3364,13 +3387,13 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
           role="dialog"
           aria-modal="true"
-          aria-label="Edit virtual server"
+          aria-label={t('Edit virtual server')}
         >
           <div className="bg-white dark:bg-gray-800 rounded-xl shadow-xl max-w-4xl w-full mx-4 max-h-[90vh] overflow-auto">
             {editingVirtualServerLoading ? (
               <div className="flex items-center justify-center py-16">
                 <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-teal-600"></div>
-                <span className="ml-3 text-gray-500 dark:text-gray-400">Loading virtual server...</span>
+                <span className="ml-3 text-gray-500 dark:text-gray-400">{t('Loading virtual server...')}</span>
               </div>
             ) : editingVirtualServer ? (
               <VirtualServerForm
@@ -3380,12 +3403,12 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
               />
             ) : (
               <div className="p-6 text-center">
-                <p className="text-gray-500 dark:text-gray-400">Failed to load virtual server</p>
+                <p className="text-gray-500 dark:text-gray-400">{t('Failed to load virtual server')}</p>
                 <button
                   onClick={handleCancelVirtualServerEdit}
                   className="mt-4 px-4 py-2 bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200 rounded-lg hover:bg-gray-300 dark:hover:bg-gray-800"
                 >
-                  Close
+                  {t('Close')}
                 </button>
               </div>
             )}
@@ -3415,10 +3438,10 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', setActiveFi
         isOpen={!!customDeleting}
         onClose={() => setCustomDeleting(null)}
         onConfirm={handleCustomDelete}
-        title="Delete record"
-        message={`Are you sure you want to delete "${customDeleting?.record.name}"? This cannot be undone.`}
-        confirmLabel="Delete"
-        loadingLabel="Deleting..."
+        title={t('Delete record')}
+        message={t('Are you sure you want to delete "{name}"? This cannot be undone.', { name: customDeleting?.record.name ?? '' })}
+        confirmLabel={t('Delete')}
+        loadingLabel={t('Deleting...')}
         isDestructive
         isLoading={customDeleteLoading}
       />

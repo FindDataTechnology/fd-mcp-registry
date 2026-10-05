@@ -31,6 +31,8 @@ import SkillResources from './SkillResources';
 import ProxyConnectButton from './ProxyConnectButton';
 import { SafeLink, safeMarkdownAnchor } from './SafeLink';
 import { toScanSummary } from '../utils/securityScan';
+import { useI18n } from '../contexts/I18nContext';
+import type { TranslateFn } from '../i18n/t';
 
 /**
  * Props for the SkillCard component.
@@ -81,7 +83,10 @@ const parseYamlFrontmatter = (content: string): { frontmatter: Record<string, st
 
 
 // Helper function to format time since last checked
-const formatTimeSince = (timestamp: string | null | undefined): string | null => {
+const formatTimeSince = (
+  timestamp: string | null | undefined,
+  t: TranslateFn,
+): string | null => {
   if (!timestamp) {
     return null;
   }
@@ -101,13 +106,13 @@ const formatTimeSince = (timestamp: string | null | undefined): string | null =>
     const diffDays = Math.floor(diffHours / 24);
 
     if (diffDays > 0) {
-      return `${diffDays}d ago`;
+      return t('{count}d ago', { count: diffDays });
     } else if (diffHours > 0) {
-      return `${diffHours}h ago`;
+      return t('{count}h ago', { count: diffHours });
     } else if (diffMinutes > 0) {
-      return `${diffMinutes}m ago`;
+      return t('{count}m ago', { count: diffMinutes });
     } else {
-      return `${diffSeconds}s ago`;
+      return t('{count}s ago', { count: diffSeconds });
     }
   } catch (error) {
     console.error('formatTimeSince error:', error, 'for timestamp:', timestamp);
@@ -132,6 +137,7 @@ const SkillCard: React.FC<SkillCardProps> = React.memo(({
   onSkillUpdate,
   authToken
 }) => {
+  const { t } = useI18n();
   const [showDetails, setShowDetails] = useState(false);
   const [loadingDetails, setLoadingDetails] = useState(false);
   const [skillMdContent, setSkillMdContent] = useState<string | null>(null);
@@ -246,14 +252,16 @@ const SkillCard: React.FC<SkillCardProps> = React.memo(({
       console.error('Failed to fetch SKILL.md content:', error);
       const detail = error.response?.data?.detail;
       if (error.response?.status === 409 && detail) {
-        setSkillMdContent(`> **Content Drift Detected**\n>\n> ${detail}\n>\n> Re-register this skill to update the integrity baseline and re-enable it.`);
+        setSkillMdContent(
+          t('> **Content Drift Detected**\n>\n> {detail}\n>\n> Re-register this skill to update the integrity baseline and re-enable it.', { detail }),
+        );
       } else if (onShowToast) {
-        onShowToast(detail || 'Failed to load SKILL.md content', 'error');
+        onShowToast(detail || t('Failed to load SKILL.md content'), 'error');
       }
     } finally {
       setLoadingDetails(false);
     }
-  }, [skillApiPath, authToken, onShowToast]);
+  }, [skillApiPath, authToken, onShowToast, t]);
 
   const handleCheckTools = useCallback(async () => {
     if (loadingToolCheck) return;
@@ -269,20 +277,25 @@ const SkillCard: React.FC<SkillCardProps> = React.memo(({
       if (onShowToast) {
         const result = response.data;
         if (result.all_available) {
-          onShowToast('All required tools are available', 'success');
+          onShowToast(t('All required tools are available'), 'success');
         } else {
-          onShowToast(`Missing tools: ${result.missing_tools?.join(', ') || 'Unknown'}`, 'error');
+          onShowToast(
+            t('Missing tools: {tools}', {
+              tools: result.missing_tools?.join(', ') || t('Unknown'),
+            }),
+            'error',
+          );
         }
       }
     } catch (error: any) {
       console.error('Failed to check tool availability:', error);
       if (onShowToast) {
-        onShowToast('Failed to check tool availability', 'error');
+        onShowToast(t('Failed to check tool availability'), 'error');
       }
     } finally {
       setLoadingToolCheck(false);
     }
-  }, [skill.path, authToken, loadingToolCheck, onShowToast]);
+  }, [skill.path, authToken, loadingToolCheck, onShowToast, t]);
 
   const handleRefreshHealth = useCallback(async () => {
     if (loadingHealthCheck) return;
@@ -310,8 +323,10 @@ const SkillCard: React.FC<SkillCardProps> = React.memo(({
       if (onShowToast) {
         onShowToast(
           response.data.healthy
-            ? 'SKILL.md is accessible'
-            : `SKILL.md check failed: ${response.data.error || 'Unknown error'}`,
+            ? t('SKILL.md is accessible')
+            : t('SKILL.md check failed: {error}', {
+                error: response.data.error || t('Unknown error'),
+              }),
           response.data.healthy ? 'success' : 'error'
         );
       }
@@ -319,12 +334,12 @@ const SkillCard: React.FC<SkillCardProps> = React.memo(({
       console.error('Failed to check skill health:', error);
       setHealthStatus('unhealthy');
       if (onShowToast) {
-        onShowToast('Failed to check skill health', 'error');
+        onShowToast(t('Failed to check skill health'), 'error');
       }
     } finally {
       setLoadingHealthCheck(false);
     }
-  }, [skill.path, authToken, loadingHealthCheck, onShowToast, onSkillUpdate]);
+  }, [skill.path, authToken, loadingHealthCheck, onShowToast, onSkillUpdate, t]);
 
   const handleViewSecurityScan = useCallback(async () => {
     if (loadingSecurityScan) return;
@@ -341,14 +356,14 @@ const SkillCard: React.FC<SkillCardProps> = React.memo(({
     } catch (error: any) {
       if (error.response?.status !== 404) {
         if (onShowToast) {
-          onShowToast('Failed to load security scan results', 'error');
+          onShowToast(t('Failed to load security scan results'), 'error');
         }
       }
       setSecurityScanResult(null);
     } finally {
       setLoadingSecurityScan(false);
     }
-  }, [skillApiPath, authToken, loadingSecurityScan, onShowToast]);
+  }, [skillApiPath, authToken, loadingSecurityScan, onShowToast, t]);
 
   const handleRescan = useCallback(async () => {
     const headers = authToken ? { Authorization: `Bearer ${authToken}` } : undefined;
@@ -367,19 +382,19 @@ const SkillCard: React.FC<SkillCardProps> = React.memo(({
 
   const getSecurityIconState = () => {
     if (!securityScanResult) {
-      return { Icon: ShieldCheckIcon, color: 'text-gray-400 dark:text-gray-500', title: 'View security scan results' };
+      return { Icon: ShieldCheckIcon, color: 'text-gray-400 dark:text-gray-500', title: t('View security scan results') };
     }
     if (securityScanResult.scan_failed) {
-      return { Icon: ShieldExclamationIcon, color: 'text-red-500 dark:text-red-400', title: 'Security scan failed' };
+      return { Icon: ShieldExclamationIcon, color: 'text-red-500 dark:text-red-400', title: t('Security scan failed') };
     }
     const hasVulnerabilities = securityScanResult.critical_issues > 0 ||
       securityScanResult.high_severity > 0 ||
       securityScanResult.medium_severity > 0 ||
       securityScanResult.low_severity > 0;
     if (hasVulnerabilities) {
-      return { Icon: ShieldExclamationIcon, color: 'text-red-500 dark:text-red-400', title: 'Security issues found' };
+      return { Icon: ShieldExclamationIcon, color: 'text-red-500 dark:text-red-400', title: t('Security issues found') };
     }
-    return { Icon: ShieldCheckIcon, color: 'text-green-500 dark:text-green-400', title: 'Security scan passed' };
+    return { Icon: ShieldCheckIcon, color: 'text-green-500 dark:text-green-400', title: t('Security scan passed') };
   };
 
   return (
@@ -394,7 +409,7 @@ const SkillCard: React.FC<SkillCardProps> = React.memo(({
                   {skill.name}
                 </h3>
                 <span className="px-2 py-0.5 text-xs font-semibold bg-gradient-to-r from-amber-100 to-orange-100 text-amber-700 dark:from-amber-900/30 dark:to-orange-900/30 dark:text-amber-300 rounded-full flex-shrink-0 border border-amber-200 dark:border-amber-600">
-                  SKILL
+                  {t('SKILL')}
                 </span>
                 <span className={`px-2 py-0.5 text-xs font-semibold rounded-full flex-shrink-0 flex items-center gap-1 ${getVisibilityColor()}`}>
                   {getVisibilityIcon()}
@@ -405,8 +420,8 @@ const SkillCard: React.FC<SkillCardProps> = React.memo(({
                 )}
                 {/* Discovery badge - ARD discovery-only import (metadata only) */}
                 {isArdDiscovery && (
-                  <span className="px-2 py-0.5 text-xs font-semibold bg-gradient-to-r from-slate-100 to-gray-100 text-slate-700 dark:from-slate-900/30 dark:to-gray-900/30 dark:text-slate-300 rounded-full flex-shrink-0 border border-slate-200 dark:border-slate-600" title="Discovery-only import — resolve and connect at the source registry">
-                    Discovery
+                  <span className="px-2 py-0.5 text-xs font-semibold bg-gradient-to-r from-slate-100 to-gray-100 text-slate-700 dark:from-slate-900/30 dark:to-gray-900/30 dark:text-slate-300 rounded-full flex-shrink-0 border border-slate-200 dark:border-slate-600" title={t('Discovery-only import — resolve and connect at the source registry')}>
+                    {t('Discovery')}
                   </span>
                 )}
                 {/* Proxied badge - served through the gateway generic hop */}
@@ -415,12 +430,14 @@ const SkillCard: React.FC<SkillCardProps> = React.memo(({
                     className="px-2 py-0.5 text-xs font-semibold bg-cyan-100 text-cyan-700 dark:bg-cyan-900/30 dark:text-cyan-300 rounded-full flex-shrink-0 border border-cyan-200 dark:border-cyan-600"
                     title={
                       skill.proxy_client_url
-                        ? `Clients connect at ${skill.proxy_client_url}` +
-                          (skill.proxy_target_url ? ` (forwards to ${skill.proxy_target_url})` : '')
-                        : 'Served through the gateway proxy'
+                        ? t('Clients connect at {url}', { url: skill.proxy_client_url }) +
+                          (skill.proxy_target_url
+                            ? t('(forwards to {url})', { url: skill.proxy_target_url })
+                            : '')
+                        : t('Served through the gateway proxy')
                     }
                   >
-                    Proxied
+                    {t('Proxied')}
                   </span>
                 )}
               </div>
@@ -435,7 +452,7 @@ const SkillCard: React.FC<SkillCardProps> = React.memo(({
               )}
               {skill.author && (
                 <span className="ml-2 text-xs text-gray-500 dark:text-gray-400">
-                  by {skill.author}
+                  {t('by {author}', { author: skill.author })}
                 </span>
               )}
             </div>
@@ -449,14 +466,14 @@ const SkillCard: React.FC<SkillCardProps> = React.memo(({
                     <button
                       className="p-2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50 rounded-lg transition-all duration-200 flex-shrink-0"
                       onClick={() => onEdit?.(skill)}
-                      title="Edit skill"
+                      title={t('Edit skill')}
                     >
                       <PencilIcon className="h-4 w-4" />
                     </button>
                     <button
                       className="p-2 text-gray-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-lg transition-all duration-200 flex-shrink-0"
                       onClick={() => onDelete?.(skillApiPath)}
-                      title="Delete skill"
+                      title={t('Delete skill')}
                     >
                       <TrashIcon className="h-4 w-4" />
                     </button>
@@ -475,7 +492,7 @@ const SkillCard: React.FC<SkillCardProps> = React.memo(({
                         ? 'text-red-500 dark:text-red-400'
                         : 'text-gray-400 dark:text-gray-500'
                     }`}
-                    title="Check tool availability"
+                    title={t('Check tool availability')}
                   >
                     <WrenchScrewdriverIcon className={`h-4 w-4 ${loadingToolCheck ? 'animate-spin' : ''}`} />
                   </button>
@@ -503,7 +520,7 @@ const SkillCard: React.FC<SkillCardProps> = React.memo(({
                 <button
                   onClick={handleViewDetails}
                   className="p-2 text-gray-400 hover:text-amber-600 dark:hover:text-amber-300 hover:bg-amber-50 dark:hover:bg-amber-700/50 rounded-lg transition-all duration-200 flex-shrink-0"
-                  title="View SKILL.md content"
+                  title={t('View SKILL.md content')}
                 >
                   <InformationCircleIcon className="h-4 w-4" />
                 </button>
@@ -513,7 +530,7 @@ const SkillCard: React.FC<SkillCardProps> = React.memo(({
 
           {/* Description */}
           <p className="text-gray-600 dark:text-gray-300 text-sm leading-relaxed line-clamp-2 mb-4">
-            {skill.description || 'No description available'}
+            {skill.description || t('No description available')}
           </p>
 
           {/* Tags */}
@@ -542,7 +559,7 @@ const SkillCard: React.FC<SkillCardProps> = React.memo(({
           {/* Target Agents */}
           {skill.target_agents && skill.target_agents.length > 0 && (
             <div className="mb-4">
-              <span className="text-xs text-gray-500 dark:text-gray-400">Target agents: </span>
+              <span className="text-xs text-gray-500 dark:text-gray-400">{t('Target agents: ')}</span>
               <span className="text-xs text-amber-700 dark:text-amber-300">
                 {skill.target_agents.join(', ')}
               </span>
@@ -555,13 +572,15 @@ const SkillCard: React.FC<SkillCardProps> = React.memo(({
             <div className="flex items-center gap-2 mb-4">
               <WrenchScrewdriverIcon className="h-4 w-4 text-amber-600 dark:text-amber-400" />
               <span className="text-xs text-gray-600 dark:text-gray-300">
-                {skill.allowed_tools.length} tool{skill.allowed_tools.length !== 1 ? 's' : ''} required
+                {skill.allowed_tools.length !== 1
+                  ? t('{count} tools required', { count: skill.allowed_tools.length })
+                  : t('{count} tool required', { count: skill.allowed_tools.length })}
               </span>
               {toolCheckResult && (
                 toolCheckResult.all_available ? (
-                  <CheckCircleIcon className="h-4 w-4 text-green-500" title="All tools available" />
+                  <CheckCircleIcon className="h-4 w-4 text-green-500" title={t('All tools available')} />
                 ) : (
-                  <XCircleIcon className="h-4 w-4 text-red-500" title="Some tools missing" />
+                  <XCircleIcon className="h-4 w-4 text-red-500" title={t('Some tools missing')} />
                 )
               )}
             </div>
@@ -576,9 +595,9 @@ const SkillCard: React.FC<SkillCardProps> = React.memo(({
                 <SparklesIcon className="h-4 w-4 text-amber-600 dark:text-amber-400" />
               </div>
               <div>
-                <div className="text-xs text-gray-500 dark:text-gray-400">Registry</div>
+                <div className="text-xs text-gray-500 dark:text-gray-400">{t('Registry')}</div>
                 <div className="text-sm font-semibold text-gray-900 dark:text-white">
-                  {skill.registry_name || 'local'}
+                  {skill.registry_name || t('local')}
                 </div>
               </div>
             </div>
@@ -606,7 +625,7 @@ const SkillCard: React.FC<SkillCardProps> = React.memo(({
                 className="flex items-center gap-1 text-xs text-amber-700 dark:text-amber-300 hover:underline"
               >
                 <ArrowTopRightOnSquareIcon className="h-3 w-3" />
-                View at source ↗
+                {t('View at source ↗')}
               </SafeLink>
             )}
 
@@ -642,16 +661,16 @@ const SkillCard: React.FC<SkillCardProps> = React.memo(({
                         : 'bg-gray-300 dark:bg-gray-600'
                     }`} />
                     <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                      {skill.is_enabled ? 'Enabled' : 'Disabled'}
+                      {skill.is_enabled ? t('Enabled') : t('Disabled')}
                     </span>
                     {!skill.is_enabled && skill.tags?.includes('content-drifted') && (
-                      <span className="text-xs text-red-600 dark:text-red-400 font-medium" title="Skill content changed since registration. Re-register to update the baseline.">
-                        — content drifted
+                      <span className="text-xs text-red-600 dark:text-red-400 font-medium" title={t('Skill content changed since registration. Re-register to update the baseline.')}>
+                        {t('— content drifted')}
                       </span>
                     )}
                     {!skill.is_enabled && skill.tags?.includes('security-pending') && !skill.tags?.includes('content-drifted') && (
                       <span className="text-xs text-red-600 dark:text-red-400 font-medium">
-                        — security review pending
+                        {t('— security review pending')}
                       </span>
                     )}
                   </div>
@@ -668,8 +687,8 @@ const SkillCard: React.FC<SkillCardProps> = React.memo(({
                         : 'bg-amber-400 shadow-lg shadow-amber-400/30'
                     }`} />
                     <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                      {healthStatus === 'healthy' ? 'Healthy' :
-                       healthStatus === 'unhealthy' ? 'Unhealthy' : 'Unknown'}
+                      {healthStatus === 'healthy' ? t('Healthy') :
+                       healthStatus === 'unhealthy' ? t('Unhealthy') : t('Unknown')}
                     </span>
                   </div>
                 </>
@@ -680,7 +699,7 @@ const SkillCard: React.FC<SkillCardProps> = React.memo(({
             <div className="flex items-center gap-3">
               {/* Last Checked */}
               {(() => {
-                const timeText = formatTimeSince(lastCheckedTime);
+                const timeText = formatTimeSince(lastCheckedTime, t);
                 return lastCheckedTime && timeText ? (
                   <div className="text-xs text-gray-500 dark:text-gray-300 flex items-center gap-1.5">
                     <ClockIcon className="h-3.5 w-3.5" />
@@ -696,8 +715,8 @@ const SkillCard: React.FC<SkillCardProps> = React.memo(({
                   onClick={handleRefreshHealth}
                   disabled={loadingHealthCheck}
                   className="p-2.5 text-gray-500 hover:text-amber-600 dark:hover:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-900/20 rounded-lg transition-all duration-200 disabled:opacity-50"
-                  title="Check SKILL.md accessibility"
-                  aria-label={`Check health for ${skill.name}`}
+                  title={t('Check SKILL.md accessibility')}
+                  aria-label={t('Check health for {name}', { name: skill.name })}
                 >
                   <ArrowPathIcon className={`h-4 w-4 ${loadingHealthCheck ? 'animate-spin' : ''}`} />
                 </button>
@@ -774,7 +793,7 @@ const SkillCard: React.FC<SkillCardProps> = React.memo(({
                   className="flex items-center gap-1 text-sm text-amber-700 dark:text-amber-300 hover:underline"
                 >
                   <ArrowTopRightOnSquareIcon className="h-4 w-4" />
-                  View Skill
+                  {t('View Skill')}
                 </SafeLink>
               )}
               {skill.repository_url && (
@@ -785,7 +804,7 @@ const SkillCard: React.FC<SkillCardProps> = React.memo(({
                   className="flex items-center gap-1 text-sm text-amber-700 dark:text-amber-300 hover:underline"
                 >
                   <ArrowTopRightOnSquareIcon className="h-4 w-4" />
-                  View Repo
+                  {t('View Repo')}
                 </SafeLink>
               )}
               {skillMdContent && (
@@ -794,14 +813,14 @@ const SkillCard: React.FC<SkillCardProps> = React.memo(({
                     onClick={() => {
                       navigator.clipboard.writeText(skillMdContent);
                       if (onShowToast) {
-                        onShowToast('SKILL.md copied to clipboard', 'success');
+                        onShowToast(t('SKILL.md copied to clipboard'), 'success');
                       }
                     }}
                     className="flex items-center gap-1 text-sm text-gray-600 dark:text-gray-400 hover:text-amber-700 dark:hover:text-amber-300 transition-colors"
-                    title="Copy to clipboard"
+                    title={t('Copy to clipboard')}
                   >
                     <ClipboardIcon className="h-4 w-4" />
-                    Copy
+                    {t('Copy')}
                   </button>
                   <button
                     onClick={() => {
@@ -816,10 +835,10 @@ const SkillCard: React.FC<SkillCardProps> = React.memo(({
                       URL.revokeObjectURL(url);
                     }}
                     className="flex items-center gap-1 text-sm text-gray-600 dark:text-gray-400 hover:text-amber-700 dark:hover:text-amber-300 transition-colors"
-                    title="Download SKILL.md"
+                    title={t('Download SKILL.md')}
                   >
                     <ArrowDownTrayIcon className="h-4 w-4" />
-                    Download
+                    {t('Download')}
                   </button>
                 </>
               )}
@@ -876,18 +895,16 @@ const SkillCard: React.FC<SkillCardProps> = React.memo(({
               })()
             ) : (
               <div className="text-center py-12 text-gray-500">
-                <p>Could not load SKILL.md content.</p>
+                <p>{t('Could not load SKILL.md content.')}</p>
                 <p className="mt-2 text-sm">
-                  Try visiting the{' '}
-                  <SafeLink
+                  {t('Try visiting the ')}<SafeLink
                     href={skill.skill_md_url}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="text-amber-600 hover:underline"
                   >
-                    source URL
-                  </SafeLink>{' '}
-                  directly.
+                    {t('source URL')}
+                  </SafeLink>{t(' directly.')}
                 </p>
               </div>
             )}

@@ -11,6 +11,8 @@ import type {
   CustomEntityRecord,
   CustomTypeDescriptor,
 } from '../types/customEntity';
+import { useI18n } from '../contexts/I18nContext';
+import type { TranslateFn } from '../i18n/t';
 
 
 // Path for the built-in AI Registry Tools server
@@ -144,10 +146,11 @@ function _matchesKeyword(
  */
 function _countFragment(
   count: number,
-  label: string
+  label: string,
+  t: TranslateFn
 ): string {
-  const plural = count !== 1 ? 's' : '';
-  return `${count} ${label}${plural}`;
+  const noun = count !== 1 ? `${label}s` : label;
+  return t(`{count} ${noun}`, { count });
 }
 
 
@@ -160,6 +163,7 @@ function _buildSummaryText(
   totals: { servers: number; virtual: number; agents: number; skills: number; external: number },
   matched: { servers: number; virtual: number; agents: number; skills: number; external: number },
   isSearching: boolean,
+  t: TranslateFn,
   customSections: FeaturedCustomSection[] = []
 ): string {
   const parts: string[] = [];
@@ -176,9 +180,9 @@ function _buildSummaryText(
 
   for (const cat of categories) {
     if (isSearching && cat.match > 0) {
-      parts.push(_countFragment(cat.match, cat.label));
+      parts.push(_countFragment(cat.match, cat.label, t));
     } else if (!isSearching && cat.total > 0) {
-      parts.push(_countFragment(cat.total, cat.label));
+      parts.push(_countFragment(cat.total, cat.label, t));
     }
   }
 
@@ -188,16 +192,16 @@ function _buildSummaryText(
   for (const ct of customSections) {
     const count = isSearching ? ct.matched : ct.records.length;
     if (count > 0) {
-      parts.push(`${count} ${ct.displayName}`);
+      parts.push(t('{count} {name}', { count, name: ct.displayName }));
     }
   }
 
   if (parts.length === 0) {
-    return isSearching ? 'No matches' : 'No items registered';
+    return isSearching ? t('No matches') : t('No items registered');
   }
 
-  const prefix = isSearching ? 'Showing ' : '';
-  return prefix + parts.join(', ');
+  const summary = parts.join(', ');
+  return isSearching ? t('Showing {summary}', { summary }) : summary;
 }
 
 
@@ -373,6 +377,7 @@ const DiscoverTab: React.FC<DiscoverTabProps> = ({
   onShowToast,
   authToken,
 }) => {
+  const { t } = useI18n();
   const [searchTerm, setSearchTerm] = useState('');
   const [committedQuery, setCommittedQuery] = useState('');
 
@@ -438,7 +443,7 @@ const DiscoverTab: React.FC<DiscoverTabProps> = ({
       {/* Header: title + search bar - always at top */}
       <div className="w-full max-w-3xl mx-auto px-4 pt-4 pb-2">
         <h1 className="text-lg font-bold text-center mb-3 text-gray-800 dark:text-gray-100">
-          Discover MCP Servers, Agents & Skills
+          {t('Discover MCP Servers, Agents & Skills')}
         </h1>
 
         {/* Search Input */}
@@ -448,7 +453,7 @@ const DiscoverTab: React.FC<DiscoverTabProps> = ({
           </div>
           <input
             type="text"
-            placeholder="Search servers, agents, skills, or tools..."
+            placeholder={t('Search servers, agents, skills, or tools...')}
             className="input pl-10 pr-9 w-full py-2 text-sm rounded-lg
               border border-gray-200 dark:border-gray-600
               focus:border-indigo-500 dark:focus:border-indigo-400
@@ -486,11 +491,12 @@ const DiscoverTab: React.FC<DiscoverTabProps> = ({
               { servers: totalServers, virtual: totalVirtual, agents: totalAgents, skills: totalSkills, external: totalExternal },
               { servers: matchedServers, virtual: matchedVirtual, agents: matchedAgents, skills: matchedSkills, external: matchedExternal },
               searchTerm.length > 0,
+              t,
               featuredCustomSections
             )}
             {searchTerm && (
               <span className="text-gray-600 dark:text-gray-600">
-                {' '}&middot; press Enter for semantic search
+                {' '}&middot; {t('press Enter for semantic search')}
               </span>
             )}
           </p>
@@ -519,13 +525,13 @@ const DiscoverTab: React.FC<DiscoverTabProps> = ({
         <div className="w-full max-w-5xl mx-auto px-4 mt-2 h-full overflow-y-auto discover-scroll">
           {loading ? (
             <div className="text-center text-gray-500 dark:text-gray-400 py-8">
-              Loading featured items...
+              {t('Loading featured items...')}
             </div>
           ) : totalFeatured === 0 ? (
             <div className="text-center text-gray-500 dark:text-gray-400 py-8">
               {searchTerm
-                ? `No items matching "${searchTerm}"`
-                : 'No items registered yet. Register your first MCP server, agent, or skill!'}
+                ? t('No items matching "{query}"', { query: searchTerm })
+                : t('No items registered yet. Register your first MCP server, agent, or skill!')}
             </div>
           ) : (
             <div className="space-y-4">
@@ -533,10 +539,10 @@ const DiscoverTab: React.FC<DiscoverTabProps> = ({
               {featuredServers.length > 0 && (
                 <div>
                   <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-2">
-                    MCP Servers
+                    {t('MCP Servers')}
                     {matchedServers > featuredServers.length && (
                       <span className="ml-1.5 font-normal normal-case tracking-normal text-gray-500/70">
-                        (showing {featuredServers.length} of {matchedServers})
+                        {t('(showing {shown} of {total})', { shown: featuredServers.length, total: matchedServers })}
                       </span>
                     )}
                   </h2>
@@ -559,10 +565,10 @@ const DiscoverTab: React.FC<DiscoverTabProps> = ({
               {featuredVirtual.length > 0 && (
                 <div>
                   <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-2">
-                    Virtual MCP Servers
+                    {t('Virtual MCP Servers')}
                     {matchedVirtual > featuredVirtual.length && (
                       <span className="ml-1.5 font-normal normal-case tracking-normal text-gray-500/70">
-                        (showing {featuredVirtual.length} of {matchedVirtual})
+                        {t('(showing {shown} of {total})', { shown: featuredVirtual.length, total: matchedVirtual })}
                       </span>
                     )}
                   </h2>
@@ -585,10 +591,10 @@ const DiscoverTab: React.FC<DiscoverTabProps> = ({
               {featuredAgents.length > 0 && (
                 <div>
                   <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-2">
-                    Agents
+                    {t('Agents')}
                     {matchedAgents > featuredAgents.length && (
                       <span className="ml-1.5 font-normal normal-case tracking-normal text-gray-500/70">
-                        (showing {featuredAgents.length} of {matchedAgents})
+                        {t('(showing {shown} of {total})', { shown: featuredAgents.length, total: matchedAgents })}
                       </span>
                     )}
                   </h2>
@@ -611,10 +617,10 @@ const DiscoverTab: React.FC<DiscoverTabProps> = ({
               {featuredSkills.length > 0 && (
                 <div>
                   <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-2">
-                    Skills
+                    {t('Skills')}
                     {matchedSkills > featuredSkills.length && (
                       <span className="ml-1.5 font-normal normal-case tracking-normal text-gray-500/70">
-                        (showing {featuredSkills.length} of {matchedSkills})
+                        {t('(showing {shown} of {total})', { shown: featuredSkills.length, total: matchedSkills })}
                       </span>
                     )}
                   </h2>
@@ -637,10 +643,10 @@ const DiscoverTab: React.FC<DiscoverTabProps> = ({
               {featuredExtServers.length > 0 && (
                 <div>
                   <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-2">
-                    External Registry Servers
+                    {t('External Registry Servers')}
                     {matchedExtServers > featuredExtServers.length && (
                       <span className="ml-1.5 font-normal normal-case tracking-normal text-gray-500/70">
-                        (showing {featuredExtServers.length} of {matchedExtServers})
+                        {t('(showing {shown} of {total})', { shown: featuredExtServers.length, total: matchedExtServers })}
                       </span>
                     )}
                   </h2>
@@ -663,10 +669,10 @@ const DiscoverTab: React.FC<DiscoverTabProps> = ({
               {featuredExtAgents.length > 0 && (
                 <div>
                   <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-2">
-                    External Registry Agents
+                    {t('External Registry Agents')}
                     {matchedExtAgents > featuredExtAgents.length && (
                       <span className="ml-1.5 font-normal normal-case tracking-normal text-gray-500/70">
-                        (showing {featuredExtAgents.length} of {matchedExtAgents})
+                        {t('(showing {shown} of {total})', { shown: featuredExtAgents.length, total: matchedExtAgents })}
                       </span>
                     )}
                   </h2>
@@ -692,7 +698,7 @@ const DiscoverTab: React.FC<DiscoverTabProps> = ({
                     {section.displayName}
                     {section.matched > section.featured.length && (
                       <span className="ml-1.5 font-normal normal-case tracking-normal text-gray-500/70">
-                        (showing {section.featured.length} of {section.matched})
+                        {t('(showing {shown} of {total})', { shown: section.featured.length, total: section.matched })}
                       </span>
                     )}
                   </h2>

@@ -18,6 +18,8 @@ import {
 } from '../types/virtualServer';
 import VirtualServerForm from './VirtualServerForm';
 import useEscapeKey from '../hooks/useEscapeKey';
+import { useI18n } from '../contexts/I18nContext';
+import { localizeError } from '../utils/apiError';
 
 
 /**
@@ -33,6 +35,7 @@ interface VirtualServerListProps {
  * with search, create, edit, delete, and toggle functionality.
  */
 const VirtualServerList: React.FC<VirtualServerListProps> = ({ onShowToast }) => {
+  const { t } = useI18n();
   const { user } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
   const {
@@ -84,7 +87,7 @@ const VirtualServerList: React.FC<VirtualServerListProps> = ({ onShowToast }) =>
           s.server_name.toLowerCase().includes(searchQuery.toLowerCase()) ||
           s.path.toLowerCase().includes(searchQuery.toLowerCase()) ||
           s.description?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-          s.tags?.some((t) => t.toLowerCase().includes(searchQuery.toLowerCase()))
+          s.tags?.some((tag) => tag.toLowerCase().includes(searchQuery.toLowerCase()))
       )
     : virtualServers;
 
@@ -104,17 +107,17 @@ const VirtualServerList: React.FC<VirtualServerListProps> = ({ onShowToast }) =>
     try {
       if (editingPath) {
         await updateVirtualServer(editingPath, data as UpdateVirtualServerRequest);
-        onShowToast('Virtual server updated successfully', 'success');
+        onShowToast(t('Virtual server updated successfully'), 'success');
       } else {
         await createVirtualServer(data as CreateVirtualServerRequest);
-        onShowToast('Virtual server created successfully', 'success');
+        onShowToast(t('Virtual server created successfully'), 'success');
       }
       setShowForm(false);
       setEditingPath(undefined);
     } catch (err: unknown) {
       const message =
-        err instanceof Error ? err.message : 'An unexpected error occurred';
-      onShowToast(`Failed to save virtual server: ${message}`, 'error');
+        err instanceof Error ? err.message : t('An unexpected error occurred');
+      onShowToast(t('Failed to save virtual server: {message}', { message }), 'error');
     }
   };
 
@@ -124,13 +127,13 @@ const VirtualServerList: React.FC<VirtualServerListProps> = ({ onShowToast }) =>
     setIsDeleting(true);
     try {
       await deleteVirtualServer(deleteTarget.path);
-      onShowToast(`Virtual server "${deleteTarget.server_name}" deleted`, 'success');
+      onShowToast(t('Virtual server "{name}" deleted', { name: deleteTarget.server_name }), 'success');
       setDeleteTarget(null);
       setTypedName('');
     } catch (err: unknown) {
       const axiosErr = err as { response?: { data?: { detail?: string } }; message?: string };
       onShowToast(
-        axiosErr.response?.data?.detail || 'Failed to delete virtual server',
+        localizeError(axiosErr, t, 'Failed to delete virtual server'),
         'error',
       );
     } finally {
@@ -142,11 +145,11 @@ const VirtualServerList: React.FC<VirtualServerListProps> = ({ onShowToast }) =>
     try {
       await toggleVirtualServer(path, enabled);
       onShowToast(
-        `Virtual server ${enabled ? 'enabled' : 'disabled'}`,
+        t(enabled ? 'Virtual server enabled' : 'Virtual server disabled'),
         'success',
       );
     } catch {
-      onShowToast('Failed to toggle virtual server', 'error');
+      onShowToast(t('Failed to toggle virtual server'), 'error');
     }
   };
 
@@ -177,14 +180,14 @@ const VirtualServerList: React.FC<VirtualServerListProps> = ({ onShowToast }) =>
       <div className="text-center py-12">
         <ExclamationCircleIcon className="h-12 w-12 mx-auto text-red-500 mb-4" />
         <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-2">
-          Failed to Load Virtual Servers
+          {t('Failed to Load Virtual Servers')}
         </h3>
         <p className="text-gray-500 dark:text-gray-400 mb-4">{error}</p>
         <button
           onClick={refreshData}
           className="px-4 py-2 bg-teal-600 text-white rounded-lg hover:bg-teal-700"
         >
-          Retry
+          {t('Retry')}
         </button>
       </div>
     );
@@ -196,10 +199,10 @@ const VirtualServerList: React.FC<VirtualServerListProps> = ({ onShowToast }) =>
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-lg font-semibold text-gray-900 dark:text-white">
-            Virtual MCP Servers
+            {t('Virtual MCP Servers')}
           </h2>
           <p className="text-sm text-gray-500 dark:text-gray-400">
-            Manage virtual servers that aggregate tools from multiple backends
+            {t('Manage virtual servers that aggregate tools from multiple backends')}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -207,7 +210,7 @@ const VirtualServerList: React.FC<VirtualServerListProps> = ({ onShowToast }) =>
             onClick={refreshData}
             className="p-2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300
                        hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
-            title="Refresh"
+            title={t('Refresh')}
           >
             <ArrowPathIcon className="h-5 w-5" />
           </button>
@@ -218,7 +221,7 @@ const VirtualServerList: React.FC<VirtualServerListProps> = ({ onShowToast }) =>
                          hover:bg-teal-700 transition-colors"
             >
               <PlusIcon className="h-5 w-5 mr-2" />
-              Create Virtual Server
+              {t('Create Virtual Server')}
             </button>
           )}
         </div>
@@ -231,7 +234,7 @@ const VirtualServerList: React.FC<VirtualServerListProps> = ({ onShowToast }) =>
           type="text"
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
-          placeholder="Search virtual servers..."
+          placeholder={t('Search virtual servers...')}
           className="w-full pl-10 pr-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg
                      bg-white dark:bg-gray-800 text-gray-900 dark:text-white
                      focus:ring-2 focus:ring-teal-500 focus:border-transparent"
@@ -255,19 +258,19 @@ const VirtualServerList: React.FC<VirtualServerListProps> = ({ onShowToast }) =>
             />
           </svg>
           <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-2">
-            {searchQuery ? 'No matching virtual servers' : 'No virtual servers configured'}
+            {searchQuery ? t('No matching virtual servers') : t('No virtual servers configured')}
           </h3>
           <p className="text-gray-500 dark:text-gray-400 mb-4">
             {searchQuery
-              ? 'Try a different search term'
-              : 'Create a virtual server to aggregate tools from multiple backends'}
+              ? t('Try a different search term')
+              : t('Create a virtual server to aggregate tools from multiple backends')}
           </p>
           {!searchQuery && canModify && (
             <button
               onClick={handleCreate}
               className="px-4 py-2 bg-teal-600 text-white rounded-lg hover:bg-teal-700"
             >
-              Create First Virtual Server
+              {t('Create First Virtual Server')}
             </button>
           )}
         </div>
@@ -277,22 +280,22 @@ const VirtualServerList: React.FC<VirtualServerListProps> = ({ onShowToast }) =>
             <thead className="bg-gray-50 dark:bg-gray-900">
               <tr>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-                  Name
+                  {t('Name')}
                 </th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-                  Path
+                  {t('Path')}
                 </th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-                  Tools
+                  {t('Tools')}
                 </th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-                  Backends
+                  {t('Backends')}
                 </th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-                  Status
+                  {t('Status')}
                 </th>
                 <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-                  Actions
+                  {t('Actions')}
                 </th>
               </tr>
             </thead>
@@ -347,7 +350,7 @@ const VirtualServerList: React.FC<VirtualServerListProps> = ({ onShowToast }) =>
                           : 'bg-gray-100 dark:bg-gray-700 text-gray-800 dark:text-gray-200'
                       }`}
                     >
-                      {server.is_enabled ? 'Enabled' : 'Disabled'}
+                      {server.is_enabled ? t('Enabled') : t('Disabled')}
                     </span>
                   </td>
                   <td className="px-4 py-4 whitespace-nowrap text-right">
@@ -362,7 +365,7 @@ const VirtualServerList: React.FC<VirtualServerListProps> = ({ onShowToast }) =>
                                 handleToggle(server.path, e.target.checked)
                               }
                               className="sr-only peer"
-                              aria-label={`Enable ${server.server_name}`}
+                              aria-label={t('Enable {name}', { name: server.server_name })}
                             />
                             <div
                               className={`relative w-9 h-5 rounded-full transition-colors duration-200 ${
@@ -386,7 +389,7 @@ const VirtualServerList: React.FC<VirtualServerListProps> = ({ onShowToast }) =>
                                        bg-teal-50 dark:bg-teal-900/20 rounded hover:bg-teal-100
                                        dark:hover:bg-teal-900/40 transition-colors"
                           >
-                            Edit
+                            {t('Edit')}
                           </button>
                           <button
                             onClick={() => setDeleteTarget(server)}
@@ -394,7 +397,7 @@ const VirtualServerList: React.FC<VirtualServerListProps> = ({ onShowToast }) =>
                                        bg-red-50 dark:bg-red-900/20 rounded hover:bg-red-100
                                        dark:hover:bg-red-900/40 transition-colors"
                           >
-                            Delete
+                            {t('Delete')}
                           </button>
                         </>
                       )}
@@ -412,7 +415,7 @@ const VirtualServerList: React.FC<VirtualServerListProps> = ({ onShowToast }) =>
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
           <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-8 flex flex-col items-center">
             <ArrowPathIcon className="h-8 w-8 text-teal-500 animate-spin mb-3" />
-            <p className="text-sm text-gray-600 dark:text-gray-300">Loading server data...</p>
+            <p className="text-sm text-gray-600 dark:text-gray-300">{t('Loading server data...')}</p>
           </div>
         </div>
       )}
@@ -433,18 +436,17 @@ const VirtualServerList: React.FC<VirtualServerListProps> = ({ onShowToast }) =>
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
           role="dialog"
           aria-modal="true"
-          aria-label="Delete virtual server confirmation"
+          aria-label={t('Delete virtual server confirmation')}
         >
           <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-md w-full mx-4 p-6">
             <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-2">
-              Delete Virtual Server
+              {t('Delete Virtual Server')}
             </h3>
             <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
-              This action is irreversible. The virtual server and all its tool
-              mappings will be permanently removed.
+              {t('This action is irreversible. The virtual server and all its tool mappings will be permanently removed.')}
             </p>
             <p className="text-sm text-gray-600 dark:text-gray-400 mb-3">
-              Type <strong>{deleteTarget.server_name}</strong> to confirm:
+              {t('Type')} <strong>{deleteTarget.server_name}</strong> {t('to confirm:')}
             </p>
             <input
               type="text"
@@ -472,7 +474,7 @@ const VirtualServerList: React.FC<VirtualServerListProps> = ({ onShowToast }) =>
                 className="px-4 py-2 bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200
                            rounded-lg hover:bg-gray-300 dark:hover:bg-gray-800 disabled:opacity-50"
               >
-                Cancel
+                {t('Cancel')}
               </button>
               <button
                 onClick={handleDelete}
@@ -483,7 +485,7 @@ const VirtualServerList: React.FC<VirtualServerListProps> = ({ onShowToast }) =>
                 {isDeleting && (
                   <ArrowPathIcon className="h-4 w-4 mr-2 animate-spin" />
                 )}
-                Delete
+                {t('Delete')}
               </button>
             </div>
           </div>

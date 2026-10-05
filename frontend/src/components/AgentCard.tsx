@@ -25,7 +25,10 @@ import StatusBadge from './StatusBadge';
 import { ANSBadge } from './ANSBadge';
 import { formatRelativeTime } from '../utils/dateUtils';
 import { toScanSummary } from '../utils/securityScan';
+import { useI18n } from '../contexts/I18nContext';
+import type { TranslateFn } from '../i18n/t';
 import { SafeLink } from './SafeLink';
+import { localizeError } from '../utils/apiError';
 
 interface SyncMetadata {
   is_federated?: boolean;
@@ -115,7 +118,10 @@ interface AgentCardProps {
 /**
  * Helper function to format time since last checked.
  */
-const formatTimeSince = (timestamp: string | null | undefined): string | null => {
+const formatTimeSince = (
+  timestamp: string | null | undefined,
+  t: TranslateFn,
+): string | null => {
   if (!timestamp) {
     return null;
   }
@@ -138,15 +144,15 @@ const formatTimeSince = (timestamp: string | null | undefined): string | null =>
 
     let result;
     if (diffSeconds < 0) {
-      result = 'just now';
+      result = t('just now');
     } else if (diffDays > 0) {
-      result = `${diffDays}d ago`;
+      result = t('{count}d ago', { count: diffDays });
     } else if (diffHours > 0) {
-      result = `${diffHours}h ago`;
+      result = t('{count}h ago', { count: diffHours });
     } else if (diffMinutes > 0) {
-      result = `${diffMinutes}m ago`;
+      result = t('{count}m ago', { count: diffMinutes });
     } else {
-      result = `${diffSeconds}s ago`;
+      result = t('{count}s ago', { count: diffSeconds });
     }
 
     return result;
@@ -186,6 +192,7 @@ const AgentCard: React.FC<AgentCardProps> = React.memo(({
   onAgentUpdate,
   authToken
 }) => {
+  const { t, locale } = useI18n();
   const [showDetails, setShowDetails] = useState(false);
   const [loadingRefresh, setLoadingRefresh] = useState(false);
   const [fullAgentDetails, setFullAgentDetails] = useState<any>(null);
@@ -303,29 +310,29 @@ const AgentCard: React.FC<AgentCardProps> = React.memo(({
       }
 
       if (onShowToast) {
-        onShowToast('Agent health status refreshed successfully', 'success');
+        onShowToast(t('Agent health status refreshed successfully'), 'success');
       }
     } catch (error: any) {
       console.error('Failed to refresh agent health:', error);
       if (onShowToast) {
-        onShowToast(error.response?.data?.detail || 'Failed to refresh agent health status', 'error');
+        onShowToast(localizeError(error, t, 'Failed to refresh agent health status'), 'error');
       }
     } finally {
       setLoadingRefresh(false);
     }
-  }, [agent.path, authToken, loadingRefresh, onRefreshSuccess, onShowToast, onAgentUpdate]);
+  }, [agent.path, authToken, loadingRefresh, onRefreshSuccess, onShowToast, onAgentUpdate, t]);
 
   const handleCopyDetails = useCallback(
     async (data: any) => {
       try {
         await navigator.clipboard.writeText(JSON.stringify(data, null, 2));
-        onShowToast?.('Full agent JSON copied to clipboard!', 'success');
+        onShowToast?.(t('Full agent JSON copied to clipboard!'), 'success');
       } catch (error) {
         console.error('Failed to copy JSON:', error);
-        onShowToast?.('Failed to copy JSON', 'error');
+        onShowToast?.(t('Failed to copy JSON'), 'error');
       }
     },
-    [onShowToast]
+    [onShowToast, t]
   );
 
   const handleViewSecurityScan = useCallback(async () => {
@@ -344,14 +351,14 @@ const AgentCard: React.FC<AgentCardProps> = React.memo(({
       if (error.response?.status !== 404) {
         console.error('Failed to fetch security scan:', error);
         if (onShowToast) {
-          onShowToast('Failed to load security scan results', 'error');
+          onShowToast(t('Failed to load security scan results'), 'error');
         }
       }
       setSecurityScanResult(null);
     } finally {
       setLoadingSecurityScan(false);
     }
-  }, [agent.path, authToken, loadingSecurityScan, onShowToast]);
+  }, [agent.path, authToken, loadingSecurityScan, onShowToast, t]);
 
   const handleRescan = useCallback(async () => {
     const headers = authToken ? { Authorization: `Bearer ${authToken}` } : undefined;
@@ -371,21 +378,21 @@ const AgentCard: React.FC<AgentCardProps> = React.memo(({
   const getSecurityIconState = () => {
     // Gray: no scan result yet
     if (!securityScanResult) {
-      return { Icon: ShieldCheckIcon, color: 'text-gray-400 dark:text-gray-500', title: 'View security scan results' };
+      return { Icon: ShieldCheckIcon, color: 'text-gray-400 dark:text-gray-500', title: t('View security scan results') };
     }
     // Red: scan failed or any vulnerabilities found
     if (securityScanResult.scan_failed) {
-      return { Icon: ShieldExclamationIcon, color: 'text-red-500 dark:text-red-400', title: 'Security scan failed' };
+      return { Icon: ShieldExclamationIcon, color: 'text-red-500 dark:text-red-400', title: t('Security scan failed') };
     }
     const hasVulnerabilities = securityScanResult.critical_issues > 0 ||
       securityScanResult.high_severity > 0 ||
       securityScanResult.medium_severity > 0 ||
       securityScanResult.low_severity > 0;
     if (hasVulnerabilities) {
-      return { Icon: ShieldExclamationIcon, color: 'text-red-500 dark:text-red-400', title: 'Security issues found' };
+      return { Icon: ShieldExclamationIcon, color: 'text-red-500 dark:text-red-400', title: t('Security issues found') };
     }
     // Green: scan passed with no vulnerabilities
-    return { Icon: ShieldCheckIcon, color: 'text-green-500 dark:text-green-400', title: 'Security scan passed' };
+    return { Icon: ShieldCheckIcon, color: 'text-green-500 dark:text-green-400', title: t('Security scan passed') };
   };
 
   const handlePullCard = useCallback(async () => {
@@ -407,7 +414,7 @@ const AgentCard: React.FC<AgentCardProps> = React.memo(({
       console.error('Failed to pull agent card:', error);
       if (onShowToast) {
         onShowToast(
-          error.response?.data?.detail || 'Failed to fetch remote agent card',
+          localizeError(error, t, 'Failed to fetch remote agent card'),
           'error'
         );
       }
@@ -415,7 +422,7 @@ const AgentCard: React.FC<AgentCardProps> = React.memo(({
     } finally {
       setLoadingPullCard(false);
     }
-  }, [agent.path, authToken, loadingPullCard, onShowToast]);
+  }, [agent.path, authToken, loadingPullCard, onShowToast, t]);
 
   const handleApplyPullCard = useCallback(async () => {
     try {
@@ -429,7 +436,9 @@ const AgentCard: React.FC<AgentCardProps> = React.memo(({
       if (response.data.applied) {
         if (onShowToast) {
           onShowToast(
-            `Applied ${response.data.changes.length} field changes from remote card`,
+            t('Applied {count} field changes from remote card', {
+              count: response.data.changes.length,
+            }),
             'success'
           );
         }
@@ -438,7 +447,7 @@ const AgentCard: React.FC<AgentCardProps> = React.memo(({
         }
       } else {
         if (onShowToast) {
-          onShowToast('No changes to apply', 'success');
+          onShowToast(t('No changes to apply'), 'success');
         }
       }
       setShowPullCardModal(false);
@@ -447,12 +456,12 @@ const AgentCard: React.FC<AgentCardProps> = React.memo(({
       console.error('Failed to apply card changes:', error);
       if (onShowToast) {
         onShowToast(
-          error.response?.data?.detail || 'Failed to apply card changes',
+          localizeError(error, t, 'Failed to apply card changes'),
           'error'
         );
       }
     }
-  }, [agent.path, authToken, onShowToast, onRefreshSuccess]);
+  }, [agent.path, authToken, onShowToast, onRefreshSuccess, t]);
 
   return (
     <>
@@ -494,12 +503,14 @@ const AgentCard: React.FC<AgentCardProps> = React.memo(({
                         className="px-2 py-0.5 text-xs font-semibold bg-cyan-100 text-cyan-700 dark:bg-cyan-900/30 dark:text-cyan-300 rounded-full flex-shrink-0 border border-cyan-200 dark:border-cyan-600"
                         title={
                           agent.proxy_client_url
-                            ? `Clients connect at ${agent.proxy_client_url}` +
-                              (agent.proxy_target_url ? ` (forwards to ${agent.proxy_target_url})` : '')
-                            : 'Served through the gateway proxy'
+                            ? t('Clients connect at {url}', { url: agent.proxy_client_url }) +
+                              (agent.proxy_target_url
+                                ? t('(forwards to {url})', { url: agent.proxy_target_url })
+                                : '')
+                            : t('Served through the gateway proxy')
                         }
                       >
-                        Proxied
+                        {t('Proxied')}
                       </span>
                     )}
                     {/* A2A tag badge (for AgentCore imported agents) */}
@@ -511,7 +522,7 @@ const AgentCard: React.FC<AgentCardProps> = React.memo(({
                     {/* Supported Protocol Badge */}
                     {agent.supported_protocol === 'a2a' && !agent.tags?.includes('a2a') && (
                       <span className="inline-flex items-center px-2 py-0.5 text-xs font-medium bg-cyan-50 dark:bg-cyan-900/30 text-cyan-700 dark:text-cyan-300 rounded border border-cyan-200 dark:border-cyan-700">
-                        A2A Protocol
+                        {t('A2A Protocol')}
                       </span>
                     )}
                     {agent.trust_level && (
@@ -532,11 +543,11 @@ const AgentCard: React.FC<AgentCardProps> = React.memo(({
                     )}
                     {/* Registry source badge - only show for federated (peer registry) items */}
                     {isFederatedAgent && (
-                      <span className="px-2 py-0.5 text-xs font-semibold bg-gradient-to-r from-violet-100 to-purple-100 text-violet-700 dark:from-violet-900/30 dark:to-purple-900/30 dark:text-violet-300 rounded-full flex-shrink-0 border border-violet-200 dark:border-violet-600" title={`Synced from ${peerRegistryId}`}>
+                      <span className="px-2 py-0.5 text-xs font-semibold bg-gradient-to-r from-violet-100 to-purple-100 text-violet-700 dark:from-violet-900/30 dark:to-purple-900/30 dark:text-violet-300 rounded-full flex-shrink-0 border border-violet-200 dark:border-violet-600" title={t('Synced from {peer}', { peer: peerRegistryId ?? '' })}>
                         {peerRegistryId?.toUpperCase().replace('PEER-REGISTRY-', '').replace('PEER-', '')}
                         {/* ARD marker — this peer is an ai-catalog (ARD) registry. */}
                         {isArdDiscovery && (
-                          <span className="ml-1 text-[10px] font-bold text-violet-500 dark:text-violet-400" title="ARD (ai-catalog.json) registry">
+                          <span className="ml-1 text-[10px] font-bold text-violet-500 dark:text-violet-400" title={t('ARD (ai-catalog.json) registry')}>
                             ARD
                           </span>
                         )}
@@ -544,14 +555,14 @@ const AgentCard: React.FC<AgentCardProps> = React.memo(({
                     )}
                     {/* Orphaned badge - agent no longer exists on peer registry */}
                     {isOrphanedAgent && (
-                      <span className="px-2 py-0.5 text-xs font-semibold bg-gradient-to-r from-red-100 to-rose-100 text-red-700 dark:from-red-900/30 dark:to-rose-900/30 dark:text-red-300 rounded-full flex-shrink-0 border border-red-200 dark:border-red-600" title="No longer exists on peer registry">
-                        ORPHANED
+                      <span className="px-2 py-0.5 text-xs font-semibold bg-gradient-to-r from-red-100 to-rose-100 text-red-700 dark:from-red-900/30 dark:to-rose-900/30 dark:text-red-300 rounded-full flex-shrink-0 border border-red-200 dark:border-red-600" title={t('No longer exists on peer registry')}>
+                        {t('ORPHANED')}
                       </span>
                     )}
                     {/* Discovery badge - ARD discovery-only import (metadata only) */}
                     {isArdDiscovery && (
-                      <span className="px-2 py-0.5 text-xs font-semibold bg-gradient-to-r from-slate-100 to-gray-100 text-slate-700 dark:from-slate-900/30 dark:to-gray-900/30 dark:text-slate-300 rounded-full flex-shrink-0 border border-slate-200 dark:border-slate-600" title="Discovery-only import — resolve and connect at the source registry">
-                        Discovery
+                      <span className="px-2 py-0.5 text-xs font-semibold bg-gradient-to-r from-slate-100 to-gray-100 text-slate-700 dark:from-slate-900/30 dark:to-gray-900/30 dark:text-slate-300 rounded-full flex-shrink-0 border border-slate-200 dark:border-slate-600" title={t('Discovery-only import — resolve and connect at the source registry')}>
+                        {t('Discovery')}
                       </span>
                     )}
                   </div>
@@ -586,7 +597,7 @@ const AgentCard: React.FC<AgentCardProps> = React.memo(({
                   <button
                     className="p-2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50 rounded-lg transition-all duration-200 flex-shrink-0"
                     onClick={() => onEdit?.(agent)}
-                    title="Edit agent"
+                    title={t('Edit agent')}
                   >
                     <PencilIcon className="h-4 w-4" />
                   </button>
@@ -601,7 +612,7 @@ const AgentCard: React.FC<AgentCardProps> = React.memo(({
                     onClick={handleViewSecurityScan}
                     className={`p-2 hover:bg-gray-50 dark:hover:bg-gray-700/50 rounded-lg transition-all duration-200 flex-shrink-0 ${getSecurityIconState().color}`}
                     title={getSecurityIconState().title}
-                    aria-label="View security scan results"
+                    aria-label={t('View security scan results')}
                   >
                     {React.createElement(getSecurityIconState().Icon, { className: "h-4 w-4" })}
                   </button>
@@ -617,14 +628,14 @@ const AgentCard: React.FC<AgentCardProps> = React.memo(({
                       } catch (error) {
                         console.error('Failed to fetch agent details:', error);
                         if (onShowToast) {
-                          onShowToast('Failed to load full agent details', 'error');
+                          onShowToast(t('Failed to load full agent details'), 'error');
                         }
                       } finally {
                         setLoadingDetails(false);
                       }
                     }}
                     className="p-2 text-gray-400 hover:text-blue-600 dark:hover:text-blue-300 hover:bg-blue-50 dark:hover:bg-blue-700/50 rounded-lg transition-all duration-200 flex-shrink-0"
-                    title="View full agent details (JSON)"
+                    title={t('View full agent details (JSON)')}
                   >
                     <InformationCircleIcon className="h-4 w-4" />
                   </button>
@@ -636,8 +647,8 @@ const AgentCard: React.FC<AgentCardProps> = React.memo(({
                   <button
                     onClick={() => setShowDeleteConfirm(true)}
                     className="p-2 text-gray-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-700/50 rounded-lg transition-all duration-200 flex-shrink-0"
-                    title="Delete agent"
-                    aria-label={`Delete ${agent.name}`}
+                    title={t('Delete agent')}
+                    aria-label={t('Delete {name}', { name: agent.name })}
                   >
                     <TrashIcon className="h-4 w-4" />
                   </button>
@@ -646,7 +657,7 @@ const AgentCard: React.FC<AgentCardProps> = React.memo(({
 
               {/* Description */}
               <p className="text-gray-600 dark:text-gray-300 text-sm leading-relaxed line-clamp-2 mb-4">
-                {agent.description || 'No description available'}
+                {agent.description || t('No description available')}
               </p>
 
               {/* ARD discovery-only: link back to the source registry's server.json,
@@ -658,7 +669,7 @@ const AgentCard: React.FC<AgentCardProps> = React.memo(({
                   rel="noopener noreferrer"
                   className="mb-4 inline-flex items-center gap-1 text-xs text-blue-600 dark:text-blue-400 hover:underline"
                 >
-                  View at source ↗
+                  {t('View at source ↗')}
                 </SafeLink>
               )}
 
@@ -719,7 +730,7 @@ const AgentCard: React.FC<AgentCardProps> = React.memo(({
                             : 'bg-gray-300 dark:bg-gray-600'
                         }`} />
                         <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                          {agent.enabled ? 'Enabled' : 'Disabled'}
+                          {agent.enabled ? t('Enabled') : t('Disabled')}
                         </span>
                       </div>
 
@@ -736,9 +747,9 @@ const AgentCard: React.FC<AgentCardProps> = React.memo(({
                             : 'bg-amber-400 shadow-lg shadow-amber-400/30'
                         }`} />
                         <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                          {agent.status === 'healthy' ? 'Healthy' :
-                           agent.status === 'healthy-auth-expired' ? 'Healthy (Auth Expired)' :
-                           agent.status === 'unhealthy' ? 'Unhealthy' : 'Unknown'}
+                          {agent.status === 'healthy' ? t('Healthy') :
+                           agent.status === 'healthy-auth-expired' ? t('Healthy (Auth Expired)') :
+                           agent.status === 'unhealthy' ? t('Unhealthy') : t('Unknown')}
                         </span>
                       </div>
                     </>
@@ -752,14 +763,14 @@ const AgentCard: React.FC<AgentCardProps> = React.memo(({
                     <div className="text-xs text-gray-500 dark:text-gray-300 flex items-center gap-1.5">
                       <ClockIcon className="h-3.5 w-3.5" />
                       <span title={new Date(agent.source_updated_at).toLocaleString()}>
-                        {formatRelativeTime(agent.source_updated_at)}
+                        {formatRelativeTime(agent.source_updated_at, locale)}
                       </span>
                     </div>
                   )}
 
                   {/* Last Checked */}
                   {(() => {
-                    const timeText = formatTimeSince(agent.last_checked_time);
+                    const timeText = formatTimeSince(agent.last_checked_time, t);
                     return agent.last_checked_time && timeText && !agent.source_updated_at ? (
                       <div className="text-xs text-gray-500 dark:text-gray-300 flex items-center gap-1.5">
                         <ClockIcon className="h-3.5 w-3.5" />
@@ -775,7 +786,7 @@ const AgentCard: React.FC<AgentCardProps> = React.memo(({
                       onClick={handleRefreshHealth}
                       disabled={loadingRefresh}
                       className="p-2.5 text-gray-500 hover:text-cyan-600 dark:hover:text-cyan-400 hover:bg-cyan-50 dark:hover:bg-cyan-900/20 rounded-lg transition-all duration-200 disabled:opacity-50"
-                      title="Refresh agent health status"
+                      title={t('Refresh agent health status')}
                     >
                       <ArrowPathIcon className={`h-4 w-4 ${loadingRefresh ? 'animate-spin' : ''}`} />
                     </button>
@@ -787,8 +798,8 @@ const AgentCard: React.FC<AgentCardProps> = React.memo(({
                       onClick={handlePullCard}
                       disabled={loadingPullCard}
                       className="p-2.5 text-gray-500 hover:text-cyan-600 dark:hover:text-cyan-400 hover:bg-cyan-50 dark:hover:bg-cyan-900/20 rounded-lg transition-all duration-200 disabled:opacity-50"
-                      title="Pull latest agent card from remote"
-                      aria-label="Pull latest agent card"
+                      title={t('Pull latest agent card from remote')}
+                      aria-label={t('Pull latest agent card')}
                     >
                       <CloudArrowDownIcon className={`h-4 w-4 ${loadingPullCard ? 'animate-pulse' : ''}`} />
                     </button>

@@ -1,5 +1,7 @@
 import React, { useState } from 'react';
 import { ArrowPathIcon } from '@heroicons/react/24/outline';
+import { useI18n } from '../contexts/I18nContext';
+import { localizeError } from '../utils/apiError';
 
 /**
  * Props for the DeleteConfirmation component.
@@ -11,6 +13,18 @@ export interface DeleteConfirmationProps {
   onConfirm: (path: string) => Promise<void>;
   onCancel: () => void;
 }
+
+/**
+ * Display labels for the entity kinds this confirmation can delete.
+ */
+const ENTITY_TYPE_LABELS: Record<string, string> = {
+  server: 'Server',
+  agent: 'Agent',
+  group: 'Group',
+  user: 'User',
+  m2m: 'M2M Account',
+  'rate-limit': 'Rate Limit',
+};
 
 /**
  * DeleteConfirmation component provides an inline confirmation UI for delete operations.
@@ -28,6 +42,7 @@ const DeleteConfirmation: React.FC<DeleteConfirmationProps> = ({
   onConfirm,
   onCancel,
 }) => {
+  const { t } = useI18n();
   const [typedName, setTypedName] = useState('');
   const [isDeleting, setIsDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -44,37 +59,25 @@ const DeleteConfirmation: React.FC<DeleteConfirmationProps> = ({
       await onConfirm(entityPath);
       onCancel(); // Close on success - parent handles list refresh + toast
     } catch (err: any) {
-      setError(
-        err.response?.data?.detail ||
-        err.response?.data?.reason ||
-        `Failed to delete ${entityType}`
-      );
+      const reason = err?.response?.data?.reason;
+      setError(reason || localizeError(err, t, `Failed to delete ${entityType}`));
     } finally {
       setIsDeleting(false);
     }
   };
 
-  const entityTypeLabels: Record<string, string> = {
-    server: 'Server',
-    agent: 'Agent',
-    group: 'Group',
-    user: 'User',
-    m2m: 'M2M Account',
-    'rate-limit': 'Rate Limit',
-  };
-  const entityTypeLabel = entityTypeLabels[entityType] || entityType;
+  const entityTypeLabel = t(ENTITY_TYPE_LABELS[entityType] ?? entityType);
 
   return (
     <div className="p-4 bg-red-50 dark:bg-red-900/20 rounded-lg border border-red-200 dark:border-red-800">
       <h4 className="text-red-800 dark:text-red-200 font-semibold mb-2">
-        Delete {entityTypeLabel}
+        {t('Delete {label}', { label: entityTypeLabel })}
       </h4>
       <p className="text-sm text-red-700 dark:text-red-300 mb-2">
-        This action is irreversible. This will permanently delete the {entityType}{' '}
-        "<strong>{entityName}</strong>" and remove it from the registry.
+        {t('This action is irreversible. This will permanently delete the {type} "{name}" and remove it from the registry.', { type: entityTypeLabel, name: entityName })}
       </p>
       <p className="text-sm text-red-700 dark:text-red-300 mb-3">
-        Type <strong>{entityName}</strong> to confirm:
+        {t('Type')} <strong>{entityName}</strong> {t('to confirm:')}
       </p>
       <input
         type="text"
@@ -95,7 +98,7 @@ const DeleteConfirmation: React.FC<DeleteConfirmationProps> = ({
           className="px-4 py-2 bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200
                      rounded hover:bg-gray-300 dark:hover:bg-gray-800 disabled:opacity-50"
         >
-          Cancel
+          {t('Cancel')}
         </button>
         <button
           onClick={handleDelete}
@@ -104,7 +107,7 @@ const DeleteConfirmation: React.FC<DeleteConfirmationProps> = ({
                      disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
         >
           {isDeleting && <ArrowPathIcon className="h-4 w-4 animate-spin" />}
-          Delete {entityTypeLabel}
+          {t('Delete {label}', { label: entityTypeLabel })}
         </button>
       </div>
     </div>

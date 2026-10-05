@@ -8,6 +8,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { MagnifyingGlassIcon, XMarkIcon } from '@heroicons/react/24/outline';
+import { useI18n } from '../contexts/I18nContext';
 
 
 export interface SelectOption {
@@ -50,7 +51,7 @@ const SearchableSelect: React.FC<SearchableSelectProps> = ({
   options,
   value,
   onChange,
-  placeholder = 'Search...',
+  placeholder,
   disabled = false,
   isLoading = false,
   maxDescriptionWords = 8,
@@ -59,6 +60,8 @@ const SearchableSelect: React.FC<SearchableSelectProps> = ({
   focusColor,
   emptyMessage,
 }) => {
+  const { t } = useI18n();
+  const resolvedPlaceholder = placeholder ?? t('Search...');
   const [isOpen, setIsOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const containerRef = useRef<HTMLDivElement>(null);
@@ -165,7 +168,7 @@ const SearchableSelect: React.FC<SearchableSelectProps> = ({
           onChange={handleInputChange}
           onFocus={handleInputFocus}
           onKeyDown={handleKeyDown}
-          placeholder={placeholder}
+          placeholder={resolvedPlaceholder}
           disabled={disabled}
           className={`w-full pl-9 pr-8 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded-lg
                      bg-white dark:bg-gray-900 text-gray-900 dark:text-white
@@ -197,7 +200,7 @@ const SearchableSelect: React.FC<SearchableSelectProps> = ({
           className="z-50 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700
                      rounded-lg shadow-lg max-h-60 overflow-y-auto">
           {isLoading ? (
-            <div className="px-3 py-2 text-sm text-gray-400">Loading...</div>
+            <div className="px-3 py-2 text-sm text-gray-400">{t('Loading...')}</div>
           ) : (
             <>
               {/* Special options (e.g., "* All servers") */}
@@ -231,12 +234,12 @@ const SearchableSelect: React.FC<SearchableSelectProps> = ({
                     onClick={() => handleSelect(searchQuery.trim())}
                     className="w-full text-left px-3 py-2 text-sm text-gray-900 dark:text-white hover:bg-gray-100 dark:hover:bg-gray-700"
                   >
-                    Search for "{searchQuery.trim()}"
-                    <span className="ml-2 text-xs text-gray-400">press Enter</span>
+                    {t('Search for "{query}"', { query: searchQuery.trim() })}
+                    <span className="ml-2 text-xs text-gray-400">{t('press Enter')}</span>
                   </button>
                 ) : (
                   <div className="px-3 py-2 text-sm text-gray-400">
-                    {searchQuery ? 'No matches found' : emptyMessage || 'No options available'}
+                    {searchQuery ? t('No matches found') : emptyMessage || t('No options available')}
                   </div>
                 )
               ) : (
@@ -262,7 +265,7 @@ const SearchableSelect: React.FC<SearchableSelectProps> = ({
 
               {filteredOptions.length > 50 && (
                 <div className="px-3 py-2 text-xs text-gray-400 text-center border-t border-gray-200 dark:border-gray-700">
-                  Showing first 50 results. Type to filter.
+                  {t('Showing first 50 results. Type to filter.')}
                 </div>
               )}
             </>

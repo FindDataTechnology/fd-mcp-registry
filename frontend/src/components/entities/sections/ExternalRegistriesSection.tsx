@@ -1,5 +1,6 @@
 import React from 'react';
 import EntityGrid from '../EntityGrid';
+import { useI18n } from '../../../contexts/I18nContext';
 
 interface ExternalRegistriesSectionProps {
   /** Source tab keys (e.g. 'anthropic', 'aws_registry'). Empty hides the tabs. */
@@ -46,6 +47,7 @@ const ExternalRegistriesSection: React.FC<ExternalRegistriesSectionProps> = ({
   renderAgentCard,
   renderSkillCard,
 }) => {
+  const { t } = useI18n();
   const nothingToShow =
     servers.length === 0 && agents.length === 0 && skills.length === 0;
   const ardSourceSet = new Set(ardSources);
@@ -53,7 +55,7 @@ const ExternalRegistriesSection: React.FC<ExternalRegistriesSectionProps> = ({
   return (
     <div className="mb-8">
       <h2 className="text-xl font-bold text-gray-900 dark:text-white mb-4">
-        External Registries
+        {t('External Registries')}
       </h2>
 
       {/* Source tabs - only show when there are sources */}
@@ -75,7 +77,7 @@ const ExternalRegistriesSection: React.FC<ExternalRegistriesSectionProps> = ({
               {ardSourceSet.has(source) && (
                 <span
                   className="px-1.5 py-0.5 text-[10px] font-semibold rounded-full bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300 border border-slate-200 dark:border-slate-600"
-                  title="ARD (ai-catalog.json) registry"
+                  title={t('ARD (ai-catalog.json) registry')}
                 >
                   ARD
                 </span>
@@ -88,12 +90,12 @@ const ExternalRegistriesSection: React.FC<ExternalRegistriesSectionProps> = ({
       {nothingToShow ? (
         <div className="text-center py-12 bg-gray-50 dark:bg-gray-800 rounded-lg border border-dashed border-gray-300 dark:border-gray-600">
           <div className="text-gray-400 text-lg mb-2">
-            {hasAnyExternal ? 'No Results Found' : 'No External Registries Available'}
+            {hasAnyExternal ? t('No Results Found') : t('No External Registries Available')}
           </div>
           <p className="text-gray-500 dark:text-gray-300 text-sm max-w-md mx-auto">
             {hasAnyExternal
-              ? 'Press Enter in the search bar to search semantically'
-              : 'External registry integrations (Anthropic, AWS Agents, and more) will appear here when configured'}
+              ? t('Press Enter in the search bar to search semantically')
+              : t('External registry integrations (Anthropic, AWS Agents, and more) will appear here when configured')}
           </p>
         </div>
       ) : (
@@ -101,7 +103,7 @@ const ExternalRegistriesSection: React.FC<ExternalRegistriesSectionProps> = ({
           {servers.length > 0 && (
             <div className="mb-6">
               <h3 className="text-lg font-semibold text-gray-800 dark:text-gray-200 mb-3">
-                Servers
+                {t('Servers')}
               </h3>
               <EntityGrid>{servers.map((s) => renderServerCard(s))}</EntityGrid>
             </div>
@@ -110,7 +112,7 @@ const ExternalRegistriesSection: React.FC<ExternalRegistriesSectionProps> = ({
           {agents.length > 0 && (
             <div className="mb-6">
               <h3 className="text-lg font-semibold text-gray-800 dark:text-gray-200 mb-3">
-                Agents
+                {t('Agents')}
               </h3>
               <EntityGrid>{agents.map((a) => renderAgentCard(a))}</EntityGrid>
             </div>
@@ -119,7 +121,7 @@ const ExternalRegistriesSection: React.FC<ExternalRegistriesSectionProps> = ({
           {skills.length > 0 && (
             <div>
               <h3 className="text-lg font-semibold text-gray-800 dark:text-gray-200 mb-3">
-                Skills
+                {t('Skills')}
               </h3>
               <EntityGrid>{skills.map((s) => renderSkillCard(s))}</EntityGrid>
             </div>

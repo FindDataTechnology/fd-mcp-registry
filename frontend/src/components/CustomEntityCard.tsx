@@ -13,6 +13,7 @@ import {
   CustomTypeDescriptor,
 } from '../types/customEntity';
 import { labelFor } from '../utils/humanize';
+import { useI18n } from '../contexts/I18nContext';
 import StarRatingWidget from './StarRatingWidget';
 import { TagList, ENTITY_ACCENTS } from './cards';
 import ProxyConnectButton from './ProxyConnectButton';
@@ -34,11 +35,13 @@ const ACCENT = ENTITY_ACCENTS.custom;
 export function formatValue(
   field: CustomFieldDescriptor,
   value: unknown,
+  t?: (source: string) => string,
 ): string {
+  const tr = t ?? ((source: string) => source);
   if (value === undefined || value === null || value === '') return '—';
   switch (field.datatype) {
     case 'bool':
-      return value ? 'Yes' : 'No';
+      return value ? tr('Yes') : tr('No');
     case 'array<string>':
       return Array.isArray(value) ? (value as string[]).join(', ') : String(value);
     default:
@@ -84,6 +87,7 @@ const CustomEntityCard: React.FC<CustomEntityCardProps> = ({
   authToken,
   onShowToast,
 }) => {
+  const { t } = useI18n();
   const listFields = descriptor.fields.filter((f) => f.show_in_list);
 
   return (
@@ -98,12 +102,14 @@ const CustomEntityCard: React.FC<CustomEntityCardProps> = ({
               className="px-2 py-0.5 text-xs font-semibold bg-cyan-100 text-cyan-700 dark:bg-cyan-900/30 dark:text-cyan-300 rounded-full border border-cyan-200 dark:border-cyan-600"
               title={
                 record.proxy_client_url
-                  ? `Clients connect at ${record.proxy_client_url}` +
-                    (record.proxy_target_url ? ` (forwards to ${record.proxy_target_url})` : '')
-                  : 'Served through the gateway proxy'
+                  ? t('Clients connect at {url}', { url: record.proxy_client_url }) +
+                    (record.proxy_target_url
+                      ? t('(forwards to {url})', { url: record.proxy_target_url })
+                      : '')
+                  : t('Served through the gateway proxy')
               }
             >
-              Proxied
+              {t('Proxied')}
             </span>
           )}
           <span
@@ -131,7 +137,7 @@ const CustomEntityCard: React.FC<CustomEntityCardProps> = ({
                 {labelFor(field)}:
               </dt>
               <dd className="text-gray-900 dark:text-white truncate">
-                {formatValue(field, record.attributes[field.name])}
+                {formatValue(field, record.attributes[field.name], t)}
               </dd>
             </div>
           ))}
@@ -162,7 +168,7 @@ const CustomEntityCard: React.FC<CustomEntityCardProps> = ({
             type="button"
             onClick={() => onView(record)}
             className="p-2 text-gray-400 hover:text-teal-600 dark:hover:text-teal-400 rounded-lg transition-colors"
-            aria-label="View details"
+            aria-label={t('View details')}
           >
             <InformationCircleIcon className="h-4 w-4" />
           </button>
@@ -172,7 +178,7 @@ const CustomEntityCard: React.FC<CustomEntityCardProps> = ({
                 type="button"
                 onClick={() => onEdit(record)}
                 className="p-2 text-gray-400 hover:text-teal-600 dark:hover:text-teal-400 rounded-lg transition-colors"
-                aria-label="Edit"
+                aria-label={t('Edit')}
               >
                 <PencilIcon className="h-4 w-4" />
               </button>
@@ -180,7 +186,7 @@ const CustomEntityCard: React.FC<CustomEntityCardProps> = ({
                 type="button"
                 onClick={() => onDelete(record)}
                 className="p-2 text-gray-400 hover:text-red-500 rounded-lg transition-colors"
-                aria-label="Delete"
+                aria-label={t('Delete')}
               >
                 <TrashIcon className="h-4 w-4" />
               </button>

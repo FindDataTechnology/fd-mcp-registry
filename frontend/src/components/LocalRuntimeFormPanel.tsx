@@ -3,6 +3,7 @@ import type {
   LocalRuntimeFormData,
   LocalRuntimeFormType,
 } from '../utils/localRuntime';
+import { useI18n } from '../contexts/I18nContext';
 
 
 interface LocalRuntimeFormPanelProps {
@@ -56,6 +57,7 @@ const LocalRuntimeFormPanel: React.FC<LocalRuntimeFormPanelProps> = ({
   labelClass = DEFAULT_LABEL_CLASS,
   errorClass = DEFAULT_ERROR_CLASS,
 }) => {
+  const { t } = useI18n();
   const update = (patch: Partial<LocalRuntimeFormData>) => onChange({ ...runtime, ...patch });
 
   const updateEnvRow = (idx: number, patch: Partial<LocalRuntimeFormData['envRows'][number]>) => {
@@ -90,9 +92,9 @@ const LocalRuntimeFormPanel: React.FC<LocalRuntimeFormPanelProps> = ({
   };
 
   const packageLabel =
-    runtime.type === 'docker' ? 'Image Reference *'
-    : runtime.type === 'command' ? 'Command Path *'
-    : 'Package Name *';
+    runtime.type === 'docker' ? t('Image Reference *')
+    : runtime.type === 'command' ? t('Command Path *')
+    : t('Package Name *');
 
   const packagePlaceholder =
     runtime.type === 'docker' ? 'acme/weather-mcp:1.2.0'
@@ -101,18 +103,17 @@ const LocalRuntimeFormPanel: React.FC<LocalRuntimeFormPanelProps> = ({
 
   return (
     <div className="border border-purple-200 dark:border-purple-800 rounded-lg p-4 bg-purple-50/40 dark:bg-purple-900/10">
-      <h4 className="font-medium text-gray-900 dark:text-white mb-3">Launch Recipe</h4>
+      <h4 className="font-medium text-gray-900 dark:text-white mb-3">{t('Launch Recipe')}</h4>
 
       {runtime.type === 'command' && (
         <div className="mb-3 p-3 rounded-md bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 text-sm text-yellow-900 dark:text-yellow-100">
-          Warning: command type executes an arbitrary binary on every developer&apos;s machine.
-          Only register commands you trust.
+          {t("Warning: command type executes an arbitrary binary on every developer's machine. Only register commands you trust.")}
         </div>
       )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div>
-          <label className={labelClass}>Runtime Type</label>
+          <label className={labelClass}>{t('Runtime Type')}</label>
           <select
             className={inputClass}
             value={runtime.type}
@@ -121,7 +122,7 @@ const LocalRuntimeFormPanel: React.FC<LocalRuntimeFormPanelProps> = ({
             <option value="npx">npx</option>
             <option value="docker">docker</option>
             <option value="uvx">uvx</option>
-            <option value="command">command (admin-only)</option>
+            <option value="command">{t('command (admin-only)')}</option>
           </select>
         </div>
 
@@ -139,7 +140,7 @@ const LocalRuntimeFormPanel: React.FC<LocalRuntimeFormPanelProps> = ({
 
         {(runtime.type === 'npx' || runtime.type === 'uvx') && (
           <div>
-            <label className={labelClass}>Version Pin (recommended)</label>
+            <label className={labelClass}>{t('Version Pin (recommended)')}</label>
             <input
               type="text"
               className={inputClass}
@@ -148,14 +149,14 @@ const LocalRuntimeFormPanel: React.FC<LocalRuntimeFormPanelProps> = ({
               placeholder="1.2.0"
             />
             <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-              Unpinned packages are tagged &lsquo;unpinned-version&rsquo; for visibility.
+              {t('Unpinned packages are tagged ‘unpinned-version’ for visibility.')}
             </p>
           </div>
         )}
 
         {runtime.type === 'docker' && (
           <div>
-            <label className={labelClass}>Image Digest (recommended)</label>
+            <label className={labelClass}>{t('Image Digest (recommended)')}</label>
             <input
               type="text"
               className={`${inputClass} ${errors.image_digest ? 'border-red-500' : ''}`}
@@ -168,10 +169,11 @@ const LocalRuntimeFormPanel: React.FC<LocalRuntimeFormPanelProps> = ({
         )}
 
         <div className="md:col-span-2">
-          <label className={labelClass}>Args</label>
+          <label className={labelClass}>{t('Args')}</label>
           <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
-            Argv-style list — one entry per argument. No shell interpolation.
-            Args may contain commas, equals signs, etc. (e.g. <code>--label=k=v,w=x</code>).
+            {t('Argv-style list — one entry per argument. No shell interpolation. Args may contain commas, equals signs, etc. (e.g.')}{' '}
+            <code>--label=k=v,w=x</code>
+            {t(').')}
           </p>
           {runtime.argList.map((arg, idx) => (
             <div key={idx} className="flex gap-2 mb-2 items-center">
@@ -180,7 +182,7 @@ const LocalRuntimeFormPanel: React.FC<LocalRuntimeFormPanelProps> = ({
                 className={`${inputClass} flex-1`}
                 value={arg}
                 onChange={(e) => updateArg(idx, e.target.value)}
-                placeholder={`arg ${idx + 1}`}
+                placeholder={t('arg {index}', { index: idx + 1 })}
               />
               <button
                 type="button"
@@ -196,27 +198,26 @@ const LocalRuntimeFormPanel: React.FC<LocalRuntimeFormPanelProps> = ({
             className="mt-1 px-3 py-1 text-sm bg-purple-100 dark:bg-purple-800 text-purple-700 dark:text-purple-200 rounded hover:bg-purple-200 dark:hover:bg-purple-700"
             onClick={addArg}
           >
-            + Add arg
+            {t('+ Add arg')}
           </button>
         </div>
 
         <div className="md:col-span-2">
-          <label className={labelClass}>Environment Variables</label>
+          <label className={labelClass}>{t('Environment Variables')}</label>
           <div className="mb-2 p-3 rounded-md bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 text-xs text-amber-900 dark:text-amber-100">
-            <strong>Visibility note:</strong> values you put here are visible
-            to every authenticated registry user (they need them to render
-            the Connect modal), and may appear in process listings
-            (<code>ps aux</code>, <code>/proc/&lt;pid&gt;/environ</code>) on
-            developer machines once launched. Use literal values only for
-            non-secret defaults (e.g. <code>LOG_LEVEL=info</code>). For
-            secrets, use <code>${'$'}{'{VAR}'}</code> placeholders or mark
-            the row &lsquo;required from user&rsquo; so the user supplies
-            it at connect time.
+            <strong>{t('Visibility note:')}</strong>{' '}
+            {t('values you put here are visible to every authenticated registry user (they need them to render the Connect modal), and may appear in process listings (')}
+            <code>ps aux</code>{', '}
+            <code>/proc/&lt;pid&gt;/environ</code>
+            {t(') on developer machines once launched. Use literal values only for non-secret defaults (e.g.')}{' '}
+            <code>LOG_LEVEL=info</code>
+            {t('). For secrets, use')}{' '}
+            <code>${'$'}{'{VAR}'}</code>{' '}
+            {t('placeholders or mark the row ‘required from user’ so the user supplies it at connect time.')}
           </div>
           {runtime.envRows.length === 0 && (
             <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
-              None. Add rows for env vars. Mark a row &lsquo;required from user&rsquo;
-              for secrets the user provides at connect time.
+              {t('None. Add rows for env vars. Mark a row ‘required from user’ for secrets the user provides at connect time.')}
             </p>
           )}
           {runtime.envRows.map((row, idx) => (
@@ -231,7 +232,7 @@ const LocalRuntimeFormPanel: React.FC<LocalRuntimeFormPanelProps> = ({
               <input
                 type="text"
                 className={`${inputClass} flex-1 ${row.required ? 'opacity-50' : ''}`}
-                placeholder={row.required ? '(provided by user at connect)' : 'value or ${VAR}'}
+                placeholder={row.required ? t('(provided by user at connect)') : t('value or ${VAR}')}
                 disabled={row.required}
                 value={row.value}
                 onChange={(e) => updateEnvRow(idx, { value: e.target.value })}
@@ -245,7 +246,7 @@ const LocalRuntimeFormPanel: React.FC<LocalRuntimeFormPanelProps> = ({
                     value: e.target.checked ? '' : row.value,
                   })}
                 />
-                required from user
+                {t('required from user')}
               </label>
               <button
                 type="button"
@@ -262,7 +263,7 @@ const LocalRuntimeFormPanel: React.FC<LocalRuntimeFormPanelProps> = ({
             className="mt-2 px-3 py-1 text-sm bg-purple-100 dark:bg-purple-800 text-purple-700 dark:text-purple-200 rounded hover:bg-purple-200 dark:hover:bg-purple-700"
             onClick={addEnvRow}
           >
-            + Add env var
+            {t('+ Add env var')}
           </button>
         </div>
       </div>

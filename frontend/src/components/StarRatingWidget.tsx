@@ -3,6 +3,8 @@ import { StarIcon } from '@heroicons/react/24/solid';
 import { StarIcon as StarIconOutline } from '@heroicons/react/24/outline';
 import axios from 'axios';
 import { useAuth } from '../contexts/AuthContext';
+import { useI18n } from '../contexts/I18nContext';
+import { localizeError } from '../utils/apiError';
 
 interface RatingDetail {
   user: string;
@@ -35,6 +37,7 @@ const StarRatingWidget: React.FC<StarRatingWidgetProps> = ({
   onRatingUpdate
 }) => {
   const { user } = useAuth();
+  const { t } = useI18n();
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [selectedRating, setSelectedRating] = useState<number | null>(null);
   const [hoverRating, setHoverRating] = useState<number | null>(null);
@@ -49,7 +52,7 @@ const StarRatingWidget: React.FC<StarRatingWidgetProps> = ({
 
   // Singular noun for labels (e.g. "servers" -> "server"). "custom" has no
   // trailing plural to strip, so it maps to a generic "entry".
-  const singularLabel = resourceType === 'custom' ? 'entry' : resourceType.slice(0, -1);
+  const singularLabel = resourceType === 'custom' ? t('entry') : t(resourceType.slice(0, -1));
 
 
   // Derive display + the current user's own rating from the list payload props.
@@ -125,7 +128,7 @@ const StarRatingWidget: React.FC<StarRatingWidgetProps> = ({
 
       if (onShowToast) {
         onShowToast(
-          currentUserRating ? 'Rating updated successfully!' : 'Rating submitted successfully!',
+          t(currentUserRating ? 'Rating updated successfully!' : 'Rating submitted successfully!'),
           'success'
         );
       }
@@ -146,7 +149,7 @@ const StarRatingWidget: React.FC<StarRatingWidgetProps> = ({
       console.error('Error details:', error.response?.data);
       if (onShowToast) {
         onShowToast(
-          error.response?.data?.detail || 'Failed to submit rating',
+          localizeError(error, t, 'Failed to submit rating'),
           'error'
         );
       }
@@ -196,8 +199,8 @@ const StarRatingWidget: React.FC<StarRatingWidgetProps> = ({
           setIsDropdownOpen(!isDropdownOpen);
         }}
         className="flex items-center gap-2 hover:bg-yellow-50 dark:hover:bg-yellow-900/20 p-2 rounded-lg transition-colors duration-200"
-        title={`Click to rate this ${singularLabel}`}
-        aria-label={`Rate this ${singularLabel}`}
+        title={t('Click to rate this {type}', { type: singularLabel })}
+        aria-label={t('Rate this {type}', { type: singularLabel })}
         aria-expanded={isDropdownOpen}
         aria-haspopup="dialog"
       >
@@ -209,7 +212,11 @@ const StarRatingWidget: React.FC<StarRatingWidgetProps> = ({
             {averageRating > 0 ? averageRating.toFixed(1) : '0'}
           </div>
           <div className="text-xs text-gray-500 dark:text-gray-400">
-            {ratingCount === 0 ? 'No ratings' : `${ratingCount} rating${ratingCount !== 1 ? 's' : ''}`}
+            {ratingCount === 0
+              ? t('No ratings')
+              : ratingCount !== 1
+                ? t('{count} ratings', { count: ratingCount })
+                : t('{count} rating', { count: ratingCount })}
           </div>
         </div>
       </button>
@@ -220,7 +227,7 @@ const StarRatingWidget: React.FC<StarRatingWidgetProps> = ({
           className="fixed w-80 bg-white dark:bg-gray-800 rounded-lg shadow-xl border border-gray-200 dark:border-gray-700 p-4"
           style={{ top: dropdownPos.top, left: dropdownPos.left, zIndex: 9999 }}
           role="dialog"
-          aria-label={`${singularLabel} rating form`}
+          aria-label={t('{type} rating form', { type: singularLabel })}
         >
           {/* Success State */}
           {showSuccess ? (
@@ -231,7 +238,9 @@ const StarRatingWidget: React.FC<StarRatingWidgetProps> = ({
                 </svg>
               </div>
               <h4 className="text-lg font-semibold text-gray-900 dark:text-white mb-1">
-                Rating {currentUserRating && selectedRating !== currentUserRating ? 'updated' : 'submitted'}!
+                {currentUserRating && selectedRating !== currentUserRating
+                  ? t('Rating updated!')
+                  : t('Rating submitted!')}
               </h4>
               <div className="flex justify-center items-center gap-1 mb-2">
                 {[1, 2, 3, 4, 5].map((star) => (
@@ -240,11 +249,11 @@ const StarRatingWidget: React.FC<StarRatingWidgetProps> = ({
                   </div>
                 ))}
                 <span className="ml-2 text-sm text-gray-600 dark:text-gray-400">
-                  ({selectedRating} stars)
+                  {t('({count} stars)', { count: selectedRating ?? 0 })}
                 </span>
               </div>
               <p className="text-sm text-gray-600 dark:text-gray-400">
-                New average: {averageRating.toFixed(1)} ★
+                {t('New average: {rating} ★', { rating: averageRating.toFixed(1) })}
               </p>
             </div>
           ) : isSubmitting ? (
@@ -257,18 +266,18 @@ const StarRatingWidget: React.FC<StarRatingWidgetProps> = ({
                 </svg>
               </div>
               <p className="text-sm font-medium text-gray-900 dark:text-white">
-                Submitting your rating...
+                {t('Submitting your rating...')}
               </p>
             </div>
           ) : (
             // Rating Form
             <>
               <h4 className="text-sm font-semibold text-gray-900 dark:text-white mb-1">
-                {currentUserRating ? 'Update your rating:' : `Rate this ${singularLabel}:`}
+                {currentUserRating ? t('Update your rating:') : t('Rate this {type}:', { type: singularLabel })}
               </h4>
               {currentUserRating && (
                 <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
-                  Currently: {currentUserRating} stars
+                  {t('Currently: {count} stars', { count: currentUserRating })}
                 </p>
               )}
 
@@ -276,7 +285,7 @@ const StarRatingWidget: React.FC<StarRatingWidgetProps> = ({
               <div
                 className="flex items-center justify-center gap-2 my-4"
                 role="radiogroup"
-                aria-label="Select rating"
+                aria-label={t('Select rating')}
               >
                 {[1, 2, 3, 4, 5].map((star) => (
                   <button
@@ -287,7 +296,7 @@ const StarRatingWidget: React.FC<StarRatingWidgetProps> = ({
                     className="p-1 hover:scale-110 transition-transform duration-150 focus:outline-none focus:ring-2 focus:ring-yellow-400 rounded"
                     role="radio"
                     aria-checked={selectedRating === star}
-                    aria-label={`${star} star${star !== 1 ? 's' : ''}`}
+                    aria-label={star !== 1 ? t('{count} stars', { count: star }) : t('{count} star', { count: star })}
                   >
                     {renderStars(star, star <= displayRating)}
                   </button>
@@ -297,7 +306,9 @@ const StarRatingWidget: React.FC<StarRatingWidgetProps> = ({
               {/* Rating Preview Text */}
               {displayRating > 0 && (
                 <p className="text-center text-sm text-gray-600 dark:text-gray-400 mb-4">
-                  {displayRating} star{displayRating !== 1 ? 's' : ''}
+                  {displayRating !== 1
+                    ? t('{count} stars', { count: displayRating })
+                    : t('{count} star', { count: displayRating })}
                 </p>
               )}
 
@@ -307,14 +318,14 @@ const StarRatingWidget: React.FC<StarRatingWidgetProps> = ({
                   onClick={handleCancel}
                   className="flex-1 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-800 rounded-lg transition-colors duration-200"
                 >
-                  Cancel
+                  {t('Cancel')}
                 </button>
                 <button
                   onClick={handleSubmitRating}
                   disabled={!selectedRating}
                   className="flex-1 px-4 py-2 text-sm font-medium text-white bg-cyan-600 hover:bg-cyan-700 disabled:bg-gray-300 dark:disabled:bg-gray-600 disabled:cursor-not-allowed rounded-lg transition-colors duration-200 flex items-center justify-center gap-2"
                 >
-                  {currentUserRating ? 'Update Rating' : 'Submit Rating'}
+                  {currentUserRating ? t('Update Rating') : t('Submit Rating')}
                   {selectedRating && (
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />

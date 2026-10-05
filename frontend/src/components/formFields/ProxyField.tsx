@@ -1,6 +1,7 @@
 import React from 'react';
 import FormField from './FormField';
 import { fieldClass, FIELD_FOCUS } from './formClasses';
+import { useI18n } from '../../contexts/I18nContext';
 
 interface ProxyFieldProps {
   /** Whether the entity is served through the gateway generic proxy. */
@@ -48,11 +49,12 @@ const ProxyField: React.FC<ProxyFieldProps> = ({
 }) => {
   const showTargetWarning =
     isProxied && targetRequired && proxyTargetUrl.trim() === '';
+  const { t } = useI18n();
   return (
     <>
       <FormField
-        label="Serve through the gateway proxy"
-        hint="Route authenticated traffic to this resource through the gateway."
+        label={t('Serve through the gateway proxy')}
+        hint={t('Route authenticated traffic to this resource through the gateway.')}
       >
         <label className="inline-flex items-center gap-2 cursor-pointer">
           <input
@@ -66,7 +68,7 @@ const ProxyField: React.FC<ProxyFieldProps> = ({
               when unchecked, which reads as a double negative ("check this to
               make it not proxied"). The box itself carries the state. */}
           <span className="text-sm text-gray-600 dark:text-gray-400">
-            Enable proxying
+            {t('Enable proxying')}
           </span>
         </label>
       </FormField>
@@ -75,17 +77,17 @@ const ProxyField: React.FC<ProxyFieldProps> = ({
         <div className="rounded-md border border-cyan-200 bg-cyan-50 px-3 py-2 text-sm dark:border-cyan-800 dark:bg-cyan-900/20">
           {clientUrl ? (
             <p className="text-cyan-800 dark:text-cyan-200">
-              Clients connect at{' '}
+              {t('Clients connect at')}{' '}
               <code className="rounded bg-cyan-100 px-1 py-0.5 font-mono text-xs text-cyan-900 dark:bg-cyan-800/50 dark:text-cyan-100">
                 {clientUrl}
               </code>
-              . The registry forwards this to the backend URL below.
+              {t('. The registry forwards this to the backend URL below.')}
             </p>
           ) : (
             <p className="text-cyan-800 dark:text-cyan-200">
-              A client URL (<code className="font-mono text-xs">/{'{prefix}'}/{'{type}'}/{'{name}'}</code>)
-              is generated automatically when you save. Clients connect there; the registry forwards to
-              the backend URL below.
+              {t('A client URL (')}
+              <code className="font-mono text-xs">/{'{prefix}'}/{'{type}'}/{'{name}'}</code>
+              {t(') is generated automatically when you save. Clients connect there; the registry forwards to the backend URL below.')}
             </p>
           )}
         </div>
@@ -93,13 +95,13 @@ const ProxyField: React.FC<ProxyFieldProps> = ({
 
       {isProxied && (
         <FormField
-          label="Backend URL"
+          label={t('Backend URL')}
           required={targetRequired}
           error={error}
           hint={
             targetRequired
-              ? 'The http(s) origin the gateway forwards to (required).'
-              : 'The http(s) origin the gateway forwards to. Leave blank to use the entity’s own URL.'
+              ? t('The http(s) origin the gateway forwards to (required).')
+              : t('The http(s) origin the gateway forwards to. Leave blank to use the entity’s own URL.')
           }
         >
           <input
@@ -111,7 +113,7 @@ const ProxyField: React.FC<ProxyFieldProps> = ({
           />
           {showTargetWarning && (
             <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
-              A proxy target URL is required when proxying is enabled.
+              {t('A proxy target URL is required when proxying is enabled.')}
             </p>
           )}
         </FormField>

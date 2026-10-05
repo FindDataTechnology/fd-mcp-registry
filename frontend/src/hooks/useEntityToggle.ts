@@ -1,4 +1,5 @@
 import { useCallback } from 'react';
+import { useI18n } from '../contexts/I18nContext';
 
 type ToastFn = (message: string, type: 'success' | 'error') => void;
 
@@ -27,6 +28,7 @@ export function useEntityToggle<T extends { path: string }>(
   options: UseEntityToggleOptions<T>,
 ): (path: string, enabled: boolean) => Promise<void> {
   const { setItems, enabledField, apiCall, label, showToast } = options;
+  const { t } = useI18n();
 
   return useCallback(
     async (path: string, enabled: boolean) => {
@@ -42,18 +44,18 @@ export function useEntityToggle<T extends { path: string }>(
       try {
         await apiCall(path, enabled);
         showToast(
-          `${label} ${enabled ? 'enabled' : 'disabled'} successfully!`,
+          t(enabled ? '{label} enabled successfully!' : '{label} disabled successfully!', { label }),
           'success',
         );
       } catch (error: any) {
         console.error(`Failed to toggle ${label.toLowerCase()}:`, error);
         apply(!enabled);
         showToast(
-          error.response?.data?.detail || `Failed to toggle ${label.toLowerCase()}`,
+          error.response?.data?.detail || t('Failed to toggle {label}', { label: label.toLowerCase() }),
           'error',
         );
       }
     },
-    [setItems, enabledField, apiCall, label, showToast],
+    [setItems, enabledField, apiCall, label, showToast, t],
   );
 }

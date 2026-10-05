@@ -20,6 +20,7 @@ import {
   upstreamHeaderRowError,
   type UpstreamHeader,
 } from './formFields';
+import { useI18n } from '../contexts/I18nContext';
 
 interface CustomEntityFormProps {
   descriptor: CustomTypeDescriptor;
@@ -63,6 +64,7 @@ function ChipInput({
   onChange: (next: string[]) => void;
   placeholder?: string;
 }) {
+  const { t } = useI18n();
   const [draft, setDraft] = useState('');
 
   const commit = () => {
@@ -87,7 +89,7 @@ function ChipInput({
               type="button"
               onClick={() => onChange(value.filter((c) => c !== chip))}
               className="hover:text-red-500"
-              aria-label={`Remove ${chip}`}
+              aria-label={t('Remove {name}', { name: chip })}
             >
               <XMarkIcon className="h-3 w-3" />
             </button>
@@ -118,6 +120,7 @@ const CustomEntityForm: React.FC<CustomEntityFormProps> = ({
   onSave,
   onCancel,
 }) => {
+  const { t } = useI18n();
   const isEditMode = !!record;
 
   // --- envelope state ---
@@ -258,7 +261,7 @@ const CustomEntityForm: React.FC<CustomEntityFormProps> = ({
             onChange={(e) => setAttr(field.name, e.target.value || null)}
             className={INPUT_CLASS}
           >
-            <option value="">— select —</option>
+            <option value="">{t('— select —')}</option>
             {(field.enum_values ?? []).map((opt) => (
               <option key={opt} value={opt}>
                 {opt}
@@ -282,7 +285,7 @@ const CustomEntityForm: React.FC<CustomEntityFormProps> = ({
           <ChipInput
             value={Array.isArray(raw) ? (raw as string[]) : []}
             onChange={(next) => setAttr(field.name, next)}
-            placeholder="Type a value, press Enter"
+            placeholder={t('Type a value, press Enter')}
           />
         );
         break;
@@ -291,7 +294,7 @@ const CustomEntityForm: React.FC<CustomEntityFormProps> = ({
         widget = (
           <div className="px-3 py-2 rounded-lg bg-gray-100 dark:bg-gray-900/50 text-sm text-gray-500 dark:text-gray-400">
             {raw === undefined || raw === null ? '—' : String(raw)}
-            <span className="ml-2 italic">(unsupported field type — read only)</span>
+            <span className="ml-2 italic">{t('(unsupported field type — read only)')}</span>
           </div>
         );
     }
@@ -308,17 +311,17 @@ const CustomEntityForm: React.FC<CustomEntityFormProps> = ({
     setFieldErrors({});
 
     if (!name.trim()) {
-      setFieldErrors({ name: 'Name is required' });
+      setFieldErrors({ name: t('Name is required') });
       return;
     }
     if (visibility === 'group-restricted' && allowedGroups.length === 0) {
-      setFieldErrors({ allowed_groups: 'At least one group is required' });
+      setFieldErrors({ allowed_groups: t('At least one group is required') });
       return;
     }
     // A custom entity has no native URL to fall back on, so a proxied entity
     // must carry an explicit target.
     if (isProxied && !proxyTargetUrl.trim()) {
-      setFieldErrors({ proxy_target_url: 'Proxy target URL is required when proxying is enabled' });
+      setFieldErrors({ proxy_target_url: t('Proxy target URL is required when proxying is enabled') });
       return;
     }
 
@@ -397,9 +400,9 @@ const CustomEntityForm: React.FC<CustomEntityFormProps> = ({
           if (e.field) map[e.field] = e.message;
         });
         setFieldErrors(map);
-        setFormError('Please fix the highlighted fields.');
+        setFormError(t('Please fix the highlighted fields.'));
       } else {
-        const message = err instanceof Error ? err.message : 'Failed to save record';
+        const message = err instanceof Error ? err.message : t('Failed to save record');
         setFormError(typeof detail === 'string' ? detail : message);
       }
     } finally {
@@ -429,11 +432,11 @@ const CustomEntityForm: React.FC<CustomEntityFormProps> = ({
         className="bg-white dark:bg-gray-800 rounded-xl shadow-xl max-w-2xl w-full mx-4 max-h-[90vh] flex flex-col"
         role="dialog"
         aria-modal="true"
-        aria-label={isEditMode ? `Edit ${typeLabel}` : `Create ${typeLabel}`}
+        aria-label={isEditMode ? t('Edit {name}', { name: typeLabel }) : t('Create {name}', { name: typeLabel })}
       >
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200 dark:border-gray-700 flex-shrink-0">
           <h2 className="text-lg font-semibold text-gray-900 dark:text-white">
-            {isEditMode ? `Edit ${typeLabel}` : `Create ${typeLabel}`}
+            {isEditMode ? t('Edit {name}', { name: typeLabel }) : t('Create {name}', { name: typeLabel })}
           </h2>
           <button
             onClick={onCancel}
@@ -451,7 +454,7 @@ const CustomEntityForm: React.FC<CustomEntityFormProps> = ({
           )}
 
           {/* --- Envelope (fixed, separate from attributes) --- */}
-          <FormField label="Name" required error={fieldErrors.name}>
+          <FormField label={t('Name')} required error={fieldErrors.name}>
             <input
               type="text"
               value={name}
@@ -461,7 +464,7 @@ const CustomEntityForm: React.FC<CustomEntityFormProps> = ({
             />
           </FormField>
 
-          <FormField label="Description">
+          <FormField label={t('Description')}>
             <textarea
               rows={3}
               maxLength={MAX_TEXT_LEN}
@@ -471,7 +474,7 @@ const CustomEntityForm: React.FC<CustomEntityFormProps> = ({
             />
           </FormField>
 
-          <FormField label="Visibility">
+          <FormField label={t('Visibility')}>
             <select
               value={visibility}
               onChange={(e) => setVisibility(e.target.value)}
@@ -479,24 +482,24 @@ const CustomEntityForm: React.FC<CustomEntityFormProps> = ({
             >
               {VISIBILITIES.map((v) => (
                 <option key={v} value={v}>
-                  {v}
+                  {t(v)}
                 </option>
               ))}
             </select>
           </FormField>
 
           {visibility === 'group-restricted' && (
-            <FormField label="Allowed Groups" required error={fieldErrors.allowed_groups}>
+            <FormField label={t('Allowed Groups')} required error={fieldErrors.allowed_groups}>
               <ChipInput
                 value={allowedGroups}
                 onChange={setAllowedGroups}
-                placeholder="Type a group name, press Enter"
+                placeholder={t('Type a group name, press Enter')}
               />
             </FormField>
           )}
 
-          <FormField label="Tags">
-            <ChipInput value={tags} onChange={setTags} placeholder="Type a tag, press Enter" />
+          <FormField label={t('Tags')}>
+            <ChipInput value={tags} onChange={setTags} placeholder={t('Type a tag, press Enter')} />
           </FormField>
 
           <ProxyField
@@ -511,14 +514,14 @@ const CustomEntityForm: React.FC<CustomEntityFormProps> = ({
           />
 
           {isProxied && (
-            <FormField label="Connect notes">
+            <FormField label={t('Connect notes')}>
               <textarea
                 rows={3}
                 maxLength={2000}
                 value={proxyConnectNotes}
                 onChange={(e) => setProxyConnectNotes(e.target.value)}
                 className={INPUT_CLASS}
-                placeholder="Optional usage notes shown to clients in the Connect panel (e.g. the API sub-path to append)."
+                placeholder={t('Optional usage notes shown to clients in the Connect panel (e.g. the API sub-path to append).')}
               />
             </FormField>
           )}
@@ -549,7 +552,7 @@ const CustomEntityForm: React.FC<CustomEntityFormProps> = ({
                        bg-gray-100 dark:bg-gray-700 rounded-lg
                        hover:bg-gray-200 dark:hover:bg-gray-800 transition-colors disabled:opacity-50"
           >
-            Cancel
+            {t('Cancel')}
           </button>
           <button
             type="button"
@@ -564,7 +567,7 @@ const CustomEntityForm: React.FC<CustomEntityFormProps> = ({
                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
               </svg>
             )}
-            {isEditMode ? 'Save Changes' : 'Create'}
+            {isEditMode ? t('Save Changes') : t('Create')}
           </button>
         </div>
       </div>

@@ -6,6 +6,7 @@ import axios from 'axios';
 import {
   SystemStats,
 } from '../types/stats';
+import { useI18n } from '../contexts/I18nContext';
 import { useUiTitle } from '../hooks/useUiTitle';
 
 
@@ -30,6 +31,7 @@ const UptimeDisplay: React.FC = () => {
   const [detection, setDetection] = useState<TelemetryDetection | null>(null);
   const [error, setError] = useState<boolean>(false);
   const uiTitle = useUiTitle();
+  const { t } = useI18n();
 
 
   useEffect(() => {
@@ -74,16 +76,16 @@ const UptimeDisplay: React.FC = () => {
 
     const parts: string[] = [];
     if (days > 0) {
-      parts.push(`${days} day${days > 1 ? 's' : ''}`);
+      parts.push(t(days > 1 ? '{count} days' : '{count} day', { count: days }));
     }
     if (hours > 0) {
-      parts.push(`${hours} hour${hours > 1 ? 's' : ''}`);
+      parts.push(t(hours > 1 ? '{count} hours' : '{count} hour', { count: hours }));
     }
     if (parts.length === 0 && minutes > 0) {
-      parts.push(`${minutes} minute${minutes > 1 ? 's' : ''}`);
+      parts.push(t(minutes > 1 ? '{count} minutes' : '{count} minute', { count: minutes }));
     }
     if (parts.length === 0) {
-      return 'less than a minute';
+      return t('less than a minute');
     }
 
     return parts.join(' ');
@@ -94,7 +96,7 @@ const UptimeDisplay: React.FC = () => {
     return (
       <div className="hidden md:flex items-center px-2.5 py-1 bg-gray-50 dark:bg-gray-900/20 rounded-md">
         <span className="text-xs font-medium text-gray-500 dark:text-gray-400">
-          Uptime: unavailable
+          {t('Uptime: unavailable')}
         </span>
       </div>
     );
@@ -118,7 +120,7 @@ const UptimeDisplay: React.FC = () => {
   return (
     <div className="hidden md:flex items-center px-2.5 py-1 bg-green-50 dark:bg-green-900/20 rounded-md group relative">
       <span className="text-xs font-medium text-green-700 dark:text-green-300">
-        Uptime: {uptimeText}
+        {t('Uptime: {uptime}', { uptime: uptimeText })}
       </span>
 
       {/* Tooltip on hover */}
@@ -131,7 +133,7 @@ const UptimeDisplay: React.FC = () => {
           {/* Version & Start Time */}
           <div className="space-y-1 text-xs mb-3">
             <div className="flex justify-between gap-2">
-              <span className="text-gray-500 dark:text-gray-400 flex-shrink-0">Version:</span>
+              <span className="text-gray-500 dark:text-gray-400 flex-shrink-0">{t('Version:')}</span>
               <span
                 className="text-gray-900 dark:text-gray-100 font-mono truncate text-right"
                 title={stats.version}
@@ -140,7 +142,7 @@ const UptimeDisplay: React.FC = () => {
               </span>
             </div>
             <div className="flex justify-between gap-2">
-              <span className="text-gray-500 dark:text-gray-400 flex-shrink-0">Started:</span>
+              <span className="text-gray-500 dark:text-gray-400 flex-shrink-0">{t('Started:')}</span>
               <span className="text-gray-900 dark:text-gray-100 truncate text-right">
                 {new Date(stats.started_at).toLocaleString()}
               </span>
@@ -150,24 +152,24 @@ const UptimeDisplay: React.FC = () => {
           {/* Deployment */}
           <div className="mb-3 pt-3 border-t border-gray-200 dark:border-gray-700">
             <h4 className="text-xs font-semibold text-gray-700 dark:text-gray-300 mb-2">
-              Deployment
+              {t('Deployment')}
             </h4>
             <div className="space-y-1 text-xs">
               <div className="flex justify-between gap-2">
-                <span className="text-gray-500 dark:text-gray-400 flex-shrink-0">Type:</span>
+                <span className="text-gray-500 dark:text-gray-400 flex-shrink-0">{t('Type:')}</span>
                 <span className="text-gray-900 dark:text-gray-100 truncate text-right">
                   {stats.deployment_type}
                 </span>
               </div>
               <div className="flex justify-between gap-2">
-                <span className="text-gray-500 dark:text-gray-400 flex-shrink-0">Mode:</span>
+                <span className="text-gray-500 dark:text-gray-400 flex-shrink-0">{t('Mode:')}</span>
                 <span className="text-gray-900 dark:text-gray-100 truncate text-right">
                   {stats.deployment_mode}
                 </span>
               </div>
               {stats.internal_only_deployment && (
                 <div className="flex justify-between gap-2">
-                  <span className="text-gray-500 dark:text-gray-400 flex-shrink-0">Internal:</span>
+                  <span className="text-gray-500 dark:text-gray-400 flex-shrink-0">{t('Internal:')}</span>
                   <span className="text-gray-900 dark:text-gray-100 truncate text-right">
                     {stats.internal_deployment_type}
                   </span>
@@ -175,14 +177,14 @@ const UptimeDisplay: React.FC = () => {
               )}
               {detection && (
                 <div className="flex justify-between gap-2">
-                  <span className="text-gray-500 dark:text-gray-400 flex-shrink-0">Cloud:</span>
+                  <span className="text-gray-500 dark:text-gray-400 flex-shrink-0">{t('Cloud:')}</span>
                   <span
                     className="text-gray-900 dark:text-gray-100 truncate text-right"
-                    title={`Detected via ${detection.cloud_detection_method}. See docs/TELEMETRY.md for details.`}
+                    title={t('Detected via {method}. See docs/TELEMETRY.md for details.', { method: detection.cloud_detection_method })}
                   >
                     {detection.cloud}{' '}
                     <small className="text-gray-500 dark:text-gray-400">
-                      (via {detection.cloud_detection_method})
+                      {t('(via {method})', { method: detection.cloud_detection_method })}
                     </small>
                   </span>
                 </div>
@@ -193,23 +195,23 @@ const UptimeDisplay: React.FC = () => {
           {/* Registry Stats */}
           <div className="mb-3 pt-3 border-t border-gray-200 dark:border-gray-700">
             <h4 className="text-xs font-semibold text-gray-700 dark:text-gray-300 mb-2">
-              Registry Stats
+              {t('Registry Stats')}
             </h4>
             <div className="space-y-1 text-xs">
               <div className="flex justify-between gap-2">
-                <span className="text-gray-500 dark:text-gray-400 flex-shrink-0">Servers:</span>
+                <span className="text-gray-500 dark:text-gray-400 flex-shrink-0">{t('Servers:')}</span>
                 <span className="text-gray-900 dark:text-gray-100 text-right">
                   {stats.registry_stats.servers}
                 </span>
               </div>
               <div className="flex justify-between gap-2">
-                <span className="text-gray-500 dark:text-gray-400 flex-shrink-0">Agents:</span>
+                <span className="text-gray-500 dark:text-gray-400 flex-shrink-0">{t('Agents:')}</span>
                 <span className="text-gray-900 dark:text-gray-100 text-right">
                   {stats.registry_stats.agents}
                 </span>
               </div>
               <div className="flex justify-between gap-2">
-                <span className="text-gray-500 dark:text-gray-400 flex-shrink-0">Skills:</span>
+                <span className="text-gray-500 dark:text-gray-400 flex-shrink-0">{t('Skills:')}</span>
                 <span className="text-gray-900 dark:text-gray-100 text-right">
                   {stats.registry_stats.skills}
                 </span>
@@ -220,23 +222,23 @@ const UptimeDisplay: React.FC = () => {
           {/* Database Status */}
           <div className="mb-3 pt-3 border-t border-gray-200 dark:border-gray-700">
             <h4 className="text-xs font-semibold text-gray-700 dark:text-gray-300 mb-2">
-              Database
+              {t('Database')}
             </h4>
             <div className="space-y-1 text-xs">
               <div className="flex justify-between gap-2">
-                <span className="text-gray-500 dark:text-gray-400 flex-shrink-0">Backend:</span>
+                <span className="text-gray-500 dark:text-gray-400 flex-shrink-0">{t('Backend:')}</span>
                 <span className="text-gray-900 dark:text-gray-100 truncate text-right">
                   {stats.database_status.backend}
                 </span>
               </div>
               <div className="flex justify-between gap-2">
-                <span className="text-gray-500 dark:text-gray-400 flex-shrink-0">Status:</span>
+                <span className="text-gray-500 dark:text-gray-400 flex-shrink-0">{t('Status:')}</span>
                 <span className={`font-medium ${dbStatusColor} truncate text-right`}>
                   {stats.database_status.status}
                 </span>
               </div>
               <div className="flex justify-between gap-2">
-                <span className="text-gray-500 dark:text-gray-400 flex-shrink-0">Host:</span>
+                <span className="text-gray-500 dark:text-gray-400 flex-shrink-0">{t('Host:')}</span>
                 <span
                   className="text-gray-900 dark:text-gray-100 font-mono text-xs truncate text-right"
                   title={stats.database_status.host}
@@ -250,23 +252,23 @@ const UptimeDisplay: React.FC = () => {
           {/* Auth Server Status */}
           <div className="pt-3 border-t border-gray-200 dark:border-gray-700">
             <h4 className="text-xs font-semibold text-gray-700 dark:text-gray-300 mb-2">
-              Auth Server
+              {t('Auth Server')}
             </h4>
             <div className="space-y-1 text-xs">
               <div className="flex justify-between gap-2">
-                <span className="text-gray-500 dark:text-gray-400 flex-shrink-0">Provider:</span>
+                <span className="text-gray-500 dark:text-gray-400 flex-shrink-0">{t('Provider:')}</span>
                 <span className="text-gray-900 dark:text-gray-100 truncate text-right">
                   {stats.auth_status.provider}
                 </span>
               </div>
               <div className="flex justify-between gap-2">
-                <span className="text-gray-500 dark:text-gray-400 flex-shrink-0">Status:</span>
+                <span className="text-gray-500 dark:text-gray-400 flex-shrink-0">{t('Status:')}</span>
                 <span className={`font-medium ${authStatusColor} truncate text-right`}>
                   {stats.auth_status.status}
                 </span>
               </div>
               <div className="flex justify-between gap-2">
-                <span className="text-gray-500 dark:text-gray-400 flex-shrink-0">URL:</span>
+                <span className="text-gray-500 dark:text-gray-400 flex-shrink-0">{t('URL:')}</span>
                 <span
                   className="text-gray-900 dark:text-gray-100 font-mono text-xs truncate text-right"
                   title={stats.auth_status.url}
