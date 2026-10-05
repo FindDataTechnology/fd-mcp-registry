@@ -90,7 +90,7 @@ const Login: React.FC = () => {
       </div>
       <div className="sm:mx-auto sm:w-full sm:max-w-md">
         <h2 className="text-center text-3xl font-bold text-gray-900 dark:text-white">
-          {t('Sign in to {title}', { title: uiTitle })}
+          {t('Sign in to {title}', { title: t(uiTitle) })}
         </h2>
         <p className="mt-2 text-center text-sm text-gray-600 dark:text-gray-400">
           {t('Access your AI management dashboard')}
