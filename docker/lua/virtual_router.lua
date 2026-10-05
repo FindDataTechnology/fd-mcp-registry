@@ -258,6 +258,58 @@ local function _has_scopes(user_scopes_str, required_scopes)
 end
 
 
+-- Check if user scopes include ANY of the required scopes (any-of).
+-- Server-level required_scopes lists the scopes that GRANT ENTRY to the
+-- virtual server: the scope authorization document can grant the same server
+-- through several independent scopes (server_access entries), so demanding
+-- ALL of them here would lock out every single-scope holder -- i.e. every
+-- real customer (lex-legal incident, 2026-10-06). Per-tool required_scopes
+-- keep conjunction semantics (_has_scopes above).
+local function _has_any_scope(user_scopes_str, required_scopes)
+    if not required_scopes or #required_scopes == 0 then
+        return true
+    end
+    if not user_scopes_str or user_scopes_str == "" then
+        return false
+    end
+
+    -- Parse space-separated scopes into a set
+    local user_scopes = {}
+    for scope in string.gmatch(user_scopes_str, "%S+") do
+        user_scopes[scope] = true
+    end
+
+    for _, required in ipairs(required_scopes) do
+        if user_scopes[required] then
+            return true
+        end
+    end
+    return false
+end
+
+
+-- Server-level scope gate: any-of, with a WARN breadcrumb on denial so a
+-- rejection is visible in the gateway log instead of surfacing only as a
+-- JSON-RPC error that can be mistaken for an empty aggregation (the
+-- lex-legal misdiagnosis). Logs the required scope list and how many scopes
+-- the caller presented -- never the caller's scope names themselves, to keep
+-- authorized capabilities out of logs.
+local function _server_scope_gate(user_scopes_str, required_scopes, method, server_id)
+    if _has_any_scope(user_scopes_str, required_scopes) then
+        return true
+    end
+    local scope_count = 0
+    for _ in string.gmatch(user_scopes_str or "", "%S+") do
+        scope_count = scope_count + 1
+    end
+    ngx.log(ngx.WARN, "Virtual server scope gate denied method=", method or "unknown",
+        " server=", server_id or "unknown",
+        " required=", cjson.encode(required_scopes or {}),
+        " caller_scope_count=", scope_count)
+    return false
+end
+
+
 -- Initialize a backend MCP server and extract its session ID
 local function _initialize_backend(backend_location)
     local init_body = cjson.encode({
@@ -506,7 +558,7 @@ end
 -- Handle tools/list method - proxy to backends for full metadata, with cache
 local function _handle_tools_list(request_id, mapping, user_scopes_str, client_session_id, server_id)
     -- Enforce server-level required_scopes before processing
-    if not _has_scopes(user_scopes_str, mapping.required_scopes) then
+    if not _server_scope_gate(user_scopes_str, mapping.required_scopes, "tools/list", server_id) then
         return _jsonrpc_error(request_id, -32603, "Access denied: missing required server scopes")
     end
 
@@ -905,7 +957,7 @@ end
 -- Handle tools/call method - proxy to the correct backend with session management
 local function _handle_tools_call(request_id, mapping, params, user_scopes_str, client_session_id, server_id)
     -- Enforce server-level required_scopes before processing
-    if not _has_scopes(user_scopes_str, mapping.required_scopes) then
+    if not _server_scope_gate(user_scopes_str, mapping.required_scopes, "tools/call", server_id) then
         ngx.status = 200
         ngx.say(_jsonrpc_error(request_id, -32603, "Access denied: missing required server scopes"))
         return
@@ -1220,7 +1272,7 @@ function _M.route()
 
     elseif method == "resources/list" then
         -- Enforce server-level required_scopes
-        if not _has_scopes(user_scopes_str, mapping.required_scopes) then
+        if not _server_scope_gate(user_scopes_str, mapping.required_scopes, "resources/list", server_id) then
             ngx.status = 200
             ngx.say(_jsonrpc_error(request_id, -32603, "Access denied: missing required server scopes"))
             return
@@ -1232,7 +1284,7 @@ function _M.route()
 
     elseif method == "resources/read" then
         -- Enforce server-level required_scopes
-        if not _has_scopes(user_scopes_str, mapping.required_scopes) then
+        if not _server_scope_gate(user_scopes_str, mapping.required_scopes, "resources/read", server_id) then
             ngx.status = 200
             ngx.say(_jsonrpc_error(request_id, -32603, "Access denied: missing required server scopes"))
             return
@@ -1241,7 +1293,7 @@ function _M.route()
 
     elseif method == "prompts/list" then
         -- Enforce server-level required_scopes
-        if not _has_scopes(user_scopes_str, mapping.required_scopes) then
+        if not _server_scope_gate(user_scopes_str, mapping.required_scopes, "prompts/list", server_id) then
             ngx.status = 200
             ngx.say(_jsonrpc_error(request_id, -32603, "Access denied: missing required server scopes"))
             return
@@ -1253,7 +1305,7 @@ function _M.route()
 
     elseif method == "prompts/get" then
         -- Enforce server-level required_scopes
-        if not _has_scopes(user_scopes_str, mapping.required_scopes) then
+        if not _server_scope_gate(user_scopes_str, mapping.required_scopes, "prompts/get", server_id) then
             ngx.status = 200
             ngx.say(_jsonrpc_error(request_id, -32603, "Access denied: missing required server scopes"))
             return

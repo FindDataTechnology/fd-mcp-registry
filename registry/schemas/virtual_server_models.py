@@ -93,7 +93,7 @@ class ToolScopeOverride(BaseModel):
     required_scopes: list[str] = Field(
         ...,
         min_length=1,
-        description="Scopes needed to see/call this tool",
+        description="All these scopes are needed to see/call this tool",
     )
 
 
@@ -142,7 +142,7 @@ class VirtualServerConfig(BaseModel):
     # Access control
     required_scopes: list[str] = Field(
         default_factory=list,
-        description="Scopes required to access any tool on this virtual server",
+        description="Scopes that grant access (any one suffices)",
     )
     tool_scope_overrides: list[ToolScopeOverride] = Field(
         default_factory=list,
@@ -325,7 +325,7 @@ class CreateVirtualServerRequest(BaseModel):
     )
     required_scopes: list[str] = Field(
         default_factory=list,
-        description="Scopes required for access",
+        description="Scopes that grant access (any one suffices)",
     )
     tool_scope_overrides: list[ToolScopeOverride] = Field(
         default_factory=list,
@@ -364,7 +364,7 @@ class UpdateVirtualServerRequest(BaseModel):
     )
     required_scopes: list[str] | None = Field(
         None,
-        description="Updated required scopes",
+        description="Updated required scopes (any one grants access)",
     )
     tool_scope_overrides: list[ToolScopeOverride] | None = Field(
         None,
@@ -428,5 +428,5 @@ class ResolvedTool(BaseModel):
     )
     required_scopes: list[str] = Field(
         default_factory=list,
-        description="Scopes required for this specific tool",
+        description="All scopes required for this specific tool",
     )

@@ -265,6 +265,74 @@ do
 end
 
 -- ---------------------------------------------------------------------------
+print("test: server-level required_scopes is any-of (lex-legal regression)")
+do
+    dict._store["tools_enriched:srv-any"] = nil
+    local mapping = { required_scopes = { "mcp-lex-execute", "mcp-law-bench-execute" }, tools = {
+        { name = "wenshu_search", original_name = "wenshu_search", backend_location = "/ok",
+          inputSchema = { type = "object" } },
+    } }
+    capture_responses = {}
+    capture_responses["/ok"] = { status = 200,
+        body = cjson.encode({ result = { tools = { { name = "wenshu_search", description = "d" } } } }) }
+
+    -- the incident shape: a single-scope customer used to be denied
+    local resp = M._handle_tools_list("1", mapping, "mcp-lex-execute", nil, "srv-any")
+    local decoded = cjson.decode(resp)
+    check(decoded.result ~= nil and #decoded.result.tools == 1,
+        "required={A,B} + holder of A only -> tools/list succeeds")
+
+    dict._store["tools_enriched:srv-any"] = nil
+    resp = M._handle_tools_list("2", mapping, "mcp-law-bench-execute", nil, "srv-any")
+    decoded = cjson.decode(resp)
+    check(decoded.result ~= nil and #decoded.result.tools == 1,
+        "required={A,B} + holder of B only -> tools/list succeeds")
+
+    resp = M._handle_tools_list("3", mapping, "mcp-something-else", nil, "srv-any")
+    decoded = cjson.decode(resp)
+    check(decoded.error ~= nil and decoded.error.code == -32603,
+        "required={A,B} + neither A nor B -> denied")
+
+    resp = M._handle_tools_list("4", mapping, "", nil, "srv-any")
+    decoded = cjson.decode(resp)
+    check(decoded.error ~= nil and decoded.error.code == -32603,
+        "required={A,B} + empty scopes -> denied")
+
+    local open_mapping = { required_scopes = {}, tools = mapping.tools }
+    resp = M._handle_tools_list("5", open_mapping, "", nil, "srv-any")
+    decoded = cjson.decode(resp)
+    check(decoded.result ~= nil and #decoded.result.tools == 1,
+        "required={} -> allowed (gate defers to edge auth)")
+end
+
+-- ---------------------------------------------------------------------------
+print("test: per-tool required_scopes stays all-of")
+do
+    dict._store["tools_enriched:srv-tool"] = nil
+    local mapping = { required_scopes = nil, tools = {
+        { name = "open_tool", original_name = "open_tool", backend_location = "/ok",
+          inputSchema = { type = "object" } },
+        { name = "guarded_tool", original_name = "guarded_tool", backend_location = "/ok",
+          inputSchema = { type = "object" },
+          required_scopes = { "scope-a", "scope-b" } },
+    } }
+    capture_responses = {}
+    capture_responses["/ok"] = { status = 200,
+        body = cjson.encode({ result = { tools = {
+            { name = "open_tool", description = "d" },
+            { name = "guarded_tool", description = "d" },
+        } } }) }
+
+    local resp = M._handle_tools_list("1", mapping, "scope-a", nil, "srv-tool")
+    local decoded = cjson.decode(resp)
+    local names = {}
+    for _, t in ipairs(decoded.result.tools) do names[t.name] = true end
+    check(names["open_tool"] == true, "tool without overrides listed for a-only holder")
+    check(names["guarded_tool"] == nil,
+        "tool requiring {a,b} hidden from a-only holder (conjunction kept)")
+end
+
+-- ---------------------------------------------------------------------------
 if failures > 0 then
     print(string.format("\n%d check(s) FAILED", failures))
     os.exit(1)
