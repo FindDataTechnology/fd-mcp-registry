@@ -341,7 +341,10 @@ def _trusted_egress_user_claim(validation_result: dict) -> str | None:
     resolve the same human from the same claim under ONE trust gate -- duplicating
     the gate is how such gates drift apart.
     """
-    if validation_result.get("method") != AUTH_METHOD_SELF_SIGNED:
+    # ``patch-key`` (wgk-) results are equally gateway-built: the record's
+    # egress_user was captured from the verified mint-time context, so the same
+    # provenance guarantee holds and the claim is trustworthy there too.
+    if validation_result.get("method") not in (AUTH_METHOD_SELF_SIGNED, "patch-key"):
         return None
     return (validation_result.get("data") or {}).get("egress_user") or None
 
@@ -389,7 +392,7 @@ def _canonical_egress_user(validation_result: dict) -> str:
     Steps 2-5 are unchanged for every non-``self_signed`` caller.
     """
     data = validation_result.get("data") or {}
-    if validation_result.get("method") == AUTH_METHOD_SELF_SIGNED:
+    if validation_result.get("method") in (AUTH_METHOD_SELF_SIGNED, "patch-key"):
         # No ``egress_user`` on a token this gateway minted itself means the claim
         # was never stamped (a token minted before the claim existed, or a mint
         # path that failed to resolve it). The remaining candidates below are the
@@ -3628,6 +3631,10 @@ async def _validate_patch_key_token(access_token: str) -> dict:
             "username": record.username,
             "provider": record.provider or "patch-key",
             "email": record.email or "",
+            # Canonical egress vault id captured at mint; read through the one
+            # trust gate (_trusted_egress_user_claim) by the vault-key and
+            # audit-identity resolvers. Empty for legacy keys: fail closed.
+            "egress_user": record.egress_user or "",
         },
         "client_id": "patch-key",
         "username": record.username,
@@ -3635,10 +3642,6 @@ async def _validate_patch_key_token(access_token: str) -> dict:
         # Non-expiring by design: no expires_at claim.
         "scopes": scopes,
         "groups": list(record.groups),
-        # Canonical per-user egress vault id (OIDC sub captured at mint); the
-        # mcp-proxy token carries it so the egress vend keys the owner's vault
-        # bucket identically to the browser-consent write (no sub fallback).
-        "egress_user": record.egress_user or "",
         # Marks the caller as a per-USER credential so the M2M group
         # enrichment fallback never treats it as a service account
         # (mirrors the self-signed validator's marker).
