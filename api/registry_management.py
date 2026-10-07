@@ -1,0 +1,8583 @@
+#!/usr/bin/env python3
+"""
+MCP Gateway Registry Management CLI.
+
+High-level wrapper for the RegistryClient providing command-line interface
+for server registration, management, group operations, and A2A agent management.
+
+Server Management:
+    # Register a server from JSON config (pre-flights the duplicate check)
+    uv run python registry_management.py register --config /path/to/config.json
+
+    # Check for duplicates without registering anything
+    uv run python registry_management.py check-duplicates --config /path/to/config.json
+
+    # Gate a CI registration on the check
+    uv run python registry_management.py register --config /path/to/config.json --fail-on-duplicate
+
+    # Skip the pre-flight (one fewer round trip, no embedding call)
+    uv run python registry_management.py register --config /path/to/config.json --skip-duplicate-check
+
+    # List all servers
+    uv run python registry_management.py list
+
+    # Toggle server status
+    uv run python registry_management.py toggle --path /cloudflare-docs
+    uv run python registry_management.py toggle-tool --path /context7 --tool resolve-library-id --enabled false
+
+    # Remove server
+    uv run python registry_management.py remove --path /cloudflare-docs
+
+    # Health check
+    uv run python registry_management.py healthcheck
+
+    # Get registry configuration (deployment mode, features)
+    uv run python registry_management.py config
+
+    # Get registry configuration as JSON
+    uv run python registry_management.py config --json
+
+    # Rate a server (1-5 stars)
+    uv run python registry_management.py server-rate --path /cloudflare-docs --rating 5
+
+    # Get server rating information
+    uv run python registry_management.py server-rating --path /cloudflare-docs
+
+    # Get security scan results for a server
+    uv run python registry_management.py security-scan --path /cloudflare-docs
+
+    # Trigger manual security scan (admin only)
+    uv run python registry_management.py rescan --path /cloudflare-docs
+
+Group Management:
+    # Add server to groups
+    uv run python registry_management.py add-to-groups --server my-server --groups group1,group2
+
+    # List all groups
+    uv run python registry_management.py list-groups
+
+Agent Management (A2A):
+    # Register an agent
+    uv run python registry_management.py agent-register --config /path/to/agent.json
+
+    # List all agents
+    uv run python registry_management.py agent-list
+
+    # Get agent details
+    uv run python registry_management.py agent-get --path /code-reviewer
+
+    # Toggle agent status
+    uv run python registry_management.py agent-toggle --path /code-reviewer --enabled true
+
+    # Delete agent
+    uv run python registry_management.py agent-delete --path /code-reviewer
+
+    # Rate an agent (1-5 stars)
+    uv run python registry_management.py agent-rate --path /code-reviewer --rating 5
+
+    # Get agent rating information
+    uv run python registry_management.py agent-rating --path /code-reviewer
+
+    # Discover agents by skills
+    uv run python registry_management.py agent-discover --skills code_analysis,bug_detection
+
+    # Semantic agent search
+    uv run python registry_management.py agent-search --query "agents that analyze code"
+
+Anthropic Registry API (v0.1):
+    # List all servers
+    uv run python registry_management.py anthropic-list
+
+    # List all servers with raw JSON output
+    uv run python registry_management.py anthropic-list --raw
+
+    # List versions for a specific server
+    uv run python registry_management.py anthropic-versions --server-name "io.mcpgateway/example-server"
+
+    # Get server details
+    uv run python registry_management.py anthropic-get --server-name "io.mcpgateway/example-server" --version latest
+
+User Management (IAM):
+    # List all Keycloak users
+    uv run python registry_management.py user-list
+
+    # Search for specific users
+    uv run python registry_management.py user-list --search admin
+
+    # Create M2M service account
+    uv run python registry_management.py user-create-m2m --name my-service --groups registry-admins
+
+    # Create human user
+    uv run python registry_management.py user-create-human --username john.doe --email john@example.com --first-name John --last-name Doe --groups registry-admins
+
+    # Delete user
+    uv run python registry_management.py user-delete --username john.doe
+
+Group Management (IAM):
+    # List IAM groups
+    uv run python registry_management.py group-list
+
+    # Create a new IAM group
+    uv run python registry_management.py group-create --name developers --description "Developer team group"
+
+    # Delete an IAM group
+    uv run python registry_management.py group-delete --name developers --force
+
+User Groups (IdP Fallback - issue #1127):
+    # Register a user-to-groups mapping (admin only)
+    uv run python registry_management.py user-group-create \\
+        --username alice --groups registry-admins,public-mcp-users
+
+    # List user-group mappings
+    uv run python registry_management.py user-group-list
+
+    # Update a user's groups
+    uv run python registry_management.py user-group-update \\
+        --username alice --groups registry-admins
+
+    # Delete a user-group mapping
+    uv run python registry_management.py user-group-delete --username alice
+
+    # Create a user inside PingFederate Simple PCV (PingFederate-only)
+    uv run python registry_management.py pingfederate-user-create --username alice
+
+Federation Management:
+    # Get federation configuration
+    uv run python registry_management.py federation-get
+
+    # Save federation configuration from JSON file
+    uv run python registry_management.py federation-save --config federation-config.json
+
+    # List all federation configurations
+    uv run python registry_management.py federation-list
+
+    # Add Anthropic server to federation config
+    uv run python registry_management.py federation-add-anthropic-server --server-name io.github.jgador/websharp
+
+    # Remove Anthropic server from federation config
+    uv run python registry_management.py federation-remove-anthropic-server --server-name io.github.jgador/websharp
+
+    # Add ASOR agent to federation config
+    uv run python registry_management.py federation-add-asor-agent --agent-id aws_assistant
+
+    # Remove ASOR agent from federation config
+    uv run python registry_management.py federation-remove-asor-agent --agent-id aws_assistant
+
+    # Delete federation configuration
+    uv run python registry_management.py federation-delete --config-id default --force
+
+Virtual MCP Server Management:
+    # Create a virtual server from JSON config
+    uv run python registry_management.py vs-create --config /path/to/virtual-server.json
+
+    # List all virtual servers
+    uv run python registry_management.py vs-list
+
+    # List only enabled virtual servers
+    uv run python registry_management.py vs-list --enabled-only
+
+    # Get virtual server details
+    uv run python registry_management.py vs-get --path /virtual/dev-tools
+
+    # Update a virtual server from JSON config
+    uv run python registry_management.py vs-update --path /virtual/dev-tools --config updated-config.json
+
+    # Enable/disable a virtual server
+    uv run python registry_management.py vs-toggle --path /virtual/dev-tools --enabled true
+
+    # Delete a virtual server
+    uv run python registry_management.py vs-delete --path /virtual/dev-tools --force
+
+    # Rate a virtual server (1-5 stars)
+    uv run python registry_management.py vs-rate --path /virtual/dev-tools --rating 5
+
+    # Get virtual server rating
+    uv run python registry_management.py vs-rating --path /virtual/dev-tools
+
+Registry Card Management:
+    # Get registry card
+    uv run python registry_management.py registry-card-get
+
+    # Update registry card
+    uv run python registry_management.py registry-card-update --name "My Registry" --description "Production registry"
+
+    # Update contact information
+    uv run python registry_management.py registry-card-update --contact-email admin@example.com --contact-url https://example.com
+
+    # Get health status
+    uv run python registry_management.py health
+
+Global Options (can be set via environment variables or command-line arguments):
+    --registry-url URL       Registry base URL (overrides REGISTRY_URL env var)
+    --aws-region REGION      AWS region (overrides AWS_REGION env var)
+    --keycloak-url URL       Keycloak base URL (overrides KEYCLOAK_URL env var)
+    --token-file PATH        Path to file containing JWT token (bypasses token script)
+
+Environment Variables (used if command-line options not provided):
+    REGISTRY_URL: Registry base URL (e.g., https://registry.mycorp.click)
+    AWS_REGION: AWS region where Keycloak and SSM are deployed (e.g., us-east-1)
+    KEYCLOAK_URL: Keycloak base URL (e.g., https://kc.us-east-1.mycorp.click)
+
+Environment Variables (Optional):
+    CLIENT_NAME: Keycloak client name (default: registry-admin-bot)
+    GET_TOKEN_SCRIPT: Path to get-m2m-token.sh script
+
+Local Development (running against local Docker Compose setup):
+    When running the solution locally with Docker Compose, you can use the --token-file
+    option to provide a pre-generated JWT token instead of dynamically fetching one.
+
+    Step 1: Generate credentials using the credentials provider script:
+        cd credentials-provider
+        ./generate_creds.sh
+
+    Step 2: Use the generated token file with the CLI:
+        uv run python api/registry_management.py --debug \\
+            --registry-url http://localhost \\
+            --token-file .oauth-tokens/ingress.json \\
+            list 2>&1 | tee debug.log
+
+    The credentials-provider/generate_creds.sh script creates tokens in .oauth-tokens/
+    directory. The ingress.json token file contains the admin JWT token that can be
+    used with the registry management CLI.
+
+    Other examples for local development:
+        # List users
+        uv run python api/registry_management.py --debug \\
+            --registry-url http://localhost \\
+            --token-file .oauth-tokens/ingress.json \\
+            user-list
+
+        # Health check
+        uv run python api/registry_management.py --debug \\
+            --registry-url http://localhost \\
+            --token-file .oauth-tokens/ingress.json \\
+            healthcheck
+
+        # Create M2M account
+        uv run python api/registry_management.py --debug \\
+            --registry-url http://localhost \\
+            --token-file .oauth-tokens/ingress.json \\
+            user-create-m2m --name test-bot --groups developers
+"""
+
+import argparse
+import getpass
+import json
+import logging
+import os
+import subprocess  # nosec B404
+import sys
+from pathlib import Path
+from typing import Any
+
+from registry_client import (
+    AgentProvider,
+    AgentRegistration,
+    AgentRescanResponse,
+    AgentSecurityScanResponse,
+    AgentVisibility,
+    AnthropicServerList,
+    AnthropicServerResponse,
+    InternalServiceRegistration,
+    RatingInfoResponse,
+    RatingResponse,
+    RegistryClient,
+    RescanResponse,
+    SecurityScanResult,
+    ServerUpdateResponse,
+    Skill,
+    SkillRegistrationRequest,
+    ToolMapping,
+    ToolScopeOverride,
+    VirtualServerCreateRequest,
+)
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s,p%(process)s,{%(filename)s:%(lineno)d},%(levelname)s,%(message)s",
+)
+logger = logging.getLogger(__name__)
+
+
+def _serialize_security_schemes(
+    schemes: dict[str, Any],
+) -> dict[str, Any]:
+    """Serialize security schemes to plain dicts for JSON output.
+
+    Handles both SecurityScheme Pydantic objects and raw dicts
+    (e.g. Bedrock AgentCore httpAuthSecurityScheme format).
+
+    Args:
+        schemes: Dictionary of security scheme name to scheme data
+
+    Returns:
+        Dictionary safe for json.dumps
+    """
+    result: dict[str, Any] = {}
+    for name, scheme in schemes.items():
+        if isinstance(scheme, dict):
+            result[name] = scheme
+        elif hasattr(scheme, "model_dump"):
+            result[name] = scheme.model_dump(exclude_none=True)
+        else:
+            result[name] = scheme
+    return result
+
+
+def _get_registry_url(cli_value: str | None = None) -> str:
+    """
+    Get registry URL from command-line argument or environment variable.
+
+    Args:
+        cli_value: Command-line argument value (overrides environment variable)
+
+    Returns:
+        Registry base URL
+
+    Raises:
+        ValueError: If REGISTRY_URL is not provided
+    """
+    registry_url = cli_value or os.getenv("REGISTRY_URL")
+    if not registry_url:
+        raise ValueError(
+            "REGISTRY_URL is required.\n"
+            "Set via environment variable or --registry-url option:\n"
+            "  export REGISTRY_URL=https://registry.mycorp.click\n"
+            "  OR\n"
+            "  --registry-url https://registry.mycorp.click"
+        )
+
+    logger.debug(f"Using registry URL: {registry_url}")
+    return registry_url
+
+
+def _mask_sensitive_fields(
+    data: Any,
+    fields_to_mask: list[str] | None = None,
+) -> Any:
+    """
+    Mask sensitive fields in response data for safe logging/printing.
+
+    Args:
+        data: Response data (dict, list, or other)
+        fields_to_mask: List of field names to mask (default: federation_token)
+
+    Returns:
+        Data with sensitive fields masked
+    """
+    if fields_to_mask is None:
+        fields_to_mask = ["federation_token"]
+
+    if isinstance(data, dict):
+        masked = {}
+        for key, value in data.items():
+            if key in fields_to_mask and value:
+                # Show first 3 chars followed by ...
+                if isinstance(value, str) and len(value) > 3:
+                    masked[key] = f"{value[:3]}..."
+                else:
+                    masked[key] = "***"
+            else:
+                masked[key] = _mask_sensitive_fields(value, fields_to_mask)
+        return masked
+    elif isinstance(data, list):
+        return [_mask_sensitive_fields(item, fields_to_mask) for item in data]
+    else:
+        return data
+
+
+def _get_client_name() -> str:
+    """
+    Get Keycloak client name from environment variable or default.
+
+    Returns:
+        Client name
+    """
+    client_name = os.getenv("CLIENT_NAME", "registry-admin-bot")
+    logger.debug(f"Using client name: {client_name}")
+    return client_name
+
+
+def _get_token_script() -> str:
+    """
+    Get path to get-m2m-token.sh script.
+
+    Returns:
+        Script path
+    """
+    # Default to get-m2m-token.sh in the same directory as this script
+    script_dir = Path(__file__).parent
+    default_script = str(script_dir / "get-m2m-token.sh")
+    script_path = os.getenv("GET_TOKEN_SCRIPT", default_script)
+    logger.debug(f"Using token script: {script_path}")
+    return script_path
+
+
+def _get_jwt_token(aws_region: str | None = None, keycloak_url: str | None = None) -> str:
+    """
+    Retrieve JWT token using get-m2m-token.sh script.
+
+    Args:
+        aws_region: AWS region (passed to script via --aws-region)
+        keycloak_url: Keycloak URL (passed to script via --keycloak-url)
+
+    Returns:
+        JWT access token
+
+    Raises:
+        RuntimeError: If token retrieval fails
+    """
+    client_name = _get_client_name()
+    script_path = _get_token_script()
+
+    try:
+        # Redact client name in logs for security
+        logger.debug(f"Retrieving token for client: {client_name}")
+
+        # Build command with optional arguments
+        cmd = [script_path]
+        if aws_region:
+            cmd.extend(["--aws-region", aws_region])
+        if keycloak_url:
+            cmd.extend(["--keycloak-url", keycloak_url])
+        cmd.append(client_name)
+
+        result = subprocess.run(  # nosec B603 - hardcoded internal script path; args are validated flags
+            cmd, capture_output=True, text=True, check=True, timeout=60
+        )
+
+        token = result.stdout.strip()
+
+        if not token:
+            raise RuntimeError("Empty token returned from get-m2m-token.sh")
+
+        # Redact token in logs - show only first 8 characters
+        redacted_token = f"{token[:8]}..." if len(token) > 8 else "***"
+        logger.debug(f"Successfully retrieved JWT token: {redacted_token}")
+        return token
+
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Failed to retrieve token: {e.stderr}")
+        raise RuntimeError(f"Token retrieval failed: {e.stderr}") from e
+    except Exception as e:
+        logger.error(f"Unexpected error retrieving token: {e}")
+        raise RuntimeError(f"Token retrieval error: {e}") from e
+
+
+def _load_json_config(config_path: str) -> dict[str, Any]:
+    """
+    Load JSON configuration file.
+
+    Args:
+        config_path: Path to JSON config file
+
+    Returns:
+        Configuration dictionary
+
+    Raises:
+        FileNotFoundError: If config file not found
+        json.JSONDecodeError: If config file is invalid JSON
+    """
+    config_file = Path(config_path)
+
+    if not config_file.exists():
+        raise FileNotFoundError(f"Configuration file not found: {config_path}")
+
+    with open(config_file) as f:
+        config = json.load(f)
+
+    logger.debug(f"Loaded configuration from {config_path}")
+    return config
+
+
+def _is_mcp_registry_schema(data: dict[str, Any]) -> bool:
+    """Check if a JSON config uses the upstream MCP Registry server.json schema."""
+    schema_value = data.get("$schema", "")
+    if not isinstance(schema_value, str):
+        return False
+    return "modelcontextprotocol/registry" in schema_value
+
+
+def _transform_mcp_registry_to_internal(data: dict[str, Any]) -> dict[str, Any]:
+    """Transform an upstream MCP Registry server.json into internal registration format.
+
+    Derives path, server_name, proxy_pass_url, deployment, and other fields from
+    the upstream schema. Preserves all upstream-only fields in metadata["mcp_registry_spec"].
+    """
+    import re as _re
+
+    def slugify(name: str) -> str:
+        slug = name.lower()
+        slug = _re.sub(r"[^a-z0-9\-]", "-", slug)
+        slug = _re.sub(r"-+", "-", slug)
+        return slug.strip("-")
+
+    name = data.get("name", "")
+    title = data.get("title")
+    remotes = data.get("remotes", [])
+    packages = data.get("packages", [])
+
+    path = data.get("path") or f"/{slugify(name)}"
+    if not path.startswith("/"):
+        path = f"/{path}"
+
+    server_name = title if title else name
+
+    proxy_pass_url = data.get("proxy_pass_url")
+    if not proxy_pass_url and remotes:
+        proxy_pass_url = remotes[0].get("url")
+
+    deployment = data.get("deployment")
+    if not deployment:
+        if remotes:
+            deployment = "remote"
+        elif packages:
+            pkg_transport = (packages[0].get("transport") or {}).get("type", "")
+            deployment = "local" if pkg_transport == "stdio" else "remote"
+        else:
+            deployment = "remote"
+
+    supported_transports = data.get("supported_transports")
+    if not supported_transports and remotes:
+        supported_transports = [r.get("type") for r in remotes]
+
+    transport = data.get("transport")
+    if not transport and remotes:
+        transport = remotes[0].get("type")
+
+    auth_scheme = data.get("auth_scheme")
+    if not auth_scheme and remotes:
+        for header in remotes[0].get("headers", []):
+            if header.get("name", "").lower() == "authorization":
+                if "bearer" in header.get("value", "").lower():
+                    auth_scheme = "bearer"
+                    break
+    if not auth_scheme:
+        auth_scheme = "none"
+
+    tags = list(data.get("tags") or [])
+    if "mcp-registry-spec" not in tags:
+        tags.append("mcp-registry-spec")
+
+    tool_list = data.get("tool_list") or []
+
+    spec_data: dict[str, Any] = {}
+    if data.get("repository"):
+        spec_data["repository"] = data["repository"]
+    if packages:
+        spec_data["packages"] = packages
+    if remotes:
+        spec_data["remotes"] = remotes
+    if data.get("_meta"):
+        spec_data["_meta"] = data["_meta"]
+    if data.get("version"):
+        spec_data["version"] = data["version"]
+    if data.get("$schema"):
+        spec_data["$schema"] = data["$schema"]
+    spec_data["original_name"] = name
+
+    metadata = dict(data.get("metadata") or {})
+    metadata["mcp_registry_spec"] = spec_data
+
+    result: dict[str, Any] = {
+        "path": path,
+        "server_name": server_name,
+        "name": server_name,
+        "description": data.get("description", ""),
+        "proxy_pass_url": proxy_pass_url,
+        "deployment": deployment,
+        "transport": transport,
+        "supported_transports": supported_transports,
+        "auth_scheme": auth_scheme,
+        "tags": tags,
+        "num_tools": data.get("num_tools") or len(tool_list),
+        "tool_list": tool_list,
+        "tool_list_json": json.dumps(tool_list) if tool_list else None,
+        "metadata": metadata,
+        "status": data.get("status") or "active",
+        "version": data.get("version"),
+    }
+
+    if data.get("visibility"):
+        result["visibility"] = data["visibility"]
+    if data.get("allowed_groups"):
+        result["allowed_groups"] = data["allowed_groups"]
+
+    if deployment == "local" and packages:
+        pkg = packages[0]
+        runtime_type = (pkg.get("runtimeHint") or "command").lower()
+        if runtime_type not in {"npx", "uvx", "docker", "command"}:
+            runtime_type = "command"
+        env: dict[str, str] = {}
+        required_env: list[str] = []
+        for env_var in pkg.get("environmentVariables", []):
+            if env_var.get("isRequired"):
+                required_env.append(env_var["name"])
+            if env_var.get("default"):
+                env[env_var["name"]] = env_var["default"]
+        local_runtime: dict[str, Any] = {
+            "type": runtime_type,
+            "package": pkg.get("identifier", ""),
+            "version": pkg.get("version"),
+        }
+        if env:
+            local_runtime["env"] = env
+        if required_env:
+            local_runtime["required_env"] = required_env
+        result["local_runtime"] = local_runtime
+        result["proxy_pass_url"] = None
+
+    logger.info(
+        f"Transformed MCP Registry server.json: name={name} -> path={path}, deployment={deployment}"
+    )
+    return result
+
+
+def _create_client(args: argparse.Namespace) -> RegistryClient:
+    """
+    Create and return a configured RegistryClient instance.
+
+    Args:
+        args: Command arguments containing optional CLI values
+
+    Returns:
+        RegistryClient instance
+
+    Raises:
+        RuntimeError: If token retrieval fails
+        FileNotFoundError: If token file not found
+        ValueError: If required configuration is missing
+    """
+    # Check all required configuration upfront
+    missing_params = []
+
+    # Check REGISTRY_URL
+    registry_url = args.registry_url or os.getenv("REGISTRY_URL")
+    if not registry_url:
+        missing_params.append("REGISTRY_URL")
+
+    # Check if token file is provided
+    if hasattr(args, "token_file") and args.token_file:
+        token_path = Path(args.token_file)
+        if not token_path.exists():
+            raise FileNotFoundError(f"Token file not found: {args.token_file}")
+
+        logger.debug(f"Loading token from file: {args.token_file}")
+
+        # Try to parse as JSON first (token files from generate-agent-token.sh or UI)
+        try:
+            with open(token_path) as f:
+                token_data = json.load(f)
+            # Extract access_token - handle multiple JSON formats:
+            # Format 1: {"access_token": "..."} (from generate-agent-token.sh)
+            # Format 2: {"tokens": {"access_token": "..."}, ...} (from UI "Get JWT Token")
+            # Format 3: {"token_data": {"access_token": "..."}, ...} (alternative UI format)
+            token = token_data.get("access_token")
+            if not token and "tokens" in token_data:
+                token = token_data["tokens"].get("access_token")
+            if not token and "token_data" in token_data:
+                token = token_data["token_data"].get("access_token")
+            if not token:
+                raise RuntimeError(
+                    f"No 'access_token' field found in token file: {args.token_file}"
+                )
+        except json.JSONDecodeError:
+            # Fall back to plain text token file
+            token = token_path.read_text().strip()
+
+        if not token:
+            raise RuntimeError(f"Empty token in file: {args.token_file}")
+
+        # Redact token in logs - show only first 8 characters
+        redacted_token = f"{token[:8]}..." if len(token) > 8 else "***"
+        logger.debug(f"Successfully loaded token from file: {redacted_token}")
+    else:
+        # Check parameters needed for token script
+        aws_region = args.aws_region or os.getenv("AWS_REGION")
+        keycloak_url = args.keycloak_url or os.getenv("KEYCLOAK_URL")
+
+        if not aws_region:
+            missing_params.append("AWS_REGION")
+        if not keycloak_url:
+            missing_params.append("KEYCLOAK_URL")
+
+        # If any parameters are missing, raise comprehensive error
+        if missing_params:
+            error_msg = "Missing required configuration:\n\n"
+            for param in missing_params:
+                error_msg += f"  - {param}\n"
+            error_msg += "\nSet via environment variables or command-line options:\n\n"
+            if "REGISTRY_URL" in missing_params:
+                error_msg += "  export REGISTRY_URL=https://registry.example.com\n"
+                error_msg += "  OR use --registry-url https://registry.example.com\n\n"
+            if "AWS_REGION" in missing_params:
+                error_msg += "  export AWS_REGION=us-east-1\n"
+                error_msg += "  OR use --aws-region us-east-1\n\n"
+            if "KEYCLOAK_URL" in missing_params:
+                error_msg += "  export KEYCLOAK_URL=https://keycloak.example.com\n"
+                error_msg += "  OR use --keycloak-url https://keycloak.example.com\n\n"
+            error_msg += "Alternatively, use --token-file to provide a pre-generated JWT token."
+            raise ValueError(error_msg)
+
+        token = _get_jwt_token(aws_region=aws_region, keycloak_url=keycloak_url)
+
+    # Final check for registry URL (in case token file path was provided)
+    if missing_params and "REGISTRY_URL" in missing_params:
+        raise ValueError(
+            "REGISTRY_URL is required.\n"
+            "Set via environment variable or --registry-url option:\n"
+            "  export REGISTRY_URL=https://registry.example.com\n"
+            "  OR\n"
+            "  --registry-url https://registry.example.com"
+        )
+
+    return RegistryClient(registry_url=registry_url, token=token)
+
+
+def cmd_custom_type_create(args: argparse.Namespace) -> int:
+    """
+    Define a new custom entity type from a JSON descriptor file (admin only).
+
+    Args:
+        args: Command arguments (expects args.config)
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        descriptor = _load_json_config(args.config)
+        client = _create_client(args)
+        response = client.create_custom_type(descriptor)
+        logger.info(f"Custom type created: {response.get('name')}")
+        if args.json:
+            print(json.dumps(response, indent=2, default=str))
+        return 0
+    except FileNotFoundError as e:
+        logger.error(f"Configuration file error: {e}")
+        return 1
+    except json.JSONDecodeError as e:
+        logger.error(f"Invalid JSON configuration: {e}")
+        return 1
+    except Exception as e:
+        logger.error(f"Custom type creation failed: {e}")
+        return 1
+
+
+def cmd_custom_type_list(args: argparse.Namespace) -> int:
+    """
+    List all defined custom entity type descriptors.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        response = client.list_custom_types()
+        if args.json:
+            print(json.dumps(response, indent=2, default=str))
+        else:
+            types = response.get("custom_types", [])
+            logger.info(f"Custom types ({response.get('total_count', len(types))}):")
+            for t in types:
+                field_count = len(t.get("fields", []))
+                logger.info(f"  {t.get('name')} ({field_count} fields): {t.get('display_name')}")
+        return 0
+    except Exception as e:
+        logger.error(f"Listing custom types failed: {e}")
+        return 1
+
+
+def cmd_custom_record_create(args: argparse.Namespace) -> int:
+    """
+    Create a record of a custom type from a JSON file.
+
+    Args:
+        args: Command arguments (expects args.type and args.config)
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        record = _load_json_config(args.config)
+        client = _create_client(args)
+        response = client.create_custom_record(args.type, record)
+        logger.info(f"Custom record created: {response.get('path')}")
+        if args.json:
+            print(json.dumps(response, indent=2, default=str))
+        return 0
+    except FileNotFoundError as e:
+        logger.error(f"Configuration file error: {e}")
+        return 1
+    except json.JSONDecodeError as e:
+        logger.error(f"Invalid JSON configuration: {e}")
+        return 1
+    except Exception as e:
+        logger.error(f"Custom record creation failed: {e}")
+        return 1
+
+
+def cmd_custom_proxy_create(args: argparse.Namespace) -> int:
+    """
+    Create a proxied custom-entity record that fronts a REST/HTTP endpoint.
+
+    Convenience over ``custom-record-create``: builds the gateway-proxy fields
+    from flags (target URL, streaming on/off, optional caller-overridable
+    Authorization passthrough) instead of a hand-written JSON record. The custom
+    type must already exist (see ``custom-type-create``); a type with required
+    attribute fields still needs ``custom-record-create`` with a full JSON body.
+
+    Streaming is set via ``--streaming true|false`` (the record's proxy_streaming
+    field). ``--auth-passthrough`` adds a caller-overridable Authorization header:
+    a fixed Authorization credential is rejected by the registry, so the caller
+    supplies the backend Bearer token at request time and the gateway forwards it.
+
+    ``--connect-notes`` sets proxy_connect_notes: free-text usage guidance shown to
+    clients in the UI Connect panel (e.g. the sub-path to append and a ready-to-run
+    invocation command). It is never interpreted by the gateway.
+
+    Args:
+        args: Command arguments (type, name, target_url, streaming,
+            auth_passthrough, connect_notes, visibility, description).
+
+    Returns:
+        Exit code (0 for success, 1 for failure).
+    """
+    try:
+        record: dict[str, Any] = {
+            "name": args.name,
+            "description": args.description or f"Proxied REST endpoint -> {args.target_url}",
+            "visibility": args.visibility,
+            "is_proxied": True,
+            "proxy_target_url": args.target_url,
+            "proxy_streaming": args.streaming == "true",
+            **({"proxy_connect_notes": args.connect_notes} if args.connect_notes else {}),
+        }
+        if args.auth_passthrough:
+            # Authorization is accepted only as a caller-overridable header (a
+            # fixed value is rejected); no stored value, the caller supplies it.
+            record["custom_headers"] = [{"name": "Authorization", "overridable": True}]
+
+        client = _create_client(args)
+        response = client.create_custom_record(args.type, record)
+        logger.info(
+            f"Proxied custom record created: {response.get('path')} "
+            f"(streaming={record['proxy_streaming']}, target={args.target_url})"
+        )
+        if args.json:
+            print(json.dumps(response, indent=2, default=str))
+        return 0
+    except Exception as e:
+        logger.error(f"Proxied custom record creation failed: {e}")
+        return 1
+
+
+def cmd_custom_record_list(args: argparse.Namespace) -> int:
+    """
+    List records of a custom type the caller can view.
+
+    Args:
+        args: Command arguments (expects args.type)
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        response = client.list_custom_records(args.type)
+        if args.json:
+            print(json.dumps(response, indent=2, default=str))
+        else:
+            records = response.get("records", [])
+            logger.info(f"{args.type} records ({response.get('total_count', len(records))}):")
+            for r in records:
+                logger.info(f"  {r.get('name')} ({r.get('path')}) owner={r.get('owner')}")
+        return 0
+    except Exception as e:
+        logger.error(f"Listing custom records failed: {e}")
+        return 1
+
+
+# Fields that carry the identity URL per entity type, and the key each
+# registration config uses for the entity's name. Kept in one place so the
+# duplicate check reads a config the same way the register commands do.
+_DUPLICATE_CHECK_FIELDS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
+    "server": (("server_name", "name"), ("proxy_pass_url",)),
+    "agent": (("name",), ("url",)),
+    "skill": (("skill_name", "name"), ("skill_md_url", "url")),
+}
+
+
+def _first_present(config: dict, keys: tuple[str, ...]) -> str | None:
+    """Return the first non-empty value among ``keys``."""
+    for key in keys:
+        value = config.get(key)
+        if value:
+            return str(value)
+    return None
+
+
+def _duplicate_check_args_from_config(entity_type: str, config: dict) -> dict[str, str | None]:
+    """Pull the duplicate-check inputs out of a registration config."""
+    name_keys, url_keys = _DUPLICATE_CHECK_FIELDS[entity_type]
+    return {
+        "name": _first_present(config, name_keys) or "",
+        "description": config.get("description"),
+        "identity_url": _first_present(config, url_keys),
+        "self_path": None,
+    }
+
+
+def _report_duplicate_check(result: dict, entity_label: str) -> bool:
+    """Print a duplicate-check envelope. Returns True when anything matched.
+
+    Written for a terminal and for CI logs: the exact-URL half first because it
+    is certain, the similarity half second because it is a hint.
+    """
+    collisions = result.get("collision_with") or []
+    advisory = result.get("advisory_matches") or []
+    threshold = result.get("threshold")
+
+    if collisions:
+        logger.warning(
+            f"{entity_label} collides with {len(collisions)} existing "
+            f"entit{'y' if len(collisions) == 1 else 'ies'} on the same URL:"
+        )
+        for entry in collisions:
+            logger.warning(
+                f"  {entry.get('path')} ({entry.get('entity_type')}) "
+                f"- {entry.get('name')} [{entry.get('match_reason')}]"
+            )
+
+    if advisory:
+        logger.warning(
+            f"{len(advisory)} existing entit{'y' if len(advisory) == 1 else 'ies'} "
+            f"look similar (cosine >= {threshold}):"
+        )
+        for entry in advisory:
+            score = entry.get("relevance_score")
+            score_text = f"{score:.4f}" if isinstance(score, int | float) else "n/a"
+            logger.warning(
+                f"  {entry.get('path')} ({entry.get('entity_type')}) "
+                f"- {entry.get('name')} [similarity {score_text}]"
+            )
+
+    if result.get("similarity_search_available") is False:
+        logger.warning(
+            "The similarity check did not run: the registry could not reach its "
+            "embedding backend, so only the exact-URL result above is complete."
+        )
+
+    if not collisions and not advisory:
+        logger.info(f"No duplicates found for {entity_label}.")
+    return bool(collisions or advisory)
+
+
+def _preflight_duplicate_check(args: argparse.Namespace, entity_type: str, config: dict) -> int:
+    """Run the duplicate check before a registration. Returns an exit code.
+
+    Advisory by default — a match is reported and the registration proceeds,
+    which mirrors the registration UI. ``--fail-on-duplicate`` turns it into a
+    gate for CI, and ``--skip-duplicate-check`` opts out entirely.
+    """
+    if getattr(args, "skip_duplicate_check", False):
+        return 0
+
+    check_args = _duplicate_check_args_from_config(entity_type, config)
+    if not check_args["name"]:
+        return 0
+
+    try:
+        client = _create_client(args)
+        result = client.check_duplicates(entity_type, **check_args)
+    except Exception as e:
+        # A hint must never be the reason a registration fails.
+        logger.warning(f"Duplicate check skipped ({e}); continuing with registration.")
+        return 0
+
+    found = _report_duplicate_check(result, f"{entity_type} '{check_args['name']}'")
+    if found and getattr(args, "fail_on_duplicate", False):
+        logger.error("Aborting: --fail-on-duplicate was set and the check found a match.")
+        return 1
+    return 0
+
+
+def cmd_check_duplicates(args: argparse.Namespace) -> int:
+    """
+    Check whether a registration would duplicate an existing entity.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for no match or advisory-only, 1 on error or when
+        --fail-on-duplicate is set and something matched)
+    """
+    try:
+        if args.config:
+            config = _load_json_config(args.config)
+            if args.type == "server" and _is_mcp_registry_schema(config):
+                config = _transform_mcp_registry_to_internal(config)
+            check_args = _duplicate_check_args_from_config(args.type, config)
+        else:
+            if not args.name:
+                logger.error("Provide either --config or --name.")
+                return 1
+            check_args = {
+                "name": args.name,
+                "description": args.description,
+                "identity_url": args.url,
+                "self_path": args.self_path,
+            }
+
+        client = _create_client(args)
+        result = client.check_duplicates(args.type, **check_args)
+
+        if args.json:
+            print(json.dumps(result, indent=2))
+        else:
+            _report_duplicate_check(result, f"{args.type} '{check_args['name']}'")
+
+        matched = bool(result.get("collision_with") or result.get("advisory_matches"))
+        if matched and args.fail_on_duplicate:
+            return 1
+        return 0
+
+    except FileNotFoundError as e:
+        logger.error(f"Configuration file error: {e}")
+        return 1
+    except json.JSONDecodeError as e:
+        logger.error(f"Invalid JSON configuration: {e}")
+        return 1
+    except Exception as e:
+        logger.error(f"Duplicate check failed: {e}")
+        return 1
+
+
+def cmd_register(args: argparse.Namespace) -> int:
+    """
+    Register a new server from JSON configuration.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        config = _load_json_config(args.config)
+
+        # Detect upstream MCP Registry server.json schema and transform
+        if _is_mcp_registry_schema(config):
+            logger.info("Detected upstream MCP Registry server.json format, transforming...")
+            config = _transform_mcp_registry_to_internal(config)
+
+        # Convert config to InternalServiceRegistration
+        # Handle both old and new config formats
+        registration = InternalServiceRegistration(
+            service_path=config.get("path") or config.get("service_path"),
+            id=config.get("id"),  # caller-supplied asset id (#1276), optional
+            name=config.get("server_name") or config.get("name"),
+            description=config.get("description"),
+            proxy_pass_url=config.get("proxy_pass_url"),
+            deployment=config.get("deployment"),
+            local_runtime=config.get("local_runtime"),
+            version=config.get("version"),
+            status=config.get("status"),
+            auth_provider=config.get("auth_provider"),
+            auth_scheme=config.get("auth_scheme", config.get("auth_type")),
+            transport=config.get("transport"),
+            supported_transports=config.get("supported_transports"),
+            headers=config.get("headers"),
+            tool_list_json=config.get("tool_list_json"),
+            tags=config.get("tags"),
+            overwrite=args.overwrite,
+            mcp_endpoint=config.get("mcp_endpoint"),
+            sse_endpoint=config.get("sse_endpoint"),
+            append_mcp_path=config.get("append_mcp_path"),
+            metadata=config.get("metadata", {}),
+            provider_organization=config.get("provider_organization"),
+            provider_url=config.get("provider_url"),
+            source_created_at=config.get("source_created_at"),
+            source_updated_at=config.get("source_updated_at"),
+            external_tags=config.get("external_tags"),
+            custom_headers=config.get("custom_headers"),
+            visibility=config.get("visibility"),
+            allowed_groups=config.get("allowed_groups"),
+        )
+
+        preflight = _preflight_duplicate_check(args, "server", config)
+        if preflight != 0:
+            return preflight
+
+        client = _create_client(args)
+        response = client.register_service(registration)
+
+        logger.info(f"Server registered successfully: {response.path}")
+        logger.info(f"Message: {response.message}")
+        return 0
+
+    except FileNotFoundError as e:
+        logger.error(f"Configuration file error: {e}")
+        return 1
+    except json.JSONDecodeError as e:
+        logger.error(f"Invalid JSON configuration: {e}")
+        return 1
+    except Exception as e:
+        logger.error(f"Registration failed: {e}")
+        return 1
+
+
+def cmd_list(args: argparse.Namespace) -> int:
+    """
+    List all registered servers.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+
+        limit = args.limit if hasattr(args, "limit") else 20
+        offset = args.offset if hasattr(args, "offset") else 0
+        query = args.query if hasattr(args, "query") else None
+
+        # Print raw JSON if requested - fetch directly from API to get all fields
+        if hasattr(args, "json") and args.json:
+            import json
+
+            params: dict[str, str | int] = {"limit": limit, "offset": offset}
+            if query:
+                params["query"] = query
+            metadata_fields = getattr(args, "metadata_fields", None)
+            if metadata_fields:
+                params["metadata_fields"] = metadata_fields
+            raw_response = client._make_request(
+                method="GET", endpoint="/api/servers", params=params
+            )
+            print(json.dumps(raw_response.json(), indent=2, default=str))
+            return 0
+
+        response = client.list_services(
+            limit=limit,
+            offset=offset,
+        )
+
+        if not response.servers:
+            logger.info("No servers registered")
+            return 0
+
+        logger.info(
+            f"Found {len(response.servers)} servers "
+            f"(total: {response.total_count}, offset: {response.offset}, limit: {response.limit}):\n"
+        )
+
+        for server in response.servers:
+            status_icon = "✓" if server.is_enabled else "✗"
+            status = server.health_status
+            if status.startswith("healthy"):
+                health_icon = "🟢"
+            elif status.startswith("unhealthy"):
+                health_icon = "🔴"
+            elif status == "checking":
+                health_icon = "🟡"
+            elif status == "local":
+                health_icon = "🔵"
+            elif status == "disabled":
+                health_icon = "⚫"
+            else:
+                health_icon = "⚪"
+
+            lifecycle = f" [{server.status}]" if server.status != "active" else ""
+            print(f"{status_icon} {health_icon} {server.path}{lifecycle}")
+            print(f"   Name: {server.display_name}")
+            print(f"   Description: {server.description}")
+            print(f"   Enabled: {server.is_enabled}")
+            print(f"   Health: {server.health_status}")
+            if server.status != "active":
+                print(f"   Lifecycle: {server.status}")
+            print()
+
+        return 0
+
+    except Exception as e:
+        logger.error(f"List operation failed: {e}")
+        return 1
+
+
+def cmd_toggle(args: argparse.Namespace) -> int:
+    """
+    Toggle server enabled/disabled status.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        response = client.toggle_service(args.path)
+
+        status = "enabled" if response.is_enabled else "disabled"
+        logger.info(f"Server {response.path} is now {status}")
+        logger.info(f"Message: {response.message}")
+        return 0
+
+    except Exception as e:
+        logger.error(f"Toggle operation failed: {e}")
+        return 1
+
+
+def cmd_remove(args: argparse.Namespace) -> int:
+    """
+    Remove a server from the registry.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        if not args.force:
+            confirmation = input(f"Remove server {args.path}? (yes/no): ")
+            if confirmation.lower() != "yes":
+                logger.info("Operation cancelled")
+                return 0
+
+        client = _create_client(args)
+        response = client.remove_service(args.path)
+
+        logger.info(f"Server removed successfully: {args.path}")
+        return 0
+
+    except Exception as e:
+        logger.error(f"Remove operation failed: {e}")
+        return 1
+
+
+def cmd_healthcheck(args: argparse.Namespace) -> int:
+    """
+    Perform health check on all servers.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        response = client.healthcheck()
+
+        logger.info(f"Health check status: {response.get('status', 'unknown')}")
+        logger.info("\nHealth check results:")
+        print(json.dumps(response, indent=2))
+        return 0
+
+    except Exception as e:
+        logger.error(f"Health check failed: {e}")
+        return 1
+
+
+def cmd_config(args: argparse.Namespace) -> int:
+    """
+    Get registry configuration including deployment mode and features.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        response = client.get_config()
+
+        logger.info(f"Deployment Mode: {response.get('deployment_mode', 'unknown')}")
+        logger.info(f"Registry Mode: {response.get('registry_mode', 'unknown')}")
+        logger.info(f"Nginx Updates Enabled: {response.get('nginx_updates_enabled', 'unknown')}")
+
+        if args.json:
+            print(json.dumps(response, indent=2))
+        else:
+            print("\nRegistry Configuration:")
+            print(f"  Deployment Mode:       {response.get('deployment_mode')}")
+            print(f"  Registry Mode:         {response.get('registry_mode')}")
+            print(f"  Nginx Updates Enabled: {response.get('nginx_updates_enabled')}")
+            print("\nEnabled Features:")
+            features = response.get("features", {})
+            for feature, enabled in features.items():
+                status = "enabled" if enabled else "disabled"
+                print(f"  {feature}: {status}")
+
+        return 0
+
+    except Exception as e:
+        logger.error(f"Failed to get config: {e}")
+        return 1
+
+
+def cmd_rate_limit_set(args: argparse.Namespace) -> int:
+    """Create or update a rate-limit definition.
+
+    Caller (group) axis uses --user-max-requests / --agent-max-requests (at least
+    one). Target axis uses --max-requests. A server_group target entity also takes
+    --members (comma-separated server paths); each member gets its own bucket.
+    """
+    try:
+        client = _create_client(args)
+        members = None
+        if getattr(args, "members", None):
+            members = [m.strip() for m in args.members.split(",") if m.strip()]
+        result = client.set_rate_limit(
+            axis=args.axis,
+            entity_type=args.entity_type,
+            name=args.name,
+            max_requests=args.max_requests,
+            user_max_requests=args.user_max_requests,
+            agent_max_requests=args.agent_max_requests,
+            window_seconds=args.window_seconds,
+            fail_closed=args.fail_closed,
+            enabled=not args.disabled,
+            members=members,
+        )
+        logger.info("Rate-limit definition stored")
+        print(json.dumps(result, indent=2))
+        return 0
+    except Exception as e:
+        logger.error(f"Failed to set rate limit: {e}")
+        return 1
+
+
+def cmd_rate_limit_list(args: argparse.Namespace) -> int:
+    """List all rate-limit definitions."""
+    try:
+        client = _create_client(args)
+        result = client.list_rate_limits()
+        print(json.dumps(result, indent=2))
+        return 0
+    except Exception as e:
+        logger.error(f"Failed to list rate limits: {e}")
+        return 1
+
+
+def cmd_rate_limit_delete(args: argparse.Namespace) -> int:
+    """Delete a rate-limit definition by id."""
+    try:
+        client = _create_client(args)
+        result = client.delete_rate_limit(args.id)
+        logger.info(f"Deleted rate-limit definition {args.id}")
+        print(json.dumps(result, indent=2))
+        return 0
+    except Exception as e:
+        logger.error(f"Failed to delete rate limit: {e}")
+        return 1
+
+
+def cmd_rate_limit_get(args: argparse.Namespace) -> int:
+    """Read a single rate-limit definition by id."""
+    try:
+        client = _create_client(args)
+        result = client.get_rate_limit(args.id)
+        print(json.dumps(result, indent=2))
+        return 0
+    except Exception as e:
+        logger.error(f"Failed to get rate limit: {e}")
+        return 1
+
+
+def cmd_rate_limit_enable(args: argparse.Namespace) -> int:
+    """Enable a rate-limit definition in place."""
+    try:
+        client = _create_client(args)
+        result = client.set_rate_limit_enabled(args.id, enabled=True)
+        logger.info(f"Enabled rate-limit definition {args.id}")
+        print(json.dumps(result, indent=2))
+        return 0
+    except Exception as e:
+        logger.error(f"Failed to enable rate limit: {e}")
+        return 1
+
+
+def cmd_rate_limit_disable(args: argparse.Namespace) -> int:
+    """Disable a rate-limit definition in place (without deleting it)."""
+    try:
+        client = _create_client(args)
+        result = client.set_rate_limit_enabled(args.id, enabled=False)
+        logger.info(f"Disabled rate-limit definition {args.id}")
+        print(json.dumps(result, indent=2))
+        return 0
+    except Exception as e:
+        logger.error(f"Failed to disable rate limit: {e}")
+        return 1
+
+
+def cmd_rate_limit_status(args: argparse.Namespace) -> int:
+    """Introspect rate-limit definitions for a caller and/or target."""
+    try:
+        client = _create_client(args)
+        result = client.rate_limit_status(
+            identity=args.identity,
+            entity_type=args.entity_type,
+            name=args.name,
+        )
+        print(json.dumps(result, indent=2))
+        return 0
+    except Exception as e:
+        logger.error(f"Failed to get rate-limit status: {e}")
+        return 1
+
+
+def cmd_rate_limit_member_set(args: argparse.Namespace) -> int:
+    """Map a user or agent (client_id) to rate-limit group(s)."""
+    try:
+        client = _create_client(args)
+        groups = [g.strip() for g in args.groups.split(",") if g.strip()]
+        result = client.set_rate_limit_membership(
+            subject_type=args.subject_type,
+            subject=args.subject,
+            groups=groups,
+        )
+        logger.info(f"Set rate-limit membership {args.subject_type}:{args.subject}")
+        print(json.dumps(result, indent=2))
+        return 0
+    except Exception as e:
+        logger.error(f"Failed to set rate-limit membership: {e}")
+        return 1
+
+
+def cmd_rate_limit_member_list(args: argparse.Namespace) -> int:
+    """List all rate-limit memberships."""
+    try:
+        client = _create_client(args)
+        result = client.list_rate_limit_memberships()
+        print(json.dumps(result, indent=2))
+        return 0
+    except Exception as e:
+        logger.error(f"Failed to list rate-limit memberships: {e}")
+        return 1
+
+
+def cmd_rate_limit_member_delete(args: argparse.Namespace) -> int:
+    """Delete a rate-limit membership by id ('<subject_type>:<subject>')."""
+    try:
+        client = _create_client(args)
+        result = client.delete_rate_limit_membership(args.id)
+        logger.info(f"Deleted rate-limit membership {args.id}")
+        print(json.dumps(result, indent=2))
+        return 0
+    except Exception as e:
+        logger.error(f"Failed to delete rate-limit membership: {e}")
+        return 1
+
+
+def cmd_rate_limit_quarantine_add(args: argparse.Namespace) -> int:
+    """Quarantine a caller or target (drops ALL its data-plane traffic)."""
+    try:
+        client = _create_client(args)
+        result = client.quarantine_add(args.subject_type, args.subject)
+        logger.info(f"Quarantined {args.subject_type}:{args.subject}")
+        print(json.dumps(result, indent=2))
+        return 0
+    except Exception as e:
+        logger.error(f"Failed to quarantine: {e}")
+        return 1
+
+
+def cmd_rate_limit_quarantine_remove(args: argparse.Namespace) -> int:
+    """Remove a caller or target from quarantine."""
+    try:
+        client = _create_client(args)
+        result = client.quarantine_remove(args.subject_type, args.subject)
+        logger.info(f"Removed quarantine for {args.subject_type}:{args.subject}")
+        print(json.dumps(result, indent=2))
+        return 0
+    except Exception as e:
+        logger.error(f"Failed to remove quarantine: {e}")
+        return 1
+
+
+def cmd_rate_limit_quarantine_list(args: argparse.Namespace) -> int:
+    """List everything currently quarantined (callers + targets)."""
+    try:
+        client = _create_client(args)
+        result = client.quarantine_list()
+        print(json.dumps(result, indent=2))
+        return 0
+    except Exception as e:
+        logger.error(f"Failed to list quarantine: {e}")
+        return 1
+
+
+def cmd_add_to_groups(args: argparse.Namespace) -> int:
+    """
+    Add server to user groups.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        groups = [g.strip() for g in args.groups.split(",")]
+        client = _create_client(args)
+        response = client.add_server_to_groups(args.server, groups)
+
+        logger.info(f"Server {args.server} added to groups: {', '.join(groups)}")
+        return 0
+
+    except Exception as e:
+        logger.error(f"Add to groups failed: {e}")
+        return 1
+
+
+def cmd_remove_from_groups(args: argparse.Namespace) -> int:
+    """
+    Remove server from user groups.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        groups = [g.strip() for g in args.groups.split(",")]
+        client = _create_client(args)
+        response = client.remove_server_from_groups(args.server, groups)
+
+        logger.info(f"Server {args.server} removed from groups: {', '.join(groups)}")
+        return 0
+
+    except Exception as e:
+        logger.error(f"Remove from groups failed: {e}")
+        return 1
+
+
+def cmd_create_group(args: argparse.Namespace) -> int:
+    """
+    Create a new user group.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        response = client.create_group(
+            group_name=args.name, description=args.description, create_in_idp=args.idp
+        )
+
+        logger.info(f"Group created successfully: {args.name}")
+        return 0
+
+    except Exception as e:
+        logger.error(f"Create group failed: {e}")
+        return 1
+
+
+def cmd_delete_group(args: argparse.Namespace) -> int:
+    """
+    Delete a user group.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        if not args.force:
+            confirmation = input(f"Delete group {args.name}? (yes/no): ")
+            if confirmation.lower() != "yes":
+                logger.info("Operation cancelled")
+                return 0
+
+        client = _create_client(args)
+        response = client.delete_group(
+            group_name=args.name, delete_from_idp=args.idp, force=args.force
+        )
+
+        logger.info(f"Group deleted successfully: {args.name}")
+        return 0
+
+    except Exception as e:
+        logger.error(f"Delete group failed: {e}")
+        return 1
+
+
+def cmd_import_group(args: argparse.Namespace) -> int:
+    """
+    Import a complete group definition from JSON file.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    import json
+
+    try:
+        # Read JSON file
+        with open(args.file) as f:
+            group_definition = json.load(f)
+
+        # Validate required field
+        if "scope_name" not in group_definition:
+            logger.error("JSON file must contain 'scope_name' field")
+            return 1
+
+        client = _create_client(args)
+        response = client.import_group(group_definition)
+
+        logger.info(f"Group imported successfully: {group_definition['scope_name']}")
+        logger.info(f"Response: {json.dumps(response, indent=2)}")
+        return 0
+
+    except FileNotFoundError:
+        logger.error(f"File not found: {args.file}")
+        return 1
+    except json.JSONDecodeError as e:
+        logger.error(f"Invalid JSON in file: {e}")
+        return 1
+    except Exception as e:
+        logger.error(f"Import group failed: {e}")
+        return 1
+
+
+def cmd_list_groups(args: argparse.Namespace) -> int:
+    """
+    List all user groups.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    import json
+
+    try:
+        client = _create_client(args)
+        response = client.list_groups(
+            include_keycloak=not args.no_keycloak, include_scopes=not args.no_scopes
+        )
+
+        # If JSON output requested, print raw response and exit
+        if hasattr(args, "json") and args.json:
+            print(json.dumps(response.model_dump(), indent=2, default=str))
+            return 0
+
+        # Display synchronized groups
+        if response.synchronized:
+            print("\n=== Synchronized Groups (in both Keycloak and Scopes) ===")
+            for group_name in response.synchronized:
+                print(f"  - {group_name}")
+                # Show details from scopes if available
+                if group_name in response.scopes_groups:
+                    group_info = response.scopes_groups[group_name]
+                    if "description" in group_info:
+                        print(f"    Description: {group_info['description']}")
+                    if "server_count" in group_info:
+                        print(f"    Servers: {group_info['server_count']}")
+
+        # Display Keycloak-only groups
+        if response.keycloak_only:
+            print("\n=== Keycloak-Only Groups (not in Scopes) ===")
+            for group_name in response.keycloak_only:
+                print(f"  - {group_name}")
+
+        # Display Scopes-only groups
+        if response.scopes_only:
+            print("\n=== Scopes-Only Groups (not in Keycloak) ===")
+            for group_name in response.scopes_only:
+                print(f"  - {group_name}")
+                if group_name in response.scopes_groups:
+                    group_info = response.scopes_groups[group_name]
+                    if "description" in group_info:
+                        print(f"    Description: {group_info['description']}")
+
+        # Summary
+        total_keycloak = len(response.keycloak_groups)
+        total_scopes = len(response.scopes_groups)
+        print("\n=== Summary ===")
+        print(f"Total Keycloak groups: {total_keycloak}")
+        print(f"Total Scopes groups: {total_scopes}")
+        print(f"Synchronized: {len(response.synchronized)}")
+        print(f"Keycloak-only: {len(response.keycloak_only)}")
+        print(f"Scopes-only: {len(response.scopes_only)}")
+
+        return 0
+
+    except Exception as e:
+        logger.error(f"List groups failed: {e}")
+        return 1
+
+
+def cmd_describe_group(args: argparse.Namespace) -> int:
+    """
+    Describe a specific group with all details.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    import json
+
+    try:
+        client = _create_client(args)
+        group_name = args.name
+
+        # Get full group details from scopes storage
+        try:
+            group_data = client.get_group(group_name)
+        except Exception as e:
+            if "404" in str(e):
+                logger.error(f"Group '{group_name}' not found in scopes storage")
+                group_data = None
+            else:
+                raise
+
+        # If JSON output requested
+        if hasattr(args, "json") and args.json:
+            if group_data:
+                print(json.dumps(group_data, indent=2, default=str))
+                return 0
+            else:
+                print(json.dumps({"error": "Group not found", "group_name": group_name}, indent=2))
+                return 1
+
+        # Human-readable output
+        if not group_data:
+            print(f"\nGroup '{group_name}' not found in scopes storage\n")
+            return 1
+
+        print(f"\n=== Group: {group_name} ===\n")
+        print(f"Scope Type: {group_data.get('scope_type', 'N/A')}")
+        print(f"Description: {group_data.get('description', 'N/A')}")
+        print(f"Created: {group_data.get('created_at', 'N/A')}")
+        print(f"Updated: {group_data.get('updated_at', 'N/A')}")
+
+        print("\nServer Access:")
+        server_access = group_data.get("server_access", [])
+        if server_access:
+            for idx, access in enumerate(server_access, 1):
+                print(f"  {idx}. Server: {access.get('server', 'N/A')}")
+                if "methods" in access:
+                    print(f"     Methods: {', '.join(access['methods'])}")
+                if "tools" in access:
+                    print(f"     Tools: {', '.join(access['tools'])}")
+                if "agents" in access:
+                    print(f"     Agents: {json.dumps(access['agents'], indent=6)}")
+        else:
+            print("  None")
+
+        print("\nGroup Mappings:")
+        group_mappings = group_data.get("group_mappings", [])
+        if group_mappings:
+            for mapping in group_mappings:
+                print(f"  - {mapping}")
+        else:
+            print("  None")
+
+        print("\nUI Permissions:")
+        ui_permissions = group_data.get("ui_permissions", {})
+        if ui_permissions:
+            print(json.dumps(ui_permissions, indent=2))
+        else:
+            print("  None")
+
+        return 0
+
+    except Exception as e:
+        logger.error(f"Describe group failed: {e}")
+        return 1
+
+
+def cmd_server_get(args: argparse.Namespace) -> int:
+    """
+    Get detailed information about a specific server.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        server = client.get_server(args.path)
+
+        logger.info(f"Retrieved server: {server.server_name}")
+        output = {
+            "server_name": server.server_name,
+            "path": server.path,
+            "description": server.description,
+            "proxy_pass_url": server.proxy_pass_url,
+            "tags": server.tags,
+            "num_tools": server.num_tools,
+            "tool_list": server.tool_list,
+            "is_enabled": server.is_enabled,
+            "health_status": server.health_status,
+            "transport": server.transport,
+            "supported_transports": getattr(server, "supported_transports", None),
+            "version": server.version,
+            "versions": server.versions,
+            "license": server.license,
+            "deployment": getattr(server, "deployment", None) or "remote",
+            "local_runtime": getattr(server, "local_runtime", None),
+            "metadata": getattr(server, "metadata", None),
+            "visibility": getattr(server, "visibility", None),
+            "allowed_groups": getattr(server, "allowed_groups", None),
+            "auth_scheme": getattr(server, "auth_scheme", None),
+            "mcp_endpoint": getattr(server, "mcp_endpoint", None),
+            "sse_endpoint": getattr(server, "sse_endpoint", None),
+            "status": getattr(server, "status", None),
+            "registered_by": getattr(server, "registered_by", None),
+        }
+        print(json.dumps(output, indent=2, default=str))
+        return 0
+
+    except Exception as e:
+        logger.error(f"Get server failed: {e}")
+        return 1
+
+
+def _build_update_server_body(args: argparse.Namespace) -> dict[str, Any]:
+    """Build the PUT body from --body or from individual field flags.
+
+    If ``--body`` is supplied, it is parsed as JSON and used verbatim.
+    Otherwise, only the supplied field flags are added to the body so
+    the user does not have to repeat unchanged fields.
+
+    Args:
+        args: Parsed CLI arguments for the update-server command.
+
+    Returns:
+        Dict to send as the JSON body of PUT /api/servers/{path}.
+
+    Raises:
+        ValueError: If ``--body`` is not valid JSON or not a JSON object.
+    """
+    if args.body:
+        parsed = json.loads(args.body)
+        if not isinstance(parsed, dict):
+            raise ValueError("--body must be a JSON object")
+        return parsed
+
+    body: dict[str, Any] = {}
+    if args.server_name is not None:
+        body["server_name"] = args.server_name
+    if args.description is not None:
+        body["description"] = args.description
+    if args.proxy_pass_url is not None:
+        body["proxy_pass_url"] = args.proxy_pass_url
+    if args.tags is not None:
+        body["tags"] = [t.strip() for t in args.tags.split(",") if t.strip()]
+    if args.license is not None:
+        body["license"] = args.license
+    if args.num_tools is not None:
+        body["num_tools"] = args.num_tools
+    if args.metadata is not None:
+        body["metadata"] = json.loads(args.metadata)
+    if args.visibility is not None:
+        body["visibility"] = args.visibility
+    if args.allowed_groups is not None:
+        body["allowed_groups"] = [g.strip() for g in args.allowed_groups.split(",") if g.strip()]
+    return body
+
+
+def cmd_update_server(args: argparse.Namespace) -> int:
+    """
+    Replace a server's mutable metadata via PUT /api/servers/{path}.
+
+    Either provide a full JSON body via --body, or supply individual
+    field flags (--server-name, --description, ...). When --body is
+    supplied, all field flags are ignored.
+
+    Args:
+        args: Command arguments with path, body or field flags, and
+            optional if-match.
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        body = _build_update_server_body(args)
+        if not body:
+            logger.error("No update fields provided. Pass --body or at least one field flag.")
+            return 1
+
+        client = _create_client(args)
+        result: ServerUpdateResponse = client.update_server(
+            path=args.path,
+            body=body,
+            if_match=args.if_match,
+        )
+
+        print(json.dumps(result.model_dump(), indent=2, default=str))
+        return 0
+
+    except json.JSONDecodeError as e:
+        logger.error(f"Invalid JSON: {e}")
+        return 1
+    except Exception as e:
+        logger.error(f"Update server failed: {e}")
+        logger.debug("Full error details:", exc_info=True)
+        return 1
+
+
+def cmd_patch_server(args: argparse.Namespace) -> int:
+    """
+    Partially update a server via PATCH /api/servers/{path}.
+
+    The patch body must be a JSON object (RFC 7396 JSON Merge Patch).
+    Only fields present in the patch are changed.
+
+    Args:
+        args: Command arguments with path, patch JSON string, and
+            optional if-match.
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        patch = json.loads(args.patch)
+        if not isinstance(patch, dict):
+            logger.error("--patch must be a JSON object")
+            return 1
+
+        client = _create_client(args)
+        result: ServerUpdateResponse = client.patch_server(
+            path=args.path,
+            patch=patch,
+            if_match=args.if_match,
+        )
+
+        print(json.dumps(result.model_dump(), indent=2, default=str))
+        return 0
+
+    except json.JSONDecodeError as e:
+        logger.error(f"Invalid JSON in --patch: {e}")
+        return 1
+    except Exception as e:
+        logger.error(f"Patch server failed: {e}")
+        logger.debug("Full error details:", exc_info=True)
+        return 1
+
+
+def cmd_server_rate(args: argparse.Namespace) -> int:
+    """
+    Rate a server (1-5 stars).
+
+    Args:
+        args: Command arguments with path and rating
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        response: RatingResponse = client.rate_server(path=args.path, rating=args.rating)
+
+        logger.info(f"✓ {response.message}")
+        logger.info(f"Average rating: {response.average_rating:.2f} stars")
+
+        return 0
+
+    except Exception as e:
+        logger.error(f"Failed to rate server: {e}")
+        return 1
+
+
+def cmd_server_rating(args: argparse.Namespace) -> int:
+    """
+    Get rating information for a server.
+
+    Args:
+        args: Command arguments with path
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        response: RatingInfoResponse = client.get_server_rating(path=args.path)
+
+        logger.info(f"\nRating for server '{args.path}':")
+        logger.info(f"  Average: {response.num_stars:.2f} stars")
+        logger.info(f"  Total ratings: {len(response.rating_details)}")
+
+        if response.rating_details:
+            logger.info("\nIndividual ratings (most recent):")
+            # Show first 10 ratings
+            for detail in response.rating_details[:10]:
+                logger.info(f"  {detail.user}: {detail.rating} stars")
+
+            if len(response.rating_details) > 10:
+                logger.info(f"  ... and {len(response.rating_details) - 10} more")
+
+        return 0
+
+    except Exception as e:
+        logger.error(f"Failed to get ratings: {e}")
+        return 1
+
+
+def cmd_security_scan(args: argparse.Namespace) -> int:
+    """
+    Get security scan results for a server.
+
+    Args:
+        args: Command arguments with path and optional json flag
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        response: SecurityScanResult = client.get_security_scan(path=args.path)
+
+        if args.json:
+            # Output raw JSON
+            print(json.dumps(response.model_dump(), indent=2, default=str))
+        else:
+            # Pretty print results
+            logger.info(f"\nSecurity scan results for server '{args.path}':")
+
+            # Display analysis results by analyzer
+            if response.analysis_results:
+                for analyzer_name, analyzer_data in response.analysis_results.items():
+                    logger.info(f"\n  Analyzer: {analyzer_name}")
+                    if isinstance(analyzer_data, dict) and "findings" in analyzer_data:
+                        findings = analyzer_data["findings"]
+                        logger.info(f"    Findings: {len(findings)}")
+                        for finding in findings[:5]:  # Show first 5
+                            severity = finding.get("severity", "UNKNOWN")
+                            tool_name = finding.get("tool_name", "unknown")
+                            logger.info(f"      - {tool_name}: {severity}")
+                        if len(findings) > 5:
+                            logger.info(f"      ... and {len(findings) - 5} more")
+
+            # Display tool results summary
+            if response.tool_results:
+                logger.info(f"\n  Total tools scanned: {len(response.tool_results)}")
+                safe_count = sum(1 for tool in response.tool_results if tool.get("is_safe", False))
+                unsafe_count = len(response.tool_results) - safe_count
+                logger.info(f"  Safe tools: {safe_count}")
+                if unsafe_count > 0:
+                    logger.info(f"  Unsafe tools: {unsafe_count}")
+                    logger.warning("\n  WARNING: Some tools flagged as potentially unsafe!")
+
+        return 0
+
+    except Exception as e:
+        logger.error(f"Failed to get security scan results: {e}")
+        return 1
+
+
+def cmd_rescan(args: argparse.Namespace) -> int:
+    """
+    Trigger manual security scan for a server (admin only).
+
+    Args:
+        args: Command arguments with path and optional json flag
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        response: RescanResponse = client.rescan_server(path=args.path)
+
+        if args.json:
+            # Output raw JSON
+            print(json.dumps(response.model_dump(), indent=2, default=str))
+        else:
+            # Pretty print results
+            safety_status = "SAFE" if response.is_safe else "UNSAFE"
+            logger.info(f"\nSecurity scan completed for server '{args.path}':")
+            logger.info(f"  Status: {safety_status}")
+            logger.info(f"  Scan timestamp: {response.scan_timestamp}")
+            logger.info(f"  Analyzers used: {', '.join(response.analyzers_used)}")
+            logger.info("\n  Severity counts:")
+            logger.info(f"    Critical: {response.critical_issues}")
+            logger.info(f"    High: {response.high_severity}")
+            logger.info(f"    Medium: {response.medium_severity}")
+            logger.info(f"    Low: {response.low_severity}")
+
+            if response.scan_failed:
+                logger.error(f"\n  Scan failed: {response.error_message}")
+                return 1
+
+            if not response.is_safe:
+                logger.warning("\n  WARNING: Server flagged as potentially unsafe!")
+
+        return 0
+
+    except Exception as e:
+        logger.error(f"Failed to trigger security scan: {e}")
+        return 1
+
+
+def cmd_server_update_credential(args: argparse.Namespace) -> int:
+    """
+    Update authentication credentials for a server.
+
+    Args:
+        args: Command arguments with path, auth-scheme, credential, etc.
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        # Validate that credential is provided when auth_scheme is not 'none'
+        if args.auth_scheme != "none" and not args.credential:
+            logger.error("--credential is required when --auth-scheme is not 'none'")
+            return 1
+
+        # Parse --custom-header NAME=VALUE entries
+        custom_headers_list = None
+        if args.custom_header:
+            custom_headers_list = []
+            for entry in args.custom_header:
+                if "=" not in entry:
+                    logger.error(f"Invalid --custom-header format: '{entry}'. Expected NAME=VALUE")
+                    return 1
+                name, value = entry.split("=", 1)
+                custom_headers_list.append({"name": name.strip(), "value": value})
+
+        client = _create_client(args)
+        response = client.update_server_credential(
+            service_path=args.path,
+            auth_scheme=args.auth_scheme,
+            auth_credential=args.credential,
+            auth_header_name=args.auth_header_name,
+            custom_headers=custom_headers_list,
+        )
+
+        if args.json:
+            # Output raw JSON
+            print(json.dumps(response, indent=2, default=str))
+        else:
+            # Pretty print results
+            logger.info(f"\nAuth credential updated successfully for '{args.path}':")
+            logger.info(f"  Auth scheme: {response.get('auth_scheme')}")
+            if response.get("auth_header_name"):
+                logger.info(f"  Header name: {response.get('auth_header_name')}")
+            logger.info(f"  Message: {response.get('message')}")
+
+        return 0
+
+    except Exception as e:
+        logger.error(f"Failed to update server credential: {e}")
+        return 1
+
+
+def cmd_server_connect_config(args: argparse.Namespace) -> int:
+    """
+    Fetch the connect-time configuration for a server.
+
+    Returns decrypted custom headers and auth metadata needed to
+    build a working client configuration.
+
+    Args:
+        args: Command arguments with path.
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        response = client.get_server_connect_config(service_path=args.path)
+
+        if args.json:
+            print(json.dumps(response, indent=2, default=str))
+        else:
+            logger.info(f"\nConnect config for '{response.get('path')}':")
+            logger.info(f"  Server: {response.get('server_name')}")
+            logger.info(f"  Auth scheme: {response.get('auth_scheme', 'none')}")
+            if response.get("auth_header_name"):
+                logger.info(f"  Auth header: {response.get('auth_header_name')}")
+            custom_headers = response.get("custom_headers", [])
+            if custom_headers:
+                logger.info(f"  Custom headers ({len(custom_headers)}):")
+                for h in custom_headers:
+                    logger.info(f"    {h['name']}: {h['value']}")
+            else:
+                logger.info("  Custom headers: (none)")
+            failures = response.get("decrypt_failures", 0)
+            if failures > 0:
+                logger.warning(f"  Decrypt failures: {failures}")
+
+        return 0
+
+    except Exception as e:
+        logger.error(f"Failed to fetch connect config: {e}")
+        return 1
+
+
+def _parse_scopes(raw: str | None) -> list[str] | None:
+    """Turn a comma-separated --scopes value into a list of scope strings.
+
+    Args:
+        raw: Comma-separated scopes, or None.
+
+    Returns:
+        List of non-empty scope strings, or None when nothing was provided.
+    """
+    if not raw:
+        return None
+    scopes = [s.strip() for s in raw.split(",") if s.strip()]
+    return scopes or None
+
+
+def cmd_egress_configure(args: argparse.Namespace) -> int:
+    """
+    Configure per-user egress auth on a server (admin only).
+
+    Args:
+        args: Command arguments with path, mode, and mode-specific options.
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        response = client.configure_egress_auth(
+            server_path=args.path,
+            mode=args.mode,
+            provider=args.provider,
+            client_id=args.client_id,
+            client_secret=args.client_secret,
+            scopes=_parse_scopes(args.scopes),
+            target_audience=args.target_audience,
+            custom_authorize_url=args.custom_authorize_url,
+            custom_token_url=args.custom_token_url,
+            custom_scope_separator=args.custom_scope_separator,
+            custom_token_auth_style=args.custom_token_auth_style,
+            custom_resource=args.custom_resource,
+        )
+        print(json.dumps(response, indent=2, default=str))
+        return 0
+
+    except Exception as e:
+        logger.error(f"Failed to configure egress auth: {e}")
+        return 1
+
+
+def cmd_egress_config_get(args: argparse.Namespace) -> int:
+    """
+    Fetch the (non-secret) egress auth config for a server.
+
+    Args:
+        args: Command arguments with path.
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        response = client.get_egress_auth_config(server_path=args.path)
+        print(json.dumps(response, indent=2, default=str))
+        return 0
+
+    except Exception as e:
+        logger.error(f"Failed to fetch egress auth config: {e}")
+        return 1
+
+
+def cmd_egress_pat_set(args: argparse.Namespace) -> int:
+    """
+    Submit (or replace) a per-user PAT for a server (write-only).
+
+    The secret value is never logged. The server enforces admin-gating of
+    ``--sub``; a non-admin supplying it is rejected 403. An admin using ``--sub``
+    must also pass ``--auth-method`` (the target's ingress auth method).
+
+    Args:
+        args: Command arguments with path, secret, ttl-value, ttl-unit, sub,
+            auth-method.
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        response = client.set_egress_pat(
+            server_path=args.path,
+            secret=args.secret,
+            ttl_value=args.ttl_value,
+            ttl_unit=args.ttl_unit,
+            sub=args.sub,
+            auth_method=args.auth_method,
+        )
+        # The response never contains the secret; safe to print as-is.
+        print(json.dumps(response, indent=2, default=str))
+        return 0
+
+    except Exception as e:
+        logger.error(f"Failed to submit egress PAT: {e}")
+        return 1
+
+
+def cmd_egress_pat_status(args: argparse.Namespace) -> int:
+    """
+    Report whether a per-user PAT is stored and when it expires.
+
+    Args:
+        args: Command arguments with path and optional sub / auth-method.
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        response = client.get_egress_pat_status(
+            server_path=args.path, sub=args.sub, auth_method=args.auth_method
+        )
+        print(json.dumps(response, indent=2, default=str))
+        return 0
+
+    except Exception as e:
+        logger.error(f"Failed to fetch egress PAT status: {e}")
+        return 1
+
+
+def cmd_egress_pat_delete(args: argparse.Namespace) -> int:
+    """
+    Delete a stored per-user PAT (idempotent).
+
+    Args:
+        args: Command arguments with path and optional sub / auth-method.
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        response = client.delete_egress_pat(
+            server_path=args.path, sub=args.sub, auth_method=args.auth_method
+        )
+        print(json.dumps(response, indent=2, default=str))
+        return 0
+
+    except Exception as e:
+        logger.error(f"Failed to delete egress PAT: {e}")
+        return 1
+
+
+def _parse_ard_filter(pairs: list[str] | None) -> dict[str, Any] | None:
+    """Turn repeated ``key=value`` CLI filters into an ARD query.filter dict."""
+    if not pairs:
+        return None
+    out: dict[str, Any] = {}
+    for pair in pairs:
+        if "=" not in pair:
+            raise ValueError(f"Invalid --filter (expected key=value): {pair!r}")
+        key, _, value = pair.partition("=")
+        key, value = key.strip(), value.strip()
+        if key in out:
+            existing = out[key]
+            out[key] = [*existing, value] if isinstance(existing, list) else [existing, value]
+        else:
+            out[key] = value
+    return out
+
+
+def cmd_ard_search(args: argparse.Namespace) -> int:
+    """ARD Registry search (POST /api/ard/search)."""
+    try:
+        client = _create_client(args)
+        result = client.ard_search(
+            text=args.query,
+            filter=_parse_ard_filter(args.filter),
+            federation=args.federation,
+            page_size=args.page_size,
+            page_token=args.page_token,
+        )
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+            return 0
+        results = result.get("results", [])
+        logger.info(f"ARD search: {len(results)} result(s)")
+        for r in results:
+            print(
+                f"  [{r.get('score')}] {r.get('displayName')} "
+                f"({r.get('type')}) {r.get('identifier')}"
+            )
+        if result.get("pageToken"):
+            print(f"\nnext pageToken: {result['pageToken']}")
+        return 0
+    except Exception as e:
+        logger.error(f"ARD search failed: {e}")
+        return 1
+
+
+def cmd_ard_agents(args: argparse.Namespace) -> int:
+    """ARD Registry browse (GET /api/ard/agents) over all asset types."""
+    try:
+        client = _create_client(args)
+        result = client.ard_browse(
+            filters=args.filter,
+            order_by=args.order_by,
+            page_size=args.page_size,
+            page_token=args.page_token,
+        )
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+            return 0
+        items = result.get("items", [])
+        logger.info(f"ARD browse: {len(items)} of {result.get('total')} entries")
+        for it in items:
+            print(f"  {it.get('displayName')} ({it.get('type')}) {it.get('identifier')}")
+        if result.get("pageToken"):
+            print(f"\nnext pageToken: {result['pageToken']}")
+        return 0
+    except Exception as e:
+        logger.error(f"ARD browse failed: {e}")
+        return 1
+
+
+def cmd_ard_ingestion_sync(args: argparse.Namespace) -> int:
+    """Trigger ARD ai-catalog ingestion (POST /api/federation/ai_catalog/sync)."""
+    try:
+        client = _create_client(args)
+        result = client.ard_ingestion_sync(source_id=args.source_id)
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+            return 0
+        print(result.get("message", "triggered"))
+        for r in result.get("results", []):
+            status = "ok" if r.get("success") else "FAIL"
+            print(
+                f"  [{status}] {r.get('peer_id')}: servers={r.get('servers_synced')} "
+                f"agents={r.get('agents_synced')} gen={r.get('new_generation')} "
+                f"{r.get('error_message') or ''}".rstrip()
+            )
+        return 0
+    except Exception as e:
+        logger.error(f"ARD ingestion sync failed: {e}")
+        return 1
+
+
+def cmd_ard_ingestion_status(args: argparse.Namespace) -> int:
+    """Show ARD ingestion per-source state (GET /api/federation/ai_catalog/status)."""
+    try:
+        client = _create_client(args)
+        result = client.ard_ingestion_status()
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+            return 0
+        sources = result.get("sources", [])
+        logger.info(f"ARD ingestion: {len(sources)} source(s)")
+        for s in sources:
+            print(
+                f"  {s.get('source_id')}: gen={s.get('generation')} "
+                f"servers={s.get('servers_synced')} agents={s.get('agents_synced')} "
+                f"skills={s.get('skills_synced')} rejected={s.get('rejected')} "
+                f"failures={s.get('consecutive_failures')} last={s.get('last_synced_at')}"
+            )
+        return 0
+    except Exception as e:
+        logger.error(f"ARD ingestion status failed: {e}")
+        return 1
+
+
+def cmd_ard_ingestion_add_source(args: argparse.Namespace) -> int:
+    """Add an ARD ai-catalog ingestion source (federation config)."""
+    try:
+        client = _create_client(args)
+        result = client.ard_ingestion_add_source(
+            source_id=args.source_id,
+            uri=args.uri,
+            domain=args.domain,
+            expected_identity=args.expected_identity,
+            enable=args.enable,
+        )
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+            return 0
+        print(result.get("message", "added"))
+        if args.enable:
+            print("ai_catalog ingestion enabled")
+        return 0
+    except Exception as e:
+        logger.error(f"ARD ingestion add-source failed: {e}")
+        return 1
+
+
+def cmd_ard_ingestion_remove_source(args: argparse.Namespace) -> int:
+    """Remove an ARD ai-catalog ingestion source (federation config)."""
+    try:
+        client = _create_client(args)
+        result = client.ard_ingestion_remove_source(source_id=args.source_id)
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+            return 0
+        print(result.get("message", "removed"))
+        return 0
+    except Exception as e:
+        logger.error(f"ARD ingestion remove-source failed: {e}")
+        return 1
+
+
+def cmd_server_search(args: argparse.Namespace) -> int:
+    """
+    Perform semantic search across all entity types.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        response = client.semantic_search(
+            query=args.query,
+            max_results=args.max_results,
+            metadata_fields=getattr(args, "metadata_fields", None),
+        )
+
+        if args.json:
+            # Output raw JSON
+            print(json.dumps(response.model_dump(), indent=2, default=str))
+            return 0
+
+        total_results = (
+            len(response.servers)
+            + len(response.tools)
+            + len(response.agents)
+            + len(response.skills)
+            + len(response.virtual_servers)
+        )
+
+        if total_results == 0:
+            logger.info("No results found matching the query")
+            return 0
+
+        logger.info(f"Search mode: {response.search_mode}")
+
+        # Display MCP Servers
+        if response.servers:
+            print(f"\n--- MCP Servers ({len(response.servers)}) ---")
+            for server in response.servers:
+                print(f"  {server.server_name} ({server.path})")
+                print(f"    Relevance: {server.relevance_score:.2%}")
+                if server.similarity_score is not None:
+                    print(f"    Similarity: {server.similarity_score:.4f}")
+                if server.tags:
+                    print(f"    Tags: {', '.join(server.tags[:5])}")
+                if server.description:
+                    desc = (
+                        server.description[:100] + "..."
+                        if len(server.description) > 100
+                        else server.description
+                    )
+                    print(f"    {desc}")
+                print()
+
+        # Display Tools
+        if response.tools:
+            print(f"\n--- Tools ({len(response.tools)}) ---")
+            for tool in response.tools:
+                print(f"  {tool.tool_name} (from {tool.server_path})")
+                print(f"    Relevance: {tool.relevance_score:.2%}")
+                if tool.similarity_score is not None:
+                    print(f"    Similarity: {tool.similarity_score:.4f}")
+                if tool.description:
+                    desc = (
+                        tool.description[:100] + "..."
+                        if len(tool.description) > 100
+                        else tool.description
+                    )
+                    print(f"    {desc}")
+                print()
+
+        # Display A2A Agents
+        if response.agents:
+            print(f"\n--- A2A Agents ({len(response.agents)}) ---")
+            for agent in response.agents:
+                agent_name = agent.agent_card.get("name", "Unknown")
+                agent_desc = agent.agent_card.get("description", "")
+                agent_skills = agent.agent_card.get("skills", [])
+                print(f"  {agent_name} ({agent.path})")
+                print(f"    Relevance: {agent.relevance_score:.2%}")
+                if agent.similarity_score is not None:
+                    print(f"    Similarity: {agent.similarity_score:.4f}")
+                if agent_skills:
+                    skill_names = [
+                        s.get("name", "") if isinstance(s, dict) else str(s)
+                        for s in agent_skills[:5]
+                    ]
+                    print(f"    Skills: {', '.join(skill_names)}")
+                if agent_desc:
+                    desc = agent_desc[:100] + "..." if len(agent_desc) > 100 else agent_desc
+                    print(f"    {desc}")
+                print()
+
+        # Display Skills
+        if response.skills:
+            print(f"\n--- Skills ({len(response.skills)}) ---")
+            for skill in response.skills:
+                print(f"  {skill.skill_name} ({skill.path})")
+                print(f"    Relevance: {skill.relevance_score:.2%}")
+                if skill.similarity_score is not None:
+                    print(f"    Similarity: {skill.similarity_score:.4f}")
+                if skill.author:
+                    print(f"    Author: {skill.author}")
+                if skill.tags:
+                    print(f"    Tags: {', '.join(skill.tags[:5])}")
+                if skill.description:
+                    desc = (
+                        skill.description[:100] + "..."
+                        if len(skill.description) > 100
+                        else skill.description
+                    )
+                    print(f"    {desc}")
+                print()
+
+        # Display Virtual MCP Servers
+        if response.virtual_servers:
+            print(f"\n--- Virtual MCP Servers ({len(response.virtual_servers)}) ---")
+            for vs in response.virtual_servers:
+                print(f"  {vs.server_name} ({vs.path})")
+                print(f"    Relevance: {vs.relevance_score:.2%}")
+                if vs.similarity_score is not None:
+                    print(f"    Similarity: {vs.similarity_score:.4f}")
+                print(f"    Tools: {vs.num_tools}, Backends: {vs.backend_count}")
+                if vs.backend_paths:
+                    print(f"    Backend paths: {', '.join(vs.backend_paths)}")
+                if vs.tags:
+                    print(f"    Tags: {', '.join(vs.tags[:5])}")
+                if vs.description:
+                    desc = (
+                        vs.description[:100] + "..."
+                        if len(vs.description) > 100
+                        else vs.description
+                    )
+                    print(f"    {desc}")
+                print()
+
+        return 0
+
+    except Exception as e:
+        logger.error(f"Semantic search failed: {e}")
+        return 1
+
+
+# Server Version Management Command Handlers
+
+
+def cmd_list_versions(args: argparse.Namespace) -> int:
+    """
+    List all versions for a server.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        response = client.get_server_versions(path=args.path)
+
+        if args.json:
+            print(json.dumps(response, indent=2, default=str))
+            return 0
+
+        logger.info(f"Versions for server {response['path']}:\n")
+        logger.info(f"Default version: {response['default_version']}\n")
+
+        for v in response.get("versions", []):
+            default_marker = " (DEFAULT)" if v.get("is_default") else ""
+            status = v.get("status", "stable")
+            print(f"  {v['version']}{default_marker}")
+            print(f"    Status: {status}")
+            print(f"    URL: {v.get('proxy_pass_url', 'N/A')}")
+            print()
+
+        return 0
+
+    except Exception as e:
+        logger.error(f"Failed to list versions: {e}")
+        return 1
+
+
+def cmd_remove_version(args: argparse.Namespace) -> int:
+    """
+    Remove a version from a server.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        response = client.remove_server_version(path=args.path, version=args.version)
+
+        if args.json:
+            print(json.dumps(response, indent=2, default=str))
+            return 0
+
+        logger.info(f"Successfully removed version {args.version} from {args.path}")
+        return 0
+
+    except Exception as e:
+        logger.error(f"Failed to remove version: {e}")
+        return 1
+
+
+def cmd_set_default_version(args: argparse.Namespace) -> int:
+    """
+    Set the default version for a server.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        response = client.set_default_version(path=args.path, version=args.version)
+
+        if args.json:
+            print(json.dumps(response, indent=2, default=str))
+            return 0
+
+        logger.info(f"Successfully set default version to {args.version} for {args.path}")
+        return 0
+
+    except Exception as e:
+        logger.error(f"Failed to set default version: {e}")
+        return 1
+
+
+# Agent Management Command Handlers
+
+
+def cmd_agent_register(args: argparse.Namespace) -> int:
+    """
+    Register a new A2A agent from JSON configuration.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        config_path = Path(args.config)
+        if not config_path.exists():
+            logger.error(f"Config file not found: {config_path}")
+            return 1
+
+        with open(config_path) as f:
+            config = json.load(f)
+
+        # Convert skills list of dicts to Skill objects
+        # Handle both 'input_schema' and 'parameters' field names
+        # Also handle 'id' vs 'name' field for skill identifier
+        skills = []
+        for skill_data in config.get("skills", []):
+            # Get skill identifier - prefer 'id', fall back to 'name'
+            skill_id = skill_data.get("id") or skill_data.get("name", "")
+            skill_name = skill_data.get("name", skill_id)
+
+            # Normalize field names
+            skill_dict = {
+                "id": skill_id,  # Always include id field
+                "name": skill_name,
+                "description": skill_data.get("description", ""),
+                "tags": skill_data.get("tags", []),  # Include tags field
+            }
+            # Use 'input_schema' if present, otherwise use 'parameters'
+            if "input_schema" in skill_data:
+                skill_dict["input_schema"] = skill_data["input_schema"]
+            elif "parameters" in skill_data:
+                skill_dict["input_schema"] = skill_data["parameters"]
+
+            skills.append(Skill(**skill_dict))
+        config["skills"] = skills
+
+        # Provider is now a dict object per A2A spec {organization, url}
+        # No conversion needed - pass it through as-is
+
+        # Normalize and convert visibility string to enum if present
+        if "visibility" in config:
+            # Normalize legacy aliases: "internal" -> "private", "group" -> "group-restricted"
+            _visibility_aliases = {"internal": "private", "group": "group-restricted"}
+            normalized = _visibility_aliases.get(
+                config["visibility"].lower(), config["visibility"].lower()
+            )
+            try:
+                config["visibility"] = AgentVisibility(normalized)
+            except ValueError:
+                logger.warning(f"Unknown visibility '{config['visibility']}', using 'public'")
+                config["visibility"] = AgentVisibility.PUBLIC
+
+        # Handle security_schemes conversion
+        # Normalize common security type variations to A2A spec values
+        if "security_schemes" in config:
+            transformed_schemes = {}
+            for scheme_name, scheme_data in config["security_schemes"].items():
+                scheme_type = scheme_data.get("type", "").lower()
+                # Normalize to A2A spec values: apiKey, http, oauth2, openIdConnect
+                # Keep 'http' as is (for bearer auth), not 'bearer'
+                type_map = {
+                    "http": "http",  # HTTP auth (including bearer)
+                    "bearer": "http",  # Bearer is a type of HTTP auth
+                    "apikey": "apiKey",
+                    "api_key": "apiKey",
+                    "oauth2": "oauth2",
+                    "openidconnect": "openIdConnect",
+                    "openid": "openIdConnect",
+                }
+                mapped_type = type_map.get(scheme_type, "http")
+
+                # Preserve all fields from the original scheme data
+                transformed_scheme = dict(scheme_data)
+                transformed_scheme["type"] = mapped_type
+
+                transformed_schemes[scheme_name] = transformed_scheme
+            config["security_schemes"] = transformed_schemes
+
+        # Remove fields that aren't in AgentRegistration model
+        valid_fields = {
+            "protocol_version",
+            "name",
+            "description",
+            "path",
+            "url",
+            "id",  # caller-supplied asset id (#1276)
+            "version",
+            "capabilities",
+            "metadata",
+            "default_input_modes",
+            "default_output_modes",
+            "provider",
+            "security_schemes",
+            "skills",
+            "tags",
+            "visibility",
+            "license",
+            "supported_protocol",
+            "supportedProtocol",
+            "trust_level",
+            "trustLevel",
+        }
+        config = {k: v for k, v in config.items() if k in valid_fields}
+
+        agent = AgentRegistration(**config)
+        preflight = _preflight_duplicate_check(args, "agent", config)
+        if preflight != 0:
+            return preflight
+
+        client = _create_client(args)
+        response = client.register_agent(agent)
+
+        logger.info(
+            f"Agent registered successfully: {response.agent.name} at {response.agent.path}"
+        )
+        print(
+            json.dumps(
+                {
+                    "message": response.message,
+                    "agent": {
+                        "name": response.agent.name,
+                        "path": response.agent.path,
+                        "url": response.agent.url,
+                        "num_skills": response.agent.num_skills,
+                        "is_enabled": response.agent.is_enabled,
+                    },
+                },
+                indent=2,
+            )
+        )
+        return 0
+
+    except Exception as e:
+        logger.error(f"Agent registration failed: {e}")
+        logger.debug("Full error details:", exc_info=True)
+        return 1
+
+
+def cmd_agent_list(args: argparse.Namespace) -> int:
+    """
+    List all A2A agents.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+
+        limit = args.limit if hasattr(args, "limit") else 20
+        offset = args.offset if hasattr(args, "offset") else 0
+
+        # Print raw JSON if requested - fetch directly from API to get all fields
+        if hasattr(args, "json") and args.json:
+            params: dict[str, str | int] = {"limit": limit, "offset": offset}
+            if hasattr(args, "query") and args.query:
+                params["query"] = args.query
+            if hasattr(args, "enabled_only") and args.enabled_only:
+                params["enabled_only"] = "true"
+            if hasattr(args, "visibility") and args.visibility:
+                params["visibility"] = args.visibility
+            if hasattr(args, "allowed_groups") and args.allowed_groups:
+                params["allowed_groups"] = args.allowed_groups
+            metadata_fields = getattr(args, "metadata_fields", None)
+            if metadata_fields:
+                params["metadata_fields"] = metadata_fields
+            raw_response = client._make_request(method="GET", endpoint="/api/agents", params=params)
+            print(json.dumps(raw_response.json(), indent=2, default=str))
+            return 0
+
+        response = client.list_agents(
+            query=args.query if hasattr(args, "query") else None,
+            enabled_only=args.enabled_only if hasattr(args, "enabled_only") else False,
+            visibility=args.visibility if hasattr(args, "visibility") else None,
+            allowed_groups=args.allowed_groups if hasattr(args, "allowed_groups") else None,
+            limit=limit,
+            offset=offset,
+        )
+
+        # Debug mode: print full JSON response
+        if args.debug:
+            logger.debug("Full JSON response from API:")
+            print(json.dumps(response.model_dump(by_alias=True), indent=2, default=str))
+            print()
+
+        if not response.agents:
+            logger.info("No agents found")
+            return 0
+
+        logger.info(
+            f"Found {len(response.agents)} agents "
+            f"(total: {response.total_count}, offset: {response.offset}, limit: {response.limit}):\n"
+        )
+        for agent in response.agents:
+            status_icon = "✓" if agent.is_enabled else "✗"
+            lifecycle = f" [{agent.status}]" if agent.status != "active" else ""
+            print(f"{status_icon} {agent.name} ({agent.path}){lifecycle}")
+            print(f"  {agent.description}")
+            if agent.status != "active":
+                print(f"  Lifecycle: {agent.status}")
+            print()
+
+        return 0
+
+    except Exception as e:
+        logger.error(f"List agents failed: {e}")
+        return 1
+
+
+def cmd_agent_get(args: argparse.Namespace) -> int:
+    """
+    Get detailed information about a specific agent.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        agent = client.get_agent(args.path)
+
+        logger.info(f"Retrieved agent: {agent.name}")
+        output = {
+            "name": agent.name,
+            "path": agent.path,
+            "description": agent.description,
+            "url": agent.url,
+            "version": agent.version,
+            "provider": agent.provider.model_dump() if agent.provider else None,
+            "is_enabled": agent.is_enabled,
+            "visibility": agent.visibility,
+            "trust_level": agent.trust_level,
+            "skills": [
+                {"name": skill.name, "description": skill.description} for skill in agent.skills
+            ],
+            "security_schemes": _serialize_security_schemes(agent.security_schemes),
+            "default_input_modes": agent.default_input_modes,
+            "default_output_modes": agent.default_output_modes,
+            "supported_protocol": agent.supported_protocol,
+        }
+        if agent.ans_metadata:
+            output["ans_metadata"] = agent.ans_metadata
+        if agent.metadata:
+            output["metadata"] = agent.metadata
+        if agent.capabilities:
+            output["capabilities"] = agent.capabilities
+        print(json.dumps(output, indent=2))
+        return 0
+
+    except Exception as e:
+        logger.error(f"Get agent failed: {e}")
+        return 1
+
+
+def cmd_agent_update(args: argparse.Namespace) -> int:
+    """
+    Update an existing agent.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        config_path = Path(args.config)
+        if not config_path.exists():
+            logger.error(f"Config file not found: {config_path}")
+            return 1
+
+        with open(config_path) as f:
+            config = json.load(f)
+
+        # Convert skills list of dicts to Skill objects
+        # Handle both 'input_schema' and 'parameters' field names
+        skills = []
+        for skill_data in config.get("skills", []):
+            skill_dict = {
+                "name": skill_data.get("name", skill_data.get("id", "")),
+                "description": skill_data.get("description", ""),
+            }
+            if "input_schema" in skill_data:
+                skill_dict["input_schema"] = skill_data["input_schema"]
+            elif "parameters" in skill_data:
+                skill_dict["input_schema"] = skill_data["parameters"]
+            skills.append(Skill(**skill_dict))
+        config["skills"] = skills
+
+        # Convert provider string to enum with validation
+        if "provider" in config:
+            provider_value = config["provider"].lower()
+            provider_map = {
+                "anthropic": AgentProvider.ANTHROPIC,
+                "custom": AgentProvider.CUSTOM,
+                "other": AgentProvider.OTHER,
+                "example corp": AgentProvider.CUSTOM,
+                "example": AgentProvider.CUSTOM,
+            }
+            if provider_value in provider_map:
+                config["provider"] = provider_map[provider_value]
+            else:
+                logger.warning(f"Unknown provider '{config['provider']}', using 'custom'")
+                config["provider"] = AgentProvider.CUSTOM
+
+        # Normalize and convert visibility string to enum if present
+        if "visibility" in config:
+            # Normalize legacy aliases: "internal" -> "private", "group" -> "group-restricted"
+            _visibility_aliases = {"internal": "private", "group": "group-restricted"}
+            normalized = _visibility_aliases.get(
+                config["visibility"].lower(), config["visibility"].lower()
+            )
+            try:
+                config["visibility"] = AgentVisibility(normalized)
+            except ValueError:
+                logger.warning(f"Unknown visibility '{config['visibility']}', using 'public'")
+                config["visibility"] = AgentVisibility.PUBLIC
+
+        # Handle security_schemes conversion
+        if "security_schemes" in config:
+            transformed_schemes = {}
+            for scheme_name, scheme_data in config["security_schemes"].items():
+                scheme_type = scheme_data.get("type", "").lower()
+                type_map = {
+                    "http": "bearer",
+                    "bearer": "bearer",
+                    "apikey": "api_key",
+                    "api_key": "api_key",
+                    "oauth2": "oauth2",
+                }
+                mapped_type = type_map.get(scheme_type, "bearer")
+                transformed_schemes[scheme_name] = {
+                    "type": mapped_type,
+                    "description": scheme_data.get("description", ""),
+                }
+            config["security_schemes"] = transformed_schemes
+
+        # Remove fields that aren't in AgentRegistration model
+        valid_fields = {
+            "name",
+            "description",
+            "path",
+            "url",
+            "version",
+            "capabilities",
+            "metadata",
+            "provider",
+            "security_schemes",
+            "skills",
+            "tags",
+            "visibility",
+            "license",
+            "supported_protocol",
+            "supportedProtocol",
+            "trust_level",
+            "trustLevel",
+        }
+        config = {k: v for k, v in config.items() if k in valid_fields}
+
+        agent = AgentRegistration(**config)
+        client = _create_client(args)
+        response = client.update_agent(args.path, agent)
+
+        logger.info(f"Agent updated successfully: {response.name}")
+        return 0
+
+    except Exception as e:
+        logger.error(f"Agent update failed: {e}")
+        logger.debug("Full error details:", exc_info=True)
+        return 1
+
+
+def cmd_agent_patch(args: argparse.Namespace) -> int:
+    """
+    Partially update an agent using RFC 7396 JSON Merge Patch.
+
+    The patch body is read from a JSON file and sent as-is; only the supplied
+    fields change. An optional weak ETag enables optimistic concurrency.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        config_path = Path(args.config)
+        if not config_path.exists():
+            logger.error(f"Patch file not found: {config_path}")
+            return 1
+
+        with open(config_path) as f:
+            patch = json.load(f)
+
+        if not isinstance(patch, dict):
+            logger.error("Patch file must contain a JSON object")
+            return 1
+
+        client = _create_client(args)
+        response = client.patch_agent(args.path, patch, if_match=args.if_match)
+
+        logger.info(f"Agent patched successfully: {response.name}")
+        return 0
+
+    except Exception as e:
+        logger.error(f"Agent patch failed: {e}")
+        logger.debug("Full error details:", exc_info=True)
+        return 1
+
+
+def cmd_agent_batch_submit(args: argparse.Namespace) -> int:
+    """
+    Submit an asynchronous batch of agent operations from a JSON file.
+
+    The file must contain either a JSON array of items or an object with an
+    "items" array (and optional "idempotency_key").
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        batch_path = Path(args.file)
+        if not batch_path.exists():
+            logger.error(f"Batch file not found: {batch_path}")
+            return 1
+
+        with open(batch_path) as f:
+            payload = json.load(f)
+
+        if isinstance(payload, list):
+            items = payload
+            idempotency_key = args.idempotency_key
+        elif isinstance(payload, dict):
+            items = payload.get("items", [])
+            idempotency_key = args.idempotency_key or payload.get("idempotency_key")
+        else:
+            logger.error("Batch file must be a JSON array or object with 'items'")
+            return 1
+
+        if not items:
+            logger.error("Batch file contains no items")
+            return 1
+
+        client = _create_client(args)
+        response = client.submit_agent_batch(items, idempotency_key=idempotency_key)
+
+        if getattr(args, "json", False):
+            print(json.dumps(response.model_dump(), indent=2, default=str))
+        else:
+            logger.info(
+                f"Batch submitted: job_id={response.job_id} (replay={response.idempotent_replay})"
+            )
+            logger.info(f"Poll status with: agent-batch-status --job-id {response.job_id}")
+        return 0
+
+    except Exception as e:
+        logger.error(f"Agent batch submit failed: {e}")
+        logger.debug("Full error details:", exc_info=True)
+        return 1
+
+
+def cmd_agent_batch_status(args: argparse.Namespace) -> int:
+    """
+    Fetch the current state and per-item results of a batch job.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        job = client.get_agent_batch(args.job_id)
+
+        if getattr(args, "json", False):
+            print(json.dumps(job.model_dump(), indent=2, default=str))
+            return 0
+
+        logger.info(
+            f"Job {job.job_id}: state={job.state} "
+            f"total={job.total} succeeded={job.succeeded} failed={job.failed}"
+        )
+        for item in job.results:
+            status_label = "OK" if item.status < 400 else "ERR"
+            msg = f"  [{status_label}] #{item.index} {item.op} {item.path or ''} -> {item.status}"
+            if item.error:
+                msg += f" ({item.error.get('code')}: {item.error.get('message')})"
+            logger.info(msg)
+        return 0
+
+    except Exception as e:
+        logger.error(f"Agent batch status failed: {e}")
+        logger.debug("Full error details:", exc_info=True)
+        return 1
+
+
+def cmd_agent_delete(args: argparse.Namespace) -> int:
+    """
+    Delete an agent from the registry.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        if not args.force:
+            confirmation = input(f"Delete agent {args.path}? (yes/no): ")
+            if confirmation.lower() != "yes":
+                logger.info("Operation cancelled")
+                return 0
+
+        client = _create_client(args)
+        client.delete_agent(args.path)
+
+        logger.info(f"Agent deleted successfully: {args.path}")
+        return 0
+
+    except Exception as e:
+        logger.error(f"Agent deletion failed: {e}")
+        return 1
+
+
+def cmd_toggle_tool(args: argparse.Namespace) -> int:
+    """
+    Block or unblock a single tool on a server.
+
+    Args:
+        args: Command arguments (path, tool, enabled)
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        response = client.toggle_tool(args.path, args.tool, args.enabled)
+
+        state = "enabled" if response.enabled else "blocked"
+        logger.info(f"Tool {state}: {response.tool_name} on {args.path}")
+        print(
+            json.dumps(
+                {
+                    "server_path": args.path,
+                    "tool_name": response.tool_name,
+                    "enabled": response.enabled,
+                },
+                indent=2,
+            )
+        )
+        return 0
+
+    except Exception as e:
+        logger.error(f"Toggle tool failed: {e}")
+        return 1
+
+
+def cmd_agent_toggle(args: argparse.Namespace) -> int:
+    """
+    Toggle agent enabled/disabled status.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        response = client.toggle_agent(args.path, args.enabled)
+
+        logger.info(
+            f"Agent {response.path} is now {'enabled' if response.is_enabled else 'disabled'}"
+        )
+        return 0
+
+    except Exception as e:
+        logger.error(f"Agent toggle failed: {e}")
+        return 1
+
+
+def cmd_agent_pull_card(args: argparse.Namespace) -> int:
+    """
+    Pull the latest A2A agent card from the remote endpoint.
+
+    Default is a dry-run preview (no A2A-spec fields are written, though
+    health_status / last_health_check are always refreshed as a side effect
+    of the fetch succeeding). Use --apply to actually write the A2A-spec
+    fields. Registry-managed fields (tags, ratings, visibility, trust_level,
+    sync_metadata, ...) are never overwritten regardless of mode.
+
+    Args:
+        args: Command arguments with path and optional --apply / --json.
+
+    Returns:
+        Exit code (0 for success, 1 for failure).
+    """
+    try:
+        client = _create_client(args)
+        dry_run = not getattr(args, "apply", False)
+        response = client.pull_card_agent(path=args.path, dry_run=dry_run)
+
+        if getattr(args, "json", False):
+            print(json.dumps(response.model_dump(), indent=2, default=str))
+            return 0
+
+        mode = "DRY-RUN" if dry_run else "APPLY"
+        logger.info(f"\nPull-card {mode} for agent '{response.agent_path}':")
+        logger.info(f"  Remote URL: {response.remote_card_url}")
+        logger.info(f"  Health status (refreshed): {response.health_status}")
+        logger.info(f"  Has changes: {response.has_changes}")
+        logger.info(f"  Change count: {len(response.changes)}")
+        if not response.has_changes:
+            logger.info("  Local record already matches remote (no A2A-spec diff).")
+        else:
+            for change in response.changes:
+                logger.info(f"\n  Field: {change.field}")
+                logger.info(f"    current: {json.dumps(change.current_value, default=str)[:200]}")
+                logger.info(f"    remote:  {json.dumps(change.remote_value, default=str)[:200]}")
+            if dry_run:
+                logger.info(
+                    "\n  Dry-run: no A2A-spec writes performed. Re-run with --apply to persist."
+                )
+            elif response.applied:
+                logger.info(f"\n  Applied {len(response.changes)} change(s).")
+            else:
+                logger.warning("\n  Apply was requested but did not land (see server logs).")
+        return 0
+
+    except Exception as e:
+        logger.error(f"Pull-card failed: {e}")
+        return 1
+
+
+def cmd_agent_discover(args: argparse.Namespace) -> int:
+    """
+    Discover agents by required skills.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        skills = [s.strip() for s in args.skills.split(",")]
+        tags = [t.strip() for t in args.tags.split(",")] if args.tags else None
+
+        client = _create_client(args)
+        response = client.discover_agents_by_skills(
+            skills=skills, tags=tags, max_results=args.max_results
+        )
+
+        if not response.agents:
+            logger.info("No agents found matching the required skills")
+            return 0
+
+        logger.info(f"Found {len(response.agents)} matching agents:\n")
+        for agent in response.agents:
+            print(f"{agent.name} ({agent.path})")
+            print(f"  Relevance: {agent.relevance_score:.2%}")
+            print(f"  Matching skills: {', '.join(agent.matching_skills)}")
+            print()
+
+        return 0
+
+    except Exception as e:
+        logger.error(f"Agent discovery failed: {e}")
+        return 1
+
+
+def cmd_agent_search(args: argparse.Namespace) -> int:
+    """
+    Perform semantic search for agents.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        response = client.discover_agents_semantic(query=args.query, max_results=args.max_results)
+
+        if not response.agents:
+            if args.json:
+                print(json.dumps({"agents": [], "query": args.query}, indent=2))
+            else:
+                logger.info("No agents found matching the query")
+            return 0
+
+        if args.json:
+            # Output full JSON response
+            output = {
+                "query": args.query,
+                "agents": [agent.model_dump() for agent in response.agents],
+            }
+            print(json.dumps(output, indent=2, default=str))
+        else:
+            # Human-readable output
+            logger.info(f"Found {len(response.agents)} matching agents:\n")
+            for agent in response.agents:
+                print(f"{agent.name} ({agent.path})")
+                print(f"  Relevance: {agent.relevance_score:.2%}")
+                if agent.trust_verified:
+                    print(f"  ANS Trust: {agent.trust_verified}")
+                print(f"  {agent.description[:100]}...")
+                print()
+
+        return 0
+
+    except Exception as e:
+        logger.error(f"Semantic search failed: {e}")
+        return 1
+
+
+def cmd_agent_rate(args: argparse.Namespace) -> int:
+    """
+    Rate an agent (1-5 stars).
+
+    Args:
+        args: Command arguments with path and rating
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        response: RatingResponse = client.rate_agent(path=args.path, rating=args.rating)
+
+        logger.info(f"✓ {response.message}")
+        logger.info(f"Average rating: {response.average_rating:.2f} stars")
+
+        return 0
+
+    except Exception as e:
+        logger.error(f"Failed to rate agent: {e}")
+        return 1
+
+
+def cmd_agent_rating(args: argparse.Namespace) -> int:
+    """
+    Get rating information for an agent.
+
+    Args:
+        args: Command arguments with path
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        response: RatingInfoResponse = client.get_agent_rating(path=args.path)
+
+        logger.info(f"\nRating for agent '{args.path}':")
+        logger.info(f"  Average: {response.num_stars:.2f} stars")
+        logger.info(f"  Total ratings: {len(response.rating_details)}")
+
+        if response.rating_details:
+            logger.info("\nIndividual ratings (most recent):")
+            # Show first 10 ratings
+            for detail in response.rating_details[:10]:
+                logger.info(f"  {detail.user}: {detail.rating} stars")
+
+            if len(response.rating_details) > 10:
+                logger.info(f"  ... and {len(response.rating_details) - 10} more")
+
+        return 0
+
+    except Exception as e:
+        logger.error(f"Failed to get ratings: {e}")
+        return 1
+
+
+def cmd_agent_security_scan(args: argparse.Namespace) -> int:
+    """
+    Get security scan results for an agent.
+
+    Args:
+        args: Command arguments with path and optional json flag
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        response: AgentSecurityScanResponse = client.get_agent_security_scan(path=args.path)
+
+        # Always output as JSON since the response structure is complex
+        print(json.dumps(response.model_dump(), indent=2, default=str))
+        return 0
+
+    except Exception as e:
+        logger.error(f"Failed to get security scan results: {e}")
+        return 1
+
+
+def cmd_agent_rescan(args: argparse.Namespace) -> int:
+    """
+    Trigger manual security scan for an agent (admin only).
+
+    Args:
+        args: Command arguments with path and optional json flag
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        response: AgentRescanResponse = client.rescan_agent(path=args.path)
+
+        if hasattr(args, "json") and args.json:
+            # Output raw JSON
+            print(json.dumps(response.model_dump(), indent=2, default=str))
+        else:
+            # Pretty print results
+            safety_status = "SAFE" if response.is_safe else "UNSAFE"
+            logger.info(f"\nSecurity scan completed for agent '{args.path}':")
+            logger.info(f"  Status: {safety_status}")
+            logger.info(f"  Scan timestamp: {response.scan_timestamp}")
+            logger.info(f"  Analyzers used: {', '.join(response.analyzers_used)}")
+            logger.info("\n  Severity counts:")
+            logger.info(f"    Critical: {response.critical_issues}")
+            logger.info(f"    High: {response.high_severity}")
+            logger.info(f"    Medium: {response.medium_severity}")
+            logger.info(f"    Low: {response.low_severity}")
+
+            if response.output_file:
+                logger.info(f"\n  Output file: {response.output_file}")
+
+            if response.scan_failed:
+                logger.error(f"\n  Scan failed: {response.error_message}")
+                return 1
+
+            if not response.is_safe:
+                logger.warning("\n  WARNING: Agent flagged as potentially unsafe!")
+
+        return 0
+
+    except Exception as e:
+        logger.error(f"Failed to trigger security scan: {e}")
+        return 1
+
+
+# ==========================================
+# Agent ANS (Agent Name Service) Command Handlers
+# ==========================================
+
+
+def cmd_agent_ans_link(args: argparse.Namespace) -> int:
+    """
+    Link an ANS Agent ID to an agent.
+
+    Args:
+        args: Command arguments with path and ans_agent_id
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        result = client.agent_ans_link(
+            path=args.path,
+            ans_agent_id=args.ans_agent_id,
+        )
+
+        if result.get("success"):
+            logger.info(f"Successfully linked ANS ID to agent '{args.path}'")
+            if result.get("ans_metadata"):
+                print(json.dumps(result["ans_metadata"], indent=2, default=str))
+        else:
+            logger.error(f"Failed to link ANS ID: {result.get('message', 'Unknown error')}")
+            return 1
+
+        return 0
+
+    except Exception as e:
+        logger.error(f"ANS link failed: {e}")
+        return 1
+
+
+def cmd_agent_ans_status(args: argparse.Namespace) -> int:
+    """
+    Get ANS verification status for an agent.
+
+    Args:
+        args: Command arguments with path
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        result = client.agent_ans_status(path=args.path)
+
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            logger.info(f"\nANS status for agent '{args.path}':")
+            logger.info(f"  Status: {result.get('status', 'unknown')}")
+            logger.info(f"  Domain: {result.get('domain', 'N/A')}")
+            logger.info(f"  ANS Agent ID: {result.get('ans_agent_id', 'N/A')}")
+            if result.get("verified_at"):
+                logger.info(f"  Verified at: {result.get('verified_at')}")
+            if result.get("last_checked"):
+                logger.info(f"  Last checked: {result.get('last_checked')}")
+
+        return 0
+
+    except Exception as e:
+        logger.error(f"ANS status check failed: {e}")
+        return 1
+
+
+def cmd_agent_ans_unlink(args: argparse.Namespace) -> int:
+    """
+    Remove ANS link from an agent.
+
+    Args:
+        args: Command arguments with path
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        result = client.agent_ans_unlink(path=args.path)
+
+        if result.get("success"):
+            logger.info(f"Successfully unlinked ANS from agent '{args.path}'")
+        else:
+            logger.error(f"Failed to unlink ANS: {result.get('message', 'Unknown error')}")
+            return 1
+
+        return 0
+
+    except Exception as e:
+        logger.error(f"ANS unlink failed: {e}")
+        return 1
+
+
+# ==========================================
+# Agent Skills Command Handlers
+# ==========================================
+
+
+def cmd_skill_register(args: argparse.Namespace) -> int:
+    """
+    Register a new Agent Skill.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        # Parse metadata JSON if provided
+        metadata = None
+        if hasattr(args, "metadata") and args.metadata:
+            metadata = json.loads(args.metadata)
+
+        request = SkillRegistrationRequest(
+            name=args.name,
+            skill_md_url=args.url,
+            id=args.id if hasattr(args, "id") and args.id else None,
+            description=args.description if hasattr(args, "description") else None,
+            version=args.version if hasattr(args, "version") else None,
+            tags=args.tags.split(",") if hasattr(args, "tags") and args.tags else [],
+            target_agents=args.target_agents.split(",")
+            if hasattr(args, "target_agents") and args.target_agents
+            else [],
+            metadata=metadata,
+            visibility=args.visibility if hasattr(args, "visibility") else "public",
+        )
+
+        preflight = _preflight_duplicate_check(
+            args,
+            "skill",
+            {
+                "name": args.name,
+                "description": getattr(args, "description", None),
+                "skill_md_url": args.url,
+            },
+        )
+        if preflight != 0:
+            return preflight
+
+        client = _create_client(args)
+        skill = client.register_skill(request)
+
+        logger.info(f"Skill registered successfully: {skill.name} at {skill.path}")
+        print(
+            json.dumps(
+                {
+                    "message": "Skill registered successfully",
+                    "skill": {
+                        "name": skill.name,
+                        "path": skill.path,
+                        "description": skill.description,
+                        "skill_md_url": skill.skill_md_url,
+                        "is_enabled": skill.is_enabled,
+                    },
+                },
+                indent=2,
+            )
+        )
+        return 0
+
+    except Exception as e:
+        logger.error(f"Skill registration failed: {e}")
+        return 1
+
+
+def cmd_skill_list(args: argparse.Namespace) -> int:
+    """
+    List all Agent Skills.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        limit = args.limit if hasattr(args, "limit") else 20
+        offset = args.offset if hasattr(args, "offset") else 0
+
+        response = client.list_skills(
+            include_disabled=args.include_disabled if hasattr(args, "include_disabled") else False,
+            tag=args.tag if hasattr(args, "tag") else None,
+            limit=limit,
+            offset=offset,
+            metadata_fields=getattr(args, "metadata_fields", None),
+        )
+
+        if hasattr(args, "json") and args.json:
+            print(json.dumps([s.model_dump() for s in response.skills], indent=2, default=str))
+            return 0
+
+        if not response.skills:
+            logger.info("No skills found")
+            return 0
+
+        logger.info(
+            f"Found {len(response.skills)} skills "
+            f"(total: {response.total_count}, offset: {response.offset}, limit: {response.limit}):\n"
+        )
+        for skill in response.skills:
+            status_icon = "[+]" if skill.is_enabled else "[-]"
+            health = f"({skill.health_status})" if skill.health_status else ""
+            lifecycle = f" [{skill.status}]" if skill.status != "active" else ""
+            print(f"{status_icon} {skill.name} {health}{lifecycle}")
+            print(f"    Path: {skill.path}")
+            if skill.description:
+                print(f"    {skill.description[:80]}...")
+            if skill.status != "active":
+                print(f"    Lifecycle: {skill.status}")
+            if skill.tags:
+                print(f"    Tags: {', '.join(skill.tags)}")
+            print()
+
+        return 0
+
+    except Exception as e:
+        logger.error(f"List skills failed: {e}")
+        return 1
+
+
+def cmd_skill_get(args: argparse.Namespace) -> int:
+    """
+    Get details for a specific skill.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        skill = client.get_skill(args.path)
+
+        logger.info(f"Retrieved skill: {skill.name}")
+        print(
+            json.dumps(
+                {
+                    "name": skill.name,
+                    "path": skill.path,
+                    "description": skill.description,
+                    "skill_md_url": skill.skill_md_url,
+                    "skill_md_raw_url": skill.skill_md_raw_url,
+                    "version": skill.version,
+                    "author": skill.author,
+                    "visibility": skill.visibility,
+                    "is_enabled": skill.is_enabled,
+                    "tags": skill.tags,
+                    "owner": skill.owner,
+                    "num_stars": skill.num_stars,
+                    "health_status": skill.health_status,
+                    "created_at": skill.created_at,
+                    "updated_at": skill.updated_at,
+                },
+                indent=2,
+                default=str,
+            )
+        )
+        return 0
+
+    except Exception as e:
+        logger.error(f"Get skill failed: {e}")
+        return 1
+
+
+def cmd_skill_delete(args: argparse.Namespace) -> int:
+    """
+    Delete a skill.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        client.delete_skill(args.path)
+
+        logger.info(f"Skill deleted: {args.path}")
+        print(json.dumps({"message": "Skill deleted successfully", "path": args.path}, indent=2))
+        return 0
+
+    except Exception as e:
+        logger.error(f"Delete skill failed: {e}")
+        return 1
+
+
+def cmd_skill_toggle(args: argparse.Namespace) -> int:
+    """
+    Toggle skill enabled/disabled state.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        response = client.toggle_skill(args.path, args.enable)
+
+        state = "enabled" if response.is_enabled else "disabled"
+        logger.info(f"Skill {state}: {response.path}")
+        print(json.dumps({"path": response.path, "is_enabled": response.is_enabled}, indent=2))
+        return 0
+
+    except Exception as e:
+        logger.error(f"Toggle skill failed: {e}")
+        return 1
+
+
+def cmd_skill_health(args: argparse.Namespace) -> int:
+    """
+    Check skill health (SKILL.md accessibility).
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        response = client.check_skill_health(args.path)
+
+        status = "HEALTHY" if response.healthy else "UNHEALTHY"
+        logger.info(f"Skill health: {status}")
+        print(
+            json.dumps(
+                {
+                    "path": response.path,
+                    "healthy": response.healthy,
+                    "status_code": response.status_code,
+                    "error": response.error,
+                    "response_time_ms": response.response_time_ms,
+                },
+                indent=2,
+            )
+        )
+        return 0 if response.healthy else 1
+
+    except Exception as e:
+        logger.error(f"Health check failed: {e}")
+        return 1
+
+
+def cmd_skill_content(args: argparse.Namespace) -> int:
+    """
+    Get SKILL.md content for a skill.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        response = client.get_skill_content(args.path)
+
+        if hasattr(args, "raw") and args.raw:
+            # Output raw content only
+            print(response.content)
+        else:
+            logger.info(f"Retrieved content from: {response.url}")
+            print(f"--- SKILL.md ({len(response.content)} chars) ---")
+            print(response.content)
+            print("--- END ---")
+
+        return 0
+
+    except Exception as e:
+        logger.error(f"Get content failed: {e}")
+        return 1
+
+
+def cmd_skill_search(args: argparse.Namespace) -> int:
+    """
+    Search for skills.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        response = client.search_skills(
+            query=args.query, tags=args.tags if hasattr(args, "tags") else None
+        )
+
+        if args.debug:
+            print(json.dumps(response.model_dump(), indent=2, default=str))
+            return 0
+
+        logger.info(f"Found {response.total_count} skills matching '{args.query}':\n")
+        for skill in response.skills:
+            print(f"  {skill.get('name')} ({skill.get('path')})")
+            if skill.get("description"):
+                print(f"      {skill.get('description')[:60]}...")
+            print(f"      Score: {skill.get('relevance_score', 0):.2f}")
+            print()
+
+        return 0
+
+    except Exception as e:
+        logger.error(f"Search skills failed: {e}")
+        return 1
+
+
+def cmd_skill_rate(args: argparse.Namespace) -> int:
+    """
+    Rate a skill (1-5 stars).
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        if not 1 <= args.rating <= 5:
+            logger.error("Rating must be between 1 and 5")
+            return 1
+
+        client = _create_client(args)
+        response = client.rate_skill(args.path, args.rating)
+
+        logger.info(f"Skill rated: {args.rating} stars")
+        print(
+            json.dumps(
+                {
+                    "message": response.get("message"),
+                    "average_rating": response.get("average_rating"),
+                },
+                indent=2,
+            )
+        )
+        return 0
+
+    except Exception as e:
+        logger.error(f"Rate skill failed: {e}")
+        return 1
+
+
+def cmd_skill_rating(args: argparse.Namespace) -> int:
+    """
+    Get rating information for a skill.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        response = client.get_skill_rating(args.path)
+
+        logger.info(f"Skill rating: {response.num_stars} stars")
+        print(
+            json.dumps(
+                {
+                    "num_stars": response.num_stars,
+                    "rating_details": response.rating_details,
+                },
+                indent=2,
+                default=str,
+            )
+        )
+        return 0
+
+    except Exception as e:
+        logger.error(f"Get rating failed: {e}")
+        return 1
+
+
+def cmd_skill_security_scan(args: argparse.Namespace) -> int:
+    """
+    Get security scan results for a skill.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        response = client.get_skill_security_scan(path=args.path)
+
+        print(json.dumps(response.model_dump(), indent=2, default=str))
+        return 0
+
+    except Exception as e:
+        logger.error(f"Failed to get security scan results: {e}")
+        return 1
+
+
+def cmd_skill_rescan(args: argparse.Namespace) -> int:
+    """
+    Trigger manual security scan for a skill (admin only).
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        response = client.rescan_skill(path=args.path)
+
+        if not args.json_output:
+            safety_status = "SAFE" if response.is_safe else "UNSAFE"
+            logger.info(f"\nSecurity scan completed for skill '{args.path}':")
+            logger.info(f"  Status: {safety_status}")
+            logger.info(f"  Critical: {response.critical_issues}")
+            logger.info(f"  High: {response.high_severity}")
+            logger.info(f"  Medium: {response.medium_severity}")
+            logger.info(f"  Low: {response.low_severity}")
+            logger.info(f"  Analyzers: {', '.join(response.analyzers_used)}")
+
+        print(json.dumps(response.model_dump(), indent=2, default=str))
+        return 0
+
+    except Exception as e:
+        logger.error(f"Failed to trigger security scan: {e}")
+        return 1
+
+
+def cmd_anthropic_list_servers(args: argparse.Namespace) -> int:
+    """
+    List all servers using Anthropic Registry API v0.1.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        result: AnthropicServerList = client.anthropic_list_servers(limit=args.limit)
+
+        # Print raw JSON if requested
+        if args.raw:
+            print(json.dumps(result.model_dump(), indent=2, default=str))
+            return 0
+
+        logger.info(f"Retrieved {len(result.servers)} servers\n")
+
+        if result.metadata:
+            logger.info(f"Next cursor: {result.metadata.nextCursor}")
+            logger.info(f"Count: {result.metadata.count}\n")
+
+        # Print server details
+        for idx, server_response in enumerate(result.servers, 1):
+            server = server_response.server
+            print(f"{idx}. {server.name}")
+            print(f"   Title: {server.title or 'N/A'}")
+            print(f"   Description: {server.description[:100]}...")
+            print(f"   Version: {server.version}")
+            print(f"   Website: {server.websiteUrl or 'N/A'}")
+
+            if server.repository:
+                print(f"   Repository: {server.repository.url}")
+
+            if server.packages:
+                print(f"   Packages: {len(server.packages)} package(s)")
+            print()
+
+        return 0
+
+    except Exception as e:
+        logger.error(f"Failed to list servers: {e}")
+        return 1
+
+
+def cmd_anthropic_list_versions(args: argparse.Namespace) -> int:
+    """
+    List versions for a specific server using Anthropic Registry API v0.1.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        result: AnthropicServerList = client.anthropic_list_server_versions(
+            server_name=args.server_name
+        )
+
+        # Print raw JSON if requested
+        if args.raw:
+            print(json.dumps(result.model_dump(), indent=2, default=str))
+            return 0
+
+        logger.info(f"Found {len(result.servers)} version(s) for {args.server_name}\n")
+
+        for idx, server_response in enumerate(result.servers, 1):
+            server = server_response.server
+            print(f"{idx}. Version {server.version}")
+            print(f"   Name: {server.name}")
+            print(f"   Description: {server.description[:100]}...")
+            print()
+
+        return 0
+
+    except Exception as e:
+        logger.error(f"Failed to list server versions: {e}")
+        return 1
+
+
+def cmd_anthropic_get_server(args: argparse.Namespace) -> int:
+    """
+    Get detailed information about a specific server version using Anthropic Registry API v0.1.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        result: AnthropicServerResponse = client.anthropic_get_server_version(
+            server_name=args.server_name,
+            version=args.version,
+        )
+
+        # Print raw JSON if requested
+        if args.raw:
+            print(json.dumps(result.model_dump(), indent=2, default=str))
+            return 0
+
+        server = result.server
+
+        print(f"\nServer: {server.name}")
+        print(f"Title: {server.title or 'N/A'}")
+        print(f"Version: {server.version}")
+        print(f"Description: {server.description}")
+        print(f"Website: {server.websiteUrl or 'N/A'}")
+
+        if server.repository:
+            print("\nRepository:")
+            print(f"  URL: {server.repository.url}")
+            print(f"  Source: {server.repository.source}")
+            if server.repository.id:
+                print(f"  ID: {server.repository.id}")
+            if server.repository.subfolder:
+                print(f"  Subfolder: {server.repository.subfolder}")
+
+        if server.packages:
+            print(f"\nPackages ({len(server.packages)}):")
+            for idx, package in enumerate(server.packages, 1):
+                print(f"  {idx}. {package.registryType}: {package.identifier}")
+                print(f"     Version: {package.version}")
+                if package.runtimeHint:
+                    print(f"     Runtime: {package.runtimeHint}")
+
+        if server.meta:
+            print("\nMetadata:")
+            print(json.dumps(server.meta, indent=2))
+
+        if result.meta:
+            print("\nRegistry Metadata:")
+            print(json.dumps(result.meta, indent=2))
+
+        return 0
+
+    except Exception as e:
+        logger.error(f"Failed to get server version: {e}")
+        return 1
+
+
+# User Management Command Handlers (Management API)
+
+
+def cmd_user_list(args: argparse.Namespace) -> int:
+    """
+    List Keycloak users.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        response = client.list_users(
+            search=args.search if hasattr(args, "search") and args.search else None,
+            limit=args.limit if hasattr(args, "limit") else 500,
+        )
+
+        if not response.users:
+            logger.info("No users found")
+            return 0
+
+        logger.info(f"Found {response.total} users\n")
+
+        for user in response.users:
+            enabled_icon = "✓" if user.enabled else "✗"
+            print(f"{enabled_icon} {user.username} (ID: {user.id})")
+            print(f"  Email: {user.email or 'N/A'}")
+            if user.firstName or user.lastName:
+                name = f"{user.firstName or ''} {user.lastName or ''}".strip()
+                print(f"  Name: {name}")
+            print(f"  Groups: {', '.join(user.groups) if user.groups else 'None'}")
+            print(f"  Enabled: {user.enabled}")
+            print()
+
+        return 0
+
+    except Exception as e:
+        logger.error(f"List users failed: {e}")
+        return 1
+
+
+def cmd_user_create_m2m(args: argparse.Namespace) -> int:
+    """
+    Create M2M service account.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        groups = [g.strip() for g in args.groups.split(",")]
+        client = _create_client(args)
+        result = client.create_m2m_account(
+            name=args.name,
+            groups=groups,
+            description=args.description
+            if hasattr(args, "description") and args.description
+            else None,
+        )
+
+        logger.info("M2M account created successfully\n")
+        print(f"Client ID: {result.client_id}")
+        print(f"Groups: {', '.join(result.groups)}")
+        if result.service_principal_id:
+            print(f"Service Principal ID: {result.service_principal_id}")
+
+        # The client secret is shown only once and cannot be retrieved later.
+        # Write it to an owner-only (0600) file created atomically so it is not
+        # emitted to stdout/logs (which land in CI, shell history, CloudWatch).
+        secret_file = Path(f".m2m_client_secret_{result.client_id}.txt")
+        fd = os.open(str(secret_file), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(f"CLIENT_ID={result.client_id}\n")
+            f.write(f"CLIENT_SECRET={result.client_secret}\n")
+        os.chmod(secret_file, 0o600)  # enforce 0600 even if the file pre-existed
+
+        print()
+        print(f"Client secret written to: {secret_file}")
+        print("IMPORTANT: Save the client secret securely and delete this file after use.")
+        print("It cannot be retrieved later.")
+
+        return 0
+
+    except Exception as e:
+        logger.error(f"Create M2M account failed: {e}")
+        return 1
+
+
+def cmd_user_create_human(args: argparse.Namespace) -> int:
+    """
+    Create human user account.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        groups = [g.strip() for g in args.groups.split(",")]
+        client = _create_client(args)
+        result = client.create_human_user(
+            username=args.username,
+            email=args.email,
+            first_name=args.first_name,
+            last_name=args.last_name,
+            groups=groups,
+            password=args.password if hasattr(args, "password") and args.password else None,
+        )
+
+        logger.info("User created successfully\n")
+        print(f"Username: {result.username}")
+        print(f"User ID: {result.id}")
+        print(f"Email: {result.email or 'N/A'}")
+        if result.firstName or result.lastName:
+            name = f"{result.firstName or ''} {result.lastName or ''}".strip()
+            print(f"Name: {name}")
+        print(f"Groups: {', '.join(result.groups)}")
+        print(f"Enabled: {result.enabled}")
+
+        return 0
+
+    except Exception as e:
+        logger.error(f"Create user failed: {e}")
+        return 1
+
+
+def cmd_user_delete(args: argparse.Namespace) -> int:
+    """
+    Delete a user.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        if not args.force:
+            confirmation = input(f"Delete user '{args.username}'? (yes/no): ")
+            if confirmation.lower() != "yes":
+                logger.info("Operation cancelled")
+                return 0
+
+        client = _create_client(args)
+        result = client.delete_user(args.username)
+
+        logger.info(f"User '{result.username}' deleted successfully")
+        return 0
+
+    except Exception as e:
+        logger.error(f"Delete user failed: {e}")
+        return 1
+
+
+def _print_m2m_client(client: Any) -> None:
+    """Print an IdPM2MClient record in a readable format."""
+    print(f"Client ID:    {client.client_id}")
+    print(f"Name:         {client.name}")
+    print(f"Provider:     {client.provider}")
+    print(f"Enabled:      {client.enabled}")
+    print(f"Groups:       {', '.join(client.groups) if client.groups else '(none)'}")
+    print(f"Description:  {client.description or '(none)'}")
+    print(f"Created by:   {client.created_by or '(not set)'}")
+    print(f"Created at:   {client.created_at}")
+    print(f"Updated at:   {client.updated_at}")
+
+
+def cmd_m2m_client_create(args: argparse.Namespace) -> int:
+    """Register an M2M client directly (admin only).
+
+    Args:
+        args: Command arguments.
+
+    Returns:
+        Exit code (0 for success, 1 for failure).
+    """
+    try:
+        groups = [g.strip() for g in args.groups.split(",") if g.strip()] if args.groups else []
+        client = _create_client(args)
+        result = client.create_m2m_client(
+            client_id=args.client_id,
+            client_name=args.client_name,
+            groups=groups,
+            description=args.description,
+        )
+        logger.info("M2M client registered successfully\n")
+        _print_m2m_client(result)
+        return 0
+    except Exception as e:
+        logger.error(f"Register M2M client failed: {e}")
+        return 1
+
+
+def cmd_m2m_client_list(args: argparse.Namespace) -> int:
+    """List M2M clients with pagination.
+
+    Args:
+        args: Command arguments.
+
+    Returns:
+        Exit code (0 for success, 1 for failure).
+    """
+    try:
+        client = _create_client(args)
+        result = client.list_m2m_clients(
+            provider=args.provider,
+            limit=args.limit,
+            skip=args.skip,
+        )
+
+        if args.json:
+            print(result.model_dump_json(indent=2))
+            return 0
+
+        print(
+            f"Total: {result.total}  (showing {len(result.items)} at skip={result.skip}, limit={result.limit})\n"
+        )
+        for item in result.items:
+            _print_m2m_client(item)
+            print("-" * 60)
+        return 0
+    except Exception as e:
+        logger.error(f"List M2M clients failed: {e}")
+        return 1
+
+
+def cmd_m2m_client_get(args: argparse.Namespace) -> int:
+    """Get a single M2M client by client_id.
+
+    Args:
+        args: Command arguments.
+
+    Returns:
+        Exit code (0 for success, 1 for failure).
+    """
+    try:
+        client = _create_client(args)
+        result = client.get_m2m_client(args.client_id)
+
+        if args.json:
+            print(result.model_dump_json(indent=2))
+            return 0
+
+        _print_m2m_client(result)
+        return 0
+    except Exception as e:
+        logger.error(f"Get M2M client failed: {e}")
+        return 1
+
+
+def cmd_m2m_client_update(args: argparse.Namespace) -> int:
+    """Partially update an M2M client (admin only).
+
+    Args:
+        args: Command arguments.
+
+    Returns:
+        Exit code (0 for success, 1 for failure).
+    """
+    try:
+        # groups is optional; empty-string input means "clear groups".
+        groups: list[str] | None = None
+        if args.groups is not None:
+            groups = [g.strip() for g in args.groups.split(",") if g.strip()]
+
+        enabled: bool | None = None
+        if args.enabled is not None:
+            enabled = args.enabled.lower() == "true"
+
+        client = _create_client(args)
+        result = client.patch_m2m_client(
+            client_id=args.client_id,
+            client_name=args.client_name,
+            groups=groups,
+            description=args.description,
+            enabled=enabled,
+        )
+        logger.info("M2M client updated successfully\n")
+        _print_m2m_client(result)
+        return 0
+    except Exception as e:
+        logger.error(f"Update M2M client failed: {e}")
+        return 1
+
+
+def cmd_m2m_client_delete(args: argparse.Namespace) -> int:
+    """Delete a manual M2M client (admin only).
+
+    Args:
+        args: Command arguments.
+
+    Returns:
+        Exit code (0 for success, 1 for failure).
+    """
+    try:
+        if not args.force:
+            confirmation = input(f"Delete M2M client '{args.client_id}'? (yes/no): ")
+            if confirmation.lower() != "yes":
+                logger.info("Operation cancelled")
+                return 0
+
+        client = _create_client(args)
+        client.delete_m2m_client(args.client_id)
+        logger.info(f"M2M client '{args.client_id}' deleted successfully")
+        return 0
+    except Exception as e:
+        logger.error(f"Delete M2M client failed: {e}")
+        return 1
+
+
+def _print_user_group(record: Any) -> None:
+    """Print one user-group record."""
+    print(f"Username: {record.username}")
+    print(f"Groups: {', '.join(record.groups) if record.groups else 'None'}")
+    print(f"Email: {record.email or '-'}")
+    print(f"Provider: {record.provider}")
+    print(f"Enabled: {record.enabled}")
+    if record.created_at:
+        print(f"Created: {record.created_at}")
+    if record.updated_at:
+        print(f"Updated: {record.updated_at}")
+
+
+def cmd_user_group_create(args: argparse.Namespace) -> int:
+    """Register a new user-to-groups mapping in idp_user_groups (admin only).
+
+    Args:
+        args: Command arguments.
+
+    Returns:
+        Exit code (0 for success, 1 for failure).
+    """
+    try:
+        groups = [g.strip() for g in args.groups.split(",") if g.strip()] if args.groups else []
+        client = _create_client(args)
+        result = client.register_user_group(
+            username=args.username,
+            groups=groups,
+            email=args.email,
+            provider=args.provider,
+            enabled=not args.disabled,
+        )
+        logger.info("User-group registered successfully\n")
+        if args.json:
+            print(result.model_dump_json(indent=2))
+            return 0
+        _print_user_group(result)
+        return 0
+    except Exception as e:
+        logger.error(f"Register user-group failed: {e}")
+        return 1
+
+
+def cmd_user_group_list(args: argparse.Namespace) -> int:
+    """List user-group records (paginated).
+
+    Args:
+        args: Command arguments.
+
+    Returns:
+        Exit code (0 for success, 1 for failure).
+    """
+    try:
+        client = _create_client(args)
+        result = client.list_user_groups(
+            skip=args.skip,
+            limit=args.limit,
+            provider=args.provider,
+            q=args.q,
+        )
+
+        if args.json:
+            print(result.model_dump_json(indent=2))
+            return 0
+
+        print(f"Total: {result.total}\n")
+        for item in result.items:
+            _print_user_group(item)
+            print("---")
+        return 0
+    except Exception as e:
+        logger.error(f"List user-groups failed: {e}")
+        return 1
+
+
+def cmd_user_group_get(args: argparse.Namespace) -> int:
+    """Get a single user-group record by username.
+
+    Args:
+        args: Command arguments.
+
+    Returns:
+        Exit code (0 for success, 1 for failure).
+    """
+    try:
+        client = _create_client(args)
+        result = client.get_user_group(args.username)
+
+        if args.json:
+            print(result.model_dump_json(indent=2))
+            return 0
+
+        _print_user_group(result)
+        return 0
+    except Exception as e:
+        logger.error(f"Get user-group failed: {e}")
+        return 1
+
+
+def cmd_user_group_update(args: argparse.Namespace) -> int:
+    """Update fields on an existing user-group record (admin only).
+
+    Args:
+        args: Command arguments.
+
+    Returns:
+        Exit code (0 for success, 1 for failure).
+    """
+    try:
+        # Only forward fields the user actually set on the command line.
+        groups: list[str] | None = None
+        if args.groups is not None:
+            groups = [g.strip() for g in args.groups.split(",") if g.strip()]
+
+        enabled: bool | None = None
+        if args.enabled:
+            enabled = True
+        elif args.disabled:
+            enabled = False
+
+        client = _create_client(args)
+        result = client.patch_user_group(
+            username=args.username,
+            groups=groups,
+            email=args.email,
+            enabled=enabled,
+        )
+        logger.info("User-group updated successfully\n")
+        if args.json:
+            print(result.model_dump_json(indent=2))
+            return 0
+        _print_user_group(result)
+        return 0
+    except Exception as e:
+        logger.error(f"Update user-group failed: {e}")
+        return 1
+
+
+def cmd_user_group_delete(args: argparse.Namespace) -> int:
+    """Delete a user-group record by username (admin only).
+
+    Args:
+        args: Command arguments.
+
+    Returns:
+        Exit code (0 for success, 1 for failure).
+    """
+    try:
+        if not args.force:
+            confirmation = input(f"Delete user-group '{args.username}'? (yes/no): ")
+            if confirmation.lower() != "yes":
+                logger.info("Operation cancelled")
+                return 0
+
+        client = _create_client(args)
+        client.delete_user_group(args.username)
+        print(f"Deleted: {args.username}")
+        return 0
+    except Exception as e:
+        logger.error(f"Delete user-group failed: {e}")
+        return 1
+
+
+def cmd_pingfederate_user_create(args: argparse.Namespace) -> int:
+    """Create or update a user inside PingFederate's Simple PCV (admin only).
+
+    Requires AUTH_PROVIDER=pingfederate server-side. The password is collected
+    via interactive prompt (so it never appears in shell history) unless
+    --password-stdin is passed in which case one line is read from stdin.
+    The registry never stores the password.
+
+    Args:
+        args: Command arguments.
+
+    Returns:
+        Exit code (0 for success, 1 for failure).
+    """
+    try:
+        if args.password_stdin:
+            password = sys.stdin.readline().rstrip("\n")
+        else:
+            password = getpass.getpass(f"Password for PingFederate user '{args.username}': ")
+
+        if not password:
+            logger.error("Empty password is not allowed")
+            return 1
+
+        client = _create_client(args)
+        result = client.create_pingfederate_user(args.username, password)
+
+        outcome = result.created_or_updated.capitalize()
+        print(f"{outcome} user in PingFederate: {result.username}")
+        return 0
+    except Exception as e:
+        logger.error(f"Create PingFederate user failed: {e}")
+        return 1
+
+
+def cmd_group_create(args: argparse.Namespace) -> int:
+    """
+    Create a new IAM group.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        result = client.create_keycloak_group(
+            name=args.name,
+            description=args.description,
+            create_in_idp=getattr(args, "idp", False),
+        )
+
+        logger.info(f"IAM group created successfully: {result.name}")
+        print(f"\nGroup: {result.name}")
+        print(f"  ID: {result.id}")
+        print(f"  Path: {result.path}")
+        if result.attributes:
+            print(f"  Attributes: {json.dumps(result.attributes, indent=4)}")
+
+        return 0
+
+    except Exception as e:
+        logger.error(f"Create IAM group failed: {e}")
+        return 1
+
+
+def cmd_group_delete(args: argparse.Namespace) -> int:
+    """
+    Delete an IAM group.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        if not args.force:
+            confirmation = input(f"Delete IAM group '{args.name}'? (yes/no): ")
+            if confirmation.lower() != "yes":
+                logger.info("Operation cancelled")
+                return 0
+
+        client = _create_client(args)
+        result = client.delete_keycloak_group(name=args.name)
+
+        logger.info(f"IAM group deleted successfully: {result.name}")
+        return 0
+
+    except Exception as e:
+        logger.error(f"Delete IAM group failed: {e}")
+        return 1
+
+
+def cmd_group_list(args: argparse.Namespace) -> int:
+    """
+    List IAM groups.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        response = client.list_keycloak_iam_groups()
+
+        if not response.groups:
+            logger.info("No IAM groups found")
+            return 0
+
+        logger.info(f"Found {response.total} IAM groups:\n")
+
+        for group in response.groups:
+            print(f"Group: {group['name']}")
+            print(f"  ID: {group['id']}")
+            print(f"  Path: {group['path']}")
+            if group.get("attributes"):
+                print(f"  Attributes: {json.dumps(group['attributes'], indent=4)}")
+            print()
+
+        return 0
+
+    except Exception as e:
+        logger.error(f"List IAM groups failed: {e}")
+        return 1
+
+
+def cmd_federation_get(args: argparse.Namespace) -> int:
+    """
+    Get federation configuration.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        config = client.get_federation_config(config_id=args.config_id)
+
+        print(json.dumps(config, indent=2, default=str))
+        return 0
+
+    except Exception as e:
+        logger.error(f"Get federation config failed: {e}")
+        return 1
+
+
+def cmd_federation_save(args: argparse.Namespace) -> int:
+    """
+    Save federation configuration from JSON file.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+
+        # Load config from file
+        with open(args.config) as f:
+            config_data = json.load(f)
+
+        response = client.save_federation_config(config=config_data, config_id=args.config_id)
+
+        logger.info(f"Federation config saved successfully: {args.config_id}")
+        print(json.dumps(response, indent=2, default=str))
+        return 0
+
+    except FileNotFoundError:
+        logger.error(f"Config file not found: {args.config}")
+        return 1
+    except Exception as e:
+        logger.error(f"Save federation config failed: {e}")
+        return 1
+
+
+def cmd_federation_delete(args: argparse.Namespace) -> int:
+    """
+    Delete federation configuration.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+
+        if not args.force:
+            confirm = input(f"Delete federation config '{args.config_id}'? (y/N): ")
+            if confirm.lower() != "y":
+                logger.info("Cancelled")
+                return 0
+
+        response = client.delete_federation_config(config_id=args.config_id)
+
+        logger.info(f"Federation config deleted: {args.config_id}")
+        print(json.dumps(response, indent=2, default=str))
+        return 0
+
+    except Exception as e:
+        logger.error(f"Delete federation config failed: {e}")
+        return 1
+
+
+def cmd_federation_list(args: argparse.Namespace) -> int:
+    """
+    List all federation configurations.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        response = client.list_federation_configs()
+
+        if args.json:
+            # Output raw JSON
+            print(json.dumps(response, indent=2, default=str))
+            return 0
+
+        if not response.get("configs"):
+            logger.info("No federation configs found")
+            return 0
+
+        logger.info(f"Found {response.get('total', 0)} federation configs:\n")
+
+        for config in response["configs"]:
+            print(f"Config ID: {config.get('id')}")
+            print(f"  Created: {config.get('created_at')}")
+            print(f"  Updated: {config.get('updated_at')}")
+            print()
+
+        return 0
+
+    except Exception as e:
+        logger.error(f"List federation configs failed: {e}")
+        return 1
+
+
+def cmd_federation_add_anthropic_server(args: argparse.Namespace) -> int:
+    """
+    Add Anthropic server to federation config.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        response = client.add_anthropic_server(
+            server_name=args.server_name, config_id=args.config_id
+        )
+
+        logger.info(f"Anthropic server added: {args.server_name}")
+        print(json.dumps(response, indent=2, default=str))
+        return 0
+
+    except Exception as e:
+        logger.error(f"Add Anthropic server failed: {e}")
+        return 1
+
+
+def cmd_federation_remove_anthropic_server(args: argparse.Namespace) -> int:
+    """
+    Remove Anthropic server from federation config.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        response = client.remove_anthropic_server(
+            server_name=args.server_name, config_id=args.config_id
+        )
+
+        logger.info(f"Anthropic server removed: {args.server_name}")
+        print(json.dumps(response, indent=2, default=str))
+        return 0
+
+    except Exception as e:
+        logger.error(f"Remove Anthropic server failed: {e}")
+        return 1
+
+
+def cmd_federation_add_asor_agent(args: argparse.Namespace) -> int:
+    """
+    Add ASOR agent to federation config.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        response = client.add_asor_agent(agent_id=args.agent_id, config_id=args.config_id)
+
+        logger.info(f"ASOR agent added: {args.agent_id}")
+        print(json.dumps(response, indent=2, default=str))
+        return 0
+
+    except Exception as e:
+        logger.error(f"Add ASOR agent failed: {e}")
+        return 1
+
+
+def cmd_federation_remove_asor_agent(args: argparse.Namespace) -> int:
+    """
+    Remove ASOR agent from federation config.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        response = client.remove_asor_agent(agent_id=args.agent_id, config_id=args.config_id)
+
+        logger.info(f"ASOR agent removed: {args.agent_id}")
+        print(json.dumps(response, indent=2, default=str))
+        return 0
+
+    except Exception as e:
+        logger.error(f"Remove ASOR agent failed: {e}")
+        return 1
+
+
+def cmd_federation_sync(args: argparse.Namespace) -> int:
+    """
+    Trigger manual federation sync to import servers/agents.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        response = client.sync_federation(config_id=args.config_id, source=args.source)
+
+        if args.json:
+            # Output raw JSON
+            print(json.dumps(response, indent=2, default=str))
+        else:
+            # Formatted output
+            logger.info(f"Federation sync completed: {response.get('message')}")
+            print("\nSync Results:")
+            print(f"  Config ID: {response.get('config_id')}")
+            print(f"  Total Synced: {response.get('total_synced', 0)}")
+
+            results = response.get("results", {})
+            if results.get("anthropic", {}).get("count", 0) > 0:
+                print(f"\n  Anthropic Servers ({results['anthropic']['count']}):")
+                for server in results["anthropic"].get("servers", []):
+                    print(f"    - {server}")
+
+            if results.get("asor", {}).get("count", 0) > 0:
+                print(f"\n  ASOR Agents ({results['asor']['count']}):")
+                for agent in results["asor"].get("agents", []):
+                    print(f"    - {agent}")
+
+            if results.get("aws_registry", {}).get("count", 0) > 0:
+                aws_reg = results["aws_registry"]
+                print(f"\n  AWS Agent Registry ({aws_reg['count']}):")
+                if aws_reg.get("servers"):
+                    print(f"    Servers ({len(aws_reg['servers'])}):")
+                    for server in aws_reg["servers"]:
+                        print(f"      - {server}")
+                if aws_reg.get("agents"):
+                    print(f"    Agents ({len(aws_reg['agents'])}):")
+                    for agent in aws_reg["agents"]:
+                        print(f"      - {agent}")
+                if aws_reg.get("skills"):
+                    print(f"    Skills ({len(aws_reg['skills'])}):")
+                    for skill in aws_reg["skills"]:
+                        print(f"      - {skill}")
+
+        return 0
+
+    except Exception as e:
+        logger.error(f"Federation sync failed: {e}")
+        return 1
+
+
+def cmd_peer_list(args: argparse.Namespace) -> int:
+    """
+    List all configured peer registries.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+
+        enabled_filter = None
+        if hasattr(args, "enabled_only") and args.enabled_only:
+            enabled_filter = True
+
+        response = client.list_peers(enabled=enabled_filter)
+
+        if args.json:
+            masked_response = _mask_sensitive_fields(response)
+            print(json.dumps(masked_response, indent=2, default=str))
+            return 0
+
+        peers = response if isinstance(response, list) else response.get("peers", [])
+
+        if not peers:
+            logger.info("No peer registries configured")
+            return 0
+
+        logger.info(f"Found {len(peers)} peer registries:\n")
+
+        for peer in peers:
+            status = "enabled" if peer.get("enabled") else "disabled"
+            print(f"  Peer ID:   {peer.get('peer_id')}")
+            print(f"  Name:      {peer.get('name')}")
+            print(f"  Endpoint:  {peer.get('endpoint')}")
+            print(f"  Status:    {status}")
+            print(f"  Sync Mode: {peer.get('sync_mode', 'all')}")
+            print()
+
+        return 0
+
+    except Exception as e:
+        logger.error(f"List peers failed: {e}")
+        return 1
+
+
+def cmd_peer_add(args: argparse.Namespace) -> int:
+    """
+    Add a new peer registry from a JSON config file.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+
+        with open(args.config) as f:
+            config_data = json.load(f)
+
+        # Override federation_token from CLI arg if provided
+        if hasattr(args, "federation_token") and args.federation_token:
+            config_data["federation_token"] = args.federation_token
+
+        response = client.add_peer(config=config_data)
+
+        logger.info(f"Peer registry added successfully: {config_data.get('peer_id')}")
+        masked_response = _mask_sensitive_fields(response)
+        print(json.dumps(masked_response, indent=2, default=str))
+        return 0
+
+    except FileNotFoundError:
+        logger.error(f"Config file not found: {args.config}")
+        return 1
+    except Exception as e:
+        logger.error(f"Add peer failed: {e}")
+        return 1
+
+
+def cmd_peer_get(args: argparse.Namespace) -> int:
+    """
+    Get details of a specific peer registry.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        response = client.get_peer(peer_id=args.peer_id)
+
+        if args.json:
+            masked_response = _mask_sensitive_fields(response)
+            print(json.dumps(masked_response, indent=2, default=str))
+            return 0
+
+        print(f"Peer ID:      {response.get('peer_id')}")
+        print(f"Name:         {response.get('name')}")
+        print(f"Endpoint:     {response.get('endpoint')}")
+        print(f"Enabled:      {response.get('enabled')}")
+        print(f"Sync Mode:    {response.get('sync_mode', 'all')}")
+        print(f"Created:      {response.get('created_at')}")
+        print(f"Updated:      {response.get('updated_at')}")
+
+        # Mask federation token in non-JSON output
+        fed_token = response.get("federation_token")
+        if fed_token:
+            masked_token = f"{fed_token[:3]}..." if len(fed_token) > 3 else "***"
+            print(f"Fed Token:    {masked_token}")
+
+        whitelist_servers = response.get("whitelist_servers", [])
+        if whitelist_servers:
+            print(f"Whitelist:    {', '.join(whitelist_servers)}")
+
+        tag_filter = response.get("tag_filter", [])
+        if tag_filter:
+            print(f"Tag Filter:   {', '.join(tag_filter)}")
+
+        return 0
+
+    except Exception as e:
+        logger.error(f"Get peer failed: {e}")
+        return 1
+
+
+def cmd_peer_update(args: argparse.Namespace) -> int:
+    """
+    Update an existing peer registry from a JSON config file.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+
+        with open(args.config) as f:
+            config_data = json.load(f)
+
+        # Override federation_token from CLI arg if provided
+        if hasattr(args, "federation_token") and args.federation_token:
+            config_data["federation_token"] = args.federation_token
+
+        response = client.update_peer(peer_id=args.peer_id, config=config_data)
+
+        logger.info(f"Peer registry updated successfully: {args.peer_id}")
+        masked_response = _mask_sensitive_fields(response)
+        print(json.dumps(masked_response, indent=2, default=str))
+        return 0
+
+    except FileNotFoundError:
+        logger.error(f"Config file not found: {args.config}")
+        return 1
+    except Exception as e:
+        logger.error(f"Update peer failed: {e}")
+        return 1
+
+
+def cmd_peer_update_token(args: argparse.Namespace) -> int:
+    """
+    Update only the federation token for a peer registry.
+
+    This command is useful for:
+    - Recovering from token loss (issue #561)
+    - Rotating federation tokens without modifying other peer config
+    - Fixing authentication issues after peer updates
+
+    Args:
+        args: Command arguments with peer_id and federation_token
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+
+        response = client.update_peer_token(
+            peer_id=args.peer_id, federation_token=args.federation_token
+        )
+
+        logger.info(f"Federation token updated successfully for peer: {args.peer_id}")
+        print(json.dumps(response, indent=2, default=str))
+        return 0
+
+    except Exception as e:
+        logger.error(f"Update peer token failed: {e}")
+        return 1
+
+
+def cmd_peer_remove(args: argparse.Namespace) -> int:
+    """
+    Remove a peer registry.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        if not args.force:
+            confirm = input(f"Remove peer registry '{args.peer_id}'? (y/N): ")
+            if confirm.lower() != "y":
+                logger.info("Cancelled")
+                return 0
+
+        client = _create_client(args)
+        response = client.remove_peer(peer_id=args.peer_id)
+
+        logger.info(f"Peer registry removed: {args.peer_id}")
+        masked_response = _mask_sensitive_fields(response)
+        print(json.dumps(masked_response, indent=2, default=str))
+        return 0
+
+    except Exception as e:
+        logger.error(f"Remove peer failed: {e}")
+        return 1
+
+
+def cmd_peer_sync(args: argparse.Namespace) -> int:
+    """
+    Trigger sync from a specific peer registry.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        response = client.sync_peer(peer_id=args.peer_id)
+
+        if args.json:
+            print(json.dumps(response, indent=2, default=str))
+            return 0
+
+        # Check success field from SyncResult model
+        success = response.get("success", False)
+        status_text = "SUCCESS" if success else "FAILED"
+
+        print(f"\nSync Results for peer '{args.peer_id}':")
+        print(f"  Status:           {status_text}")
+        print(f"  Servers Synced:   {response.get('servers_synced', 0)}")
+        print(f"  Agents Synced:    {response.get('agents_synced', 0)}")
+        print(f"  Servers Orphaned: {response.get('servers_orphaned', 0)}")
+        print(f"  Agents Orphaned:  {response.get('agents_orphaned', 0)}")
+
+        # SyncResult has 'error_message' (singular), not 'errors' (plural)
+        error_msg = response.get("error_message")
+        if error_msg:
+            print("\n  Error:")
+            print(f"    {error_msg}")
+
+        return 0 if success else 1
+
+    except Exception as e:
+        logger.error(f"Peer sync failed: {e}")
+        return 1
+
+
+def cmd_peer_sync_all(args: argparse.Namespace) -> int:
+    """
+    Trigger sync from all enabled peer registries.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        response = client.sync_all_peers()
+
+        if args.json:
+            print(json.dumps(response, indent=2, default=str))
+            return 0
+
+        results = response if isinstance(response, list) else response.get("results", [])
+        print("\nSync All Peers Results:")
+        print(f"  Total peers synced: {len(results)}")
+
+        for result in results:
+            peer_id = result.get("peer_id", "unknown")
+            status = result.get("status", "unknown")
+            print(f"\n  {peer_id}: {status}")
+            print(f"    Servers: {result.get('servers_synced', 0)}")
+            print(f"    Agents:  {result.get('agents_synced', 0)}")
+
+        return 0
+
+    except Exception as e:
+        logger.error(f"Sync all peers failed: {e}")
+        return 1
+
+
+def cmd_peer_status(args: argparse.Namespace) -> int:
+    """
+    Get sync status for a specific peer registry.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        response = client.get_peer_status(peer_id=args.peer_id)
+
+        if args.json:
+            print(json.dumps(response, indent=2, default=str))
+            return 0
+
+        print(f"\nSync Status for peer '{args.peer_id}':")
+
+        # Determine last sync status from history or health
+        history = response.get("sync_history", [])
+        if history:
+            last_entry = history[0]
+            last_status = "success" if last_entry.get("success") else "failed"
+            last_time = last_entry.get("completed_at") or last_entry.get("started_at")
+        else:
+            last_status = "never"
+            last_time = response.get("last_successful_sync") or response.get("last_sync_attempt")
+
+        print(f"  Last Sync Status:  {last_status}")
+        print(f"  Last Sync Time:    {last_time or 'never'}")
+        print(f"  Last Generation:   {response.get('current_generation', 0)}")
+        print(f"  Servers Synced:    {response.get('total_servers_synced', 0)}")
+        print(f"  Agents Synced:     {response.get('total_agents_synced', 0)}")
+        print(f"  Is Healthy:        {response.get('is_healthy', False)}")
+
+        if history:
+            print(f"\n  Recent Sync History ({len(history)} entries):")
+            for entry in history[:5]:
+                entry_status = "success" if entry.get("success") else "failed"
+                entry_time = entry.get("completed_at") or entry.get("started_at")
+                print(f"    {entry_time} - {entry_status}")
+                print(
+                    f"      Servers: {entry.get('servers_synced', 0)}, "
+                    f"Agents: {entry.get('agents_synced', 0)}"
+                )
+
+        return 0
+
+    except Exception as e:
+        logger.error(f"Get peer status failed: {e}")
+        return 1
+
+
+def cmd_peer_enable(args: argparse.Namespace) -> int:
+    """
+    Enable a peer registry.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        response = client.enable_peer(peer_id=args.peer_id)
+
+        logger.info(f"Peer registry enabled: {args.peer_id}")
+        masked_response = _mask_sensitive_fields(response)
+        print(json.dumps(masked_response, indent=2, default=str))
+        return 0
+
+    except Exception as e:
+        logger.error(f"Enable peer failed: {e}")
+        return 1
+
+
+def cmd_peer_disable(args: argparse.Namespace) -> int:
+    """
+    Disable a peer registry.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        response = client.disable_peer(peer_id=args.peer_id)
+
+        logger.info(f"Peer registry disabled: {args.peer_id}")
+        masked_response = _mask_sensitive_fields(response)
+        print(json.dumps(masked_response, indent=2, default=str))
+        return 0
+
+    except Exception as e:
+        logger.error(f"Disable peer failed: {e}")
+        return 1
+
+
+def cmd_peer_connections(args: argparse.Namespace) -> int:
+    """
+    Get all federation connections across all peers.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        response = client.get_peer_connections()
+
+        if args.json:
+            print(json.dumps(response, indent=2, default=str))
+            return 0
+
+        connections = response if isinstance(response, list) else response.get("connections", [])
+
+        if not connections:
+            logger.info("No federation connections found")
+            return 0
+
+        logger.info(f"Found {len(connections)} federation connections:\n")
+        for conn in connections:
+            print(f"  Peer: {conn.get('peer_id')}")
+            print(f"  Direction: {conn.get('direction', 'unknown')}")
+            print(f"  Status: {conn.get('status', 'unknown')}")
+            print()
+
+        return 0
+
+    except Exception as e:
+        logger.error(f"Get peer connections failed: {e}")
+        return 1
+
+
+def cmd_peer_shared_resources(args: argparse.Namespace) -> int:
+    """
+    Get resource sharing summary across all peers.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        response = client.get_shared_resources()
+
+        if args.json:
+            print(json.dumps(response, indent=2, default=str))
+            return 0
+
+        print("\nShared Resources Summary:")
+        print(json.dumps(response, indent=2, default=str))
+        return 0
+
+    except Exception as e:
+        logger.error(f"Get shared resources failed: {e}")
+        return 1
+
+
+# ==========================================
+# Virtual MCP Server Command Handlers
+# ==========================================
+
+
+def cmd_vs_create(args: argparse.Namespace) -> int:
+    """
+    Create a virtual MCP server from JSON config.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+
+        # Load config from file
+        with open(args.config) as f:
+            config_data = json.load(f)
+
+        # Build tool mappings
+        tool_mappings = []
+        for mapping in config_data.get("tool_mappings", []):
+            tool_mappings.append(
+                ToolMapping(
+                    tool_name=mapping["tool_name"],
+                    alias=mapping.get("alias"),
+                    backend_server_path=mapping["backend_server_path"],
+                    backend_version=mapping.get("backend_version"),
+                    description_override=mapping.get("description_override"),
+                )
+            )
+
+        # Build tool scope overrides
+        tool_scope_overrides = []
+        for override in config_data.get("tool_scope_overrides", []):
+            tool_scope_overrides.append(
+                ToolScopeOverride(
+                    tool_alias=override["tool_alias"],
+                    required_scopes=override.get("required_scopes", []),
+                )
+            )
+
+        request = VirtualServerCreateRequest(
+            path=config_data["path"],
+            server_name=config_data["server_name"],
+            description=config_data.get("description"),
+            tool_mappings=tool_mappings,
+            required_scopes=config_data.get("required_scopes", []),
+            tool_scope_overrides=tool_scope_overrides,
+            tags=config_data.get("tags", []),
+            supported_transports=config_data.get("supported_transports", ["streamable-http"]),
+            is_enabled=config_data.get("is_enabled", True),
+        )
+
+        result = client.create_virtual_server(request)
+
+        logger.info(f"Virtual server created: {result.path}")
+        print(
+            json.dumps(
+                {
+                    "message": "Virtual server created successfully",
+                    "virtual_server": {
+                        "path": result.path,
+                        "server_name": result.server_name,
+                        "description": result.description,
+                        "is_enabled": result.is_enabled,
+                        "tool_count": len(result.tool_mappings),
+                    },
+                },
+                indent=2,
+            )
+        )
+        return 0
+
+    except FileNotFoundError:
+        logger.error(f"Config file not found: {args.config}")
+        return 1
+    except KeyError as e:
+        logger.error(f"Missing required field in config: {e}")
+        return 1
+    except Exception as e:
+        logger.error(f"Create virtual server failed: {e}")
+        return 1
+
+
+def cmd_vs_list(args: argparse.Namespace) -> int:
+    """
+    List virtual MCP servers.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        response = client.list_virtual_servers(
+            enabled_only=args.enabled_only if hasattr(args, "enabled_only") else False,
+            tag=args.tag if hasattr(args, "tag") else None,
+        )
+
+        if args.json:
+            print(json.dumps(response.model_dump(), indent=2, default=str))
+            return 0
+
+        print(f"\nVirtual MCP Servers ({response.total} total):")
+        print("-" * 80)
+
+        for vs in response.virtual_servers:
+            status = "enabled" if vs.is_enabled else "disabled"
+            tool_count = len(vs.tool_mappings)
+            print(f"  {vs.path}")
+            print(f"    Name: {vs.server_name}")
+            print(f"    Status: {status}")
+            print(f"    Tools: {tool_count}")
+            if vs.description:
+                print(f"    Description: {vs.description[:60]}...")
+            if vs.tags:
+                print(f"    Tags: {', '.join(vs.tags)}")
+            print()
+
+        return 0
+
+    except Exception as e:
+        logger.error(f"List virtual servers failed: {e}")
+        return 1
+
+
+def cmd_vs_get(args: argparse.Namespace) -> int:
+    """
+    Get virtual MCP server details.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        result = client.get_virtual_server(args.path)
+
+        if args.json:
+            print(json.dumps(result.model_dump(), indent=2, default=str))
+            return 0
+
+        print(f"\nVirtual MCP Server: {result.path}")
+        print("-" * 60)
+        print(f"  Name: {result.server_name}")
+        print(f"  Status: {'enabled' if result.is_enabled else 'disabled'}")
+        print(f"  Description: {result.description or 'N/A'}")
+        print(f"  Rating: {result.num_stars} stars")
+        print(f"  Tags: {', '.join(result.tags) if result.tags else 'None'}")
+        print(f"  Transports: {', '.join(result.supported_transports)}")
+        print(
+            f"  Required Scopes: {', '.join(result.required_scopes) if result.required_scopes else 'None'}"
+        )
+
+        print(f"\n  Tool Mappings ({len(result.tool_mappings)}):")
+        for mapping in result.tool_mappings:
+            alias_info = f" -> {mapping.alias}" if mapping.alias else ""
+            version_info = f" @{mapping.backend_version}" if mapping.backend_version else ""
+            print(f"    - {mapping.tool_name}{alias_info}")
+            print(f"      Backend: {mapping.backend_server_path}{version_info}")
+
+        if result.tool_scope_overrides:
+            print("\n  Tool Scope Overrides:")
+            for override in result.tool_scope_overrides:
+                print(f"    - {override.tool_alias}: {', '.join(override.required_scopes)}")
+
+        print(f"\n  Created: {result.created_at or 'N/A'}")
+        print(f"  Updated: {result.updated_at or 'N/A'}")
+        print(f"  Created By: {result.created_by or 'N/A'}")
+
+        return 0
+
+    except Exception as e:
+        logger.error(f"Get virtual server failed: {e}")
+        return 1
+
+
+def cmd_vs_update(args: argparse.Namespace) -> int:
+    """
+    Update a virtual MCP server from JSON config.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+
+        # Load config from file
+        with open(args.config) as f:
+            config_data = json.load(f)
+
+        # Build tool mappings
+        tool_mappings = []
+        for mapping in config_data.get("tool_mappings", []):
+            tool_mappings.append(
+                ToolMapping(
+                    tool_name=mapping["tool_name"],
+                    alias=mapping.get("alias"),
+                    backend_server_path=mapping["backend_server_path"],
+                    backend_version=mapping.get("backend_version"),
+                    description_override=mapping.get("description_override"),
+                )
+            )
+
+        # Build tool scope overrides
+        tool_scope_overrides = []
+        for override in config_data.get("tool_scope_overrides", []):
+            tool_scope_overrides.append(
+                ToolScopeOverride(
+                    tool_alias=override["tool_alias"],
+                    required_scopes=override.get("required_scopes", []),
+                )
+            )
+
+        request = VirtualServerCreateRequest(
+            path=config_data["path"],
+            server_name=config_data["server_name"],
+            description=config_data.get("description"),
+            tool_mappings=tool_mappings,
+            required_scopes=config_data.get("required_scopes", []),
+            tool_scope_overrides=tool_scope_overrides,
+            tags=config_data.get("tags", []),
+            supported_transports=config_data.get("supported_transports", ["streamable-http"]),
+            is_enabled=config_data.get("is_enabled", True),
+        )
+
+        result = client.update_virtual_server(args.path, request)
+
+        logger.info(f"Virtual server updated: {result.path}")
+        print(
+            json.dumps(
+                {
+                    "message": "Virtual server updated successfully",
+                    "virtual_server": {
+                        "path": result.path,
+                        "server_name": result.server_name,
+                        "is_enabled": result.is_enabled,
+                    },
+                },
+                indent=2,
+            )
+        )
+        return 0
+
+    except FileNotFoundError:
+        logger.error(f"Config file not found: {args.config}")
+        return 1
+    except Exception as e:
+        logger.error(f"Update virtual server failed: {e}")
+        return 1
+
+
+def cmd_vs_delete(args: argparse.Namespace) -> int:
+    """
+    Delete a virtual MCP server.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        if not args.force:
+            confirm = input(f"Delete virtual server '{args.path}'? [y/N]: ")
+            if confirm.lower() != "y":
+                print("Cancelled")
+                return 0
+
+        client = _create_client(args)
+        result = client.delete_virtual_server(args.path)
+
+        logger.info(f"Virtual server deleted: {args.path}")
+        print(
+            json.dumps(
+                {
+                    "message": result.message,
+                    "path": result.path,
+                },
+                indent=2,
+            )
+        )
+        return 0
+
+    except Exception as e:
+        logger.error(f"Delete virtual server failed: {e}")
+        return 1
+
+
+def cmd_vs_toggle(args: argparse.Namespace) -> int:
+    """
+    Enable or disable a virtual MCP server.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        enable = args.enabled.lower() == "true"
+        result = client.toggle_virtual_server(args.path, enable)
+
+        action = "enabled" if result.is_enabled else "disabled"
+        logger.info(f"Virtual server {action}: {args.path}")
+        print(
+            json.dumps(
+                {
+                    "message": result.message,
+                    "path": result.path,
+                    "is_enabled": result.is_enabled,
+                },
+                indent=2,
+            )
+        )
+        return 0
+
+    except Exception as e:
+        logger.error(f"Toggle virtual server failed: {e}")
+        return 1
+
+
+def cmd_vs_rate(args: argparse.Namespace) -> int:
+    """
+    Rate a virtual MCP server.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        if not 1 <= args.rating <= 5:
+            logger.error("Rating must be between 1 and 5")
+            return 1
+
+        client = _create_client(args)
+        result = client.rate_virtual_server(args.path, args.rating)
+
+        logger.info(f"Virtual server rated: {args.path}")
+        print(json.dumps(result, indent=2, default=str))
+        return 0
+
+    except Exception as e:
+        logger.error(f"Rate virtual server failed: {e}")
+        return 1
+
+
+def cmd_vs_rating(args: argparse.Namespace) -> int:
+    """
+    Get rating information for a virtual MCP server.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        result = client.get_virtual_server_rating(args.path)
+
+        print(json.dumps(result, indent=2, default=str))
+        return 0
+
+    except Exception as e:
+        logger.error(f"Get virtual server rating failed: {e}")
+        return 1
+
+
+def cmd_registry_card_get(args: argparse.Namespace) -> int:
+    """
+    Get the registry card.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        card = client.get_registry_card()
+        print(json.dumps(card.model_dump(), indent=2))
+        return 0
+
+    except Exception as e:
+        logger.error(f"Get registry card failed: {e}")
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+
+def cmd_registry_card_discover(args: argparse.Namespace) -> int:
+    """
+    Discover registry card via .well-known endpoint.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        card = client.get_well_known_registry_card()
+        print(json.dumps(card.model_dump(), indent=2))
+        return 0
+
+    except Exception as e:
+        logger.error(f"Registry card discovery failed: {e}")
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+
+def cmd_registry_card_update(args: argparse.Namespace) -> int:
+    """
+    Update the registry card.
+
+    Args:
+        args: Command arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+
+        updates = {}
+        if args.name:
+            updates["name"] = args.name
+        if args.description:
+            updates["description"] = args.description
+        if args.contact_email:
+            updates["contact"] = updates.get("contact", {})
+            updates["contact"]["email"] = args.contact_email
+        if args.contact_url:
+            updates["contact"] = updates.get("contact", {})
+            updates["contact"]["url"] = args.contact_url
+
+        result = client.patch_registry_card(updates)
+        print(f"Success: {result['message']}")
+        print(json.dumps(result["registry_card"], indent=2))
+        return 0
+
+    except Exception as e:
+        logger.error(f"Update registry card failed: {e}")
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+
+def cmd_telemetry_heartbeat(args: argparse.Namespace) -> int:
+    """Force an immediate heartbeat telemetry event.
+
+    Args:
+        args: Parsed command line arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        result = client.force_heartbeat()
+
+        print(json.dumps(result, indent=2))
+
+        if result.get("status") == "sent":
+            logger.info("Heartbeat sent successfully")
+            return 0
+        else:
+            logger.warning(f"Heartbeat status: {result.get('status')}")
+            return 1
+
+    except Exception as e:
+        logger.error(f"Force heartbeat failed: {e}")
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+
+def cmd_telemetry_startup(args: argparse.Namespace) -> int:
+    """Force an immediate startup telemetry event.
+
+    Args:
+        args: Parsed command line arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+        result = client.force_startup_ping()
+
+        print(json.dumps(result, indent=2))
+
+        if result.get("status") == "sent":
+            logger.info("Startup ping sent successfully")
+            return 0
+        else:
+            logger.warning(f"Startup ping status: {result.get('status')}")
+            return 1
+
+    except Exception as e:
+        logger.error(f"Force startup ping failed: {e}")
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+
+def cmd_logs(args: argparse.Namespace) -> int:
+    """Query application logs (admin only).
+
+    Args:
+        args: Parsed command line arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+
+        if getattr(args, "metadata", False):
+            metadata = client.get_log_metadata()
+            print(json.dumps(metadata.model_dump(), indent=2))
+            return 0
+
+        result = client.get_logs(
+            service=getattr(args, "service", None),
+            level=getattr(args, "level", None),
+            hostname=getattr(args, "hostname", None),
+            search=getattr(args, "search", None),
+            start=getattr(args, "start", None),
+            end=getattr(args, "end", None),
+            limit=getattr(args, "limit", 100),
+            offset=getattr(args, "offset", 0),
+        )
+
+        if getattr(args, "json", False):
+            print(json.dumps(result.model_dump(), indent=2))
+        else:
+            print(
+                f"Total: {result.total_count}  (showing {len(result.entries)}, "
+                f"offset={result.offset}, has_next={result.has_next})"
+            )
+            print("-" * 100)
+            for entry in result.entries:
+                print(
+                    f"[{entry.timestamp}] {entry.level:<8} {entry.service}/{entry.hostname} "
+                    f"{entry.logger}:{entry.lineno}  {entry.message}"
+                )
+
+        return 0
+
+    except Exception as e:
+        logger.error(f"Log query failed: {e}")
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+
+def cmd_embeddings_missing(args: argparse.Namespace) -> int:
+    """Find documents missing from the search embeddings index.
+
+    Args:
+        args: Parsed command line arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+
+        response = client._make_request(
+            method="GET",
+            endpoint="/api/admin/embeddings/missing",
+        )
+
+        data = response.json()
+        total_missing = data.get("total_missing", 0)
+        total_indexed = data.get("total_indexed", 0)
+        total_source = data.get("total_source", 0)
+
+        if getattr(args, "json", False):
+            print(json.dumps(data, indent=2))
+            return 0
+
+        print("\nEmbeddings Index Status:")
+        print(f"  Source documents:  {total_source}")
+        print(f"  Indexed:           {total_indexed}")
+        print(f"  Missing:           {total_missing}")
+
+        if total_missing == 0:
+            print("\n  All documents are indexed.")
+            return 0
+
+        print(f"\nMissing documents ({total_missing}):\n")
+        print(f"  {'Path':<50} {'Type':<15} {'Name'}")
+        print(f"  {'-' * 50} {'-' * 15} {'-' * 30}")
+        for entry in data.get("missing", []):
+            print(f"  {entry['path']:<50} {entry['entity_type']:<15} {entry['name']}")
+
+        return 0
+
+    except Exception as e:
+        logger.error(f"Embeddings missing check failed: {e}")
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+
+def cmd_embeddings_reindex(args: argparse.Namespace) -> int:
+    """Re-index specific paths or all missing documents.
+
+    Args:
+        args: Parsed command line arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+
+        paths = getattr(args, "paths", None)
+
+        if getattr(args, "all_missing", False):
+            response = client._make_request(
+                method="GET",
+                endpoint="/api/admin/embeddings/missing",
+            )
+            missing_data = response.json()
+            paths = [entry["path"] for entry in missing_data.get("missing", [])]
+            if not paths:
+                print("No missing embeddings found. Nothing to reindex.")
+                return 0
+            print(f"Found {len(paths)} missing documents. Reindexing...")
+
+        if not paths:
+            print("Error: provide --paths or --all-missing", file=sys.stderr)
+            return 1
+
+        batch_size = 100
+        total_success = 0
+        total_failed = 0
+
+        for i in range(0, len(paths), batch_size):
+            batch = paths[i : i + batch_size]
+            response = client._make_request(
+                method="POST",
+                endpoint="/api/admin/embeddings/reindex",
+                data={"paths": batch},
+            )
+            result = response.json()
+            total_success += result.get("success", 0)
+            total_failed += result.get("failed", 0)
+
+            if getattr(args, "json", False):
+                print(json.dumps(result, indent=2))
+            else:
+                print(
+                    f"  Batch {i // batch_size + 1}: "
+                    f"{result.get('success', 0)} success, "
+                    f"{result.get('failed', 0)} failed"
+                )
+
+                for detail in result.get("details", []):
+                    if detail.get("status") == "failed":
+                        print(f"    FAILED: {detail['path']} - {detail.get('error', 'unknown')}")
+
+        print(f"\nReindex complete: {total_success} success, {total_failed} failed")
+        return 0 if total_failed == 0 else 1
+
+    except Exception as e:
+        logger.error(f"Embeddings reindex failed: {e}")
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+
+def cmd_embeddings_stale(args: argparse.Namespace) -> int:
+    """Find orphaned embeddings (indexed but no source document).
+
+    The inverse of ``embeddings-missing``: detects vectors left in the search
+    index after a server/agent/skill was deleted (issue #1145).
+
+    Args:
+        args: Parsed command line arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+
+        response = client._make_request(
+            method="GET",
+            endpoint="/api/admin/embeddings/stale",
+        )
+
+        data = response.json()
+        total_stale = data.get("total_stale", 0)
+        total_indexed = data.get("total_indexed", 0)
+        total_source = data.get("total_source", 0)
+
+        if getattr(args, "json", False):
+            print(json.dumps(data, indent=2))
+            return 0
+
+        print("\nEmbeddings Index Status:")
+        print(f"  Source documents:  {total_source}")
+        print(f"  Indexed:           {total_indexed}")
+        print(f"  Stale (orphaned):  {total_stale}")
+
+        if total_stale == 0:
+            print("\n  No stale embeddings found.")
+            return 0
+
+        print(f"\nStale embeddings ({total_stale}):\n")
+        print(f"  {'Path':<50} {'Type':<15} {'Name'}")
+        print(f"  {'-' * 50} {'-' * 15} {'-' * 30}")
+        for entry in data.get("stale", []):
+            print(f"  {entry['path']:<50} {entry['entity_type']:<15} {entry['name']}")
+
+        return 0
+
+    except Exception as e:
+        logger.error(f"Embeddings stale check failed: {e}")
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+
+def cmd_embeddings_stale_cleanup(args: argparse.Namespace) -> int:
+    """Remove orphaned embeddings by path, or all stale ones with --all-stale.
+
+    Args:
+        args: Parsed command line arguments
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        client = _create_client(args)
+
+        paths = getattr(args, "paths", None)
+
+        if getattr(args, "all_stale", False):
+            response = client._make_request(
+                method="GET",
+                endpoint="/api/admin/embeddings/stale",
+            )
+            stale_data = response.json()
+            paths = [entry["path"] for entry in stale_data.get("stale", [])]
+            if not paths:
+                print("No stale embeddings found. Nothing to clean up.")
+                return 0
+            print(f"Found {len(paths)} stale embeddings. Cleaning up...")
+
+        if not paths:
+            print("Error: provide --paths or --all-stale", file=sys.stderr)
+            return 1
+
+        batch_size = 100
+        total_removed = 0
+        total_not_found = 0
+        total_failed = 0
+
+        for i in range(0, len(paths), batch_size):
+            batch = paths[i : i + batch_size]
+            response = client._make_request(
+                method="POST",
+                endpoint="/api/admin/embeddings/stale/cleanup",
+                data={"paths": batch},
+            )
+            result = response.json()
+            total_removed += result.get("removed", 0)
+            total_not_found += result.get("not_found", 0)
+            total_failed += result.get("failed", 0)
+
+            if getattr(args, "json", False):
+                print(json.dumps(result, indent=2))
+            else:
+                print(
+                    f"  Batch {i // batch_size + 1}: "
+                    f"{result.get('removed', 0)} removed, "
+                    f"{result.get('not_found', 0)} not_found, "
+                    f"{result.get('failed', 0)} failed"
+                )
+
+                for detail in result.get("details", []):
+                    if detail.get("status") == "failed":
+                        print(f"    FAILED: {detail['path']} - {detail.get('error', 'unknown')}")
+
+        print(
+            f"\nCleanup complete: {total_removed} removed, "
+            f"{total_not_found} not_found, {total_failed} failed"
+        )
+        return 0 if total_failed == 0 else 1
+
+    except Exception as e:
+        logger.error(f"Embeddings stale cleanup failed: {e}")
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+
+def main() -> int:
+    """
+    Main entry point for the CLI.
+
+    Returns:
+        Exit code
+    """
+    parser = argparse.ArgumentParser(
+        description="MCP Gateway Registry Management CLI",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Environment Variables (used if command-line options not provided):
+  REGISTRY_URL        Registry base URL
+  AWS_REGION          AWS region where Keycloak and SSM are deployed
+  KEYCLOAK_URL        Keycloak base URL
+  CLIENT_NAME         Keycloak client name (default: registry-admin-bot)
+  GET_TOKEN_SCRIPT    Path to get-m2m-token.sh script
+
+Examples:
+  # Register a server (using environment variables)
+  export REGISTRY_URL=https://registry.us-east-1.mycorp.click
+  export AWS_REGION=us-east-1
+  export KEYCLOAK_URL=https://kc.us-east-1.mycorp.click
+  uv run python registry_management.py register --config server-config.json
+
+  # Register a server (using command-line arguments)
+  uv run python registry_management.py \\
+    --registry-url https://registry.us-east-1.mycorp.click \\
+    --aws-region us-east-1 \\
+    --keycloak-url https://kc.us-east-1.mycorp.click \\
+    register --config server-config.json
+
+  # Register a server (using token file)
+  uv run python registry_management.py \\
+    --registry-url https://registry.us-east-1.mycorp.click \\
+    --token-file /path/to/token.txt \\
+    register --config server-config.json
+
+  # List all servers
+  uv run python registry_management.py list
+
+  # Toggle server status
+  uv run python registry_management.py toggle --path /cloudflare-docs
+
+  # Add server to groups
+  uv run python registry_management.py add-to-groups --server my-server --groups finance,analytics
+        """,
+    )
+
+    parser.add_argument(
+        "--registry-url",
+        default="http://localhost",
+        help="Registry base URL (overrides REGISTRY_URL env var). Default: http://localhost",
+    )
+
+    parser.add_argument("--aws-region", help="AWS region (overrides AWS_REGION env var)")
+
+    parser.add_argument("--keycloak-url", help="Keycloak base URL (overrides KEYCLOAK_URL env var)")
+
+    parser.add_argument(
+        "--token-file",
+        default=".token",
+        help="Path to file containing JWT token (bypasses token script). Default: .token",
+    )
+
+    parser.add_argument("--debug", action="store_true", help="Enable debug logging")
+
+    subparsers = parser.add_subparsers(dest="command", help="Command to execute")
+
+    # Register command
+    check_dup_parser = subparsers.add_parser(
+        "check-duplicates",
+        help="Check whether a registration would duplicate an existing entity",
+    )
+    check_dup_parser.add_argument(
+        "--type",
+        choices=["server", "agent", "skill"],
+        default="server",
+        help="Entity type to check against (default: server)",
+    )
+    check_dup_parser.add_argument(
+        "--config",
+        help="Registration config JSON to read name/description/URL from",
+    )
+    check_dup_parser.add_argument("--name", help="Entity name (when not using --config)")
+    check_dup_parser.add_argument("--description", help="Entity description")
+    check_dup_parser.add_argument(
+        "--url",
+        help="Identity URL: proxy_pass_url for a server, url for an agent, skill_md_url for a skill",
+    )
+    check_dup_parser.add_argument(
+        "--self-path",
+        help="Path to exclude, so editing an existing entity does not match itself",
+    )
+    check_dup_parser.add_argument("--json", action="store_true", help="Print the raw envelope")
+    check_dup_parser.add_argument(
+        "--fail-on-duplicate",
+        action="store_true",
+        help="Exit non-zero when anything matches (for CI gating)",
+    )
+
+    register_parser = subparsers.add_parser("register", help="Register a new server")
+    register_parser.add_argument(
+        "--config", required=True, help="Path to server configuration JSON file"
+    )
+    register_parser.add_argument(
+        "--skip-duplicate-check",
+        action="store_true",
+        help="Do not pre-flight the duplicate check before registering",
+    )
+    register_parser.add_argument(
+        "--fail-on-duplicate",
+        action="store_true",
+        help="Abort the registration when the duplicate check finds a match",
+    )
+    register_parser.add_argument(
+        "--overwrite", action="store_true", help="Overwrite if server already exists"
+    )
+
+    # Custom entity type commands (admin-defined, schema-driven catalog types)
+    custom_type_create_parser = subparsers.add_parser(
+        "custom-type-create", help="Define a new custom entity type from a JSON descriptor (admin)"
+    )
+    custom_type_create_parser.add_argument(
+        "--config", required=True, help="Path to custom type descriptor JSON file"
+    )
+    custom_type_create_parser.add_argument(
+        "--json", action="store_true", help="Print raw JSON response"
+    )
+
+    custom_type_list_parser = subparsers.add_parser(
+        "custom-type-list", help="List all custom entity type descriptors"
+    )
+    custom_type_list_parser.add_argument(
+        "--json", action="store_true", help="Print raw JSON response"
+    )
+
+    custom_record_create_parser = subparsers.add_parser(
+        "custom-record-create", help="Create a record of a custom type from a JSON file"
+    )
+    custom_record_create_parser.add_argument(
+        "--type", required=True, help="Custom type name (entity_type discriminator)"
+    )
+    custom_record_create_parser.add_argument(
+        "--config", required=True, help="Path to custom record JSON file"
+    )
+    custom_record_create_parser.add_argument(
+        "--json", action="store_true", help="Print raw JSON response"
+    )
+
+    custom_proxy_create_parser = subparsers.add_parser(
+        "custom-proxy-create",
+        help="Create a proxied custom record fronting a REST/HTTP endpoint (e.g. an LLM API)",
+    )
+    custom_proxy_create_parser.add_argument(
+        "--type",
+        required=True,
+        help="Custom type name (must already exist; see custom-type-create)",
+    )
+    custom_proxy_create_parser.add_argument("--name", required=True, help="Record name")
+    custom_proxy_create_parser.add_argument(
+        "--target-url",
+        required=True,
+        help="Backend/origin URL the gateway proxies to (proxy_target_url), e.g. https://api.openai.com",
+    )
+    custom_proxy_create_parser.add_argument(
+        "--streaming",
+        choices=["true", "false"],
+        default="false",
+        help="Enable response streaming (proxy_streaming). Default: false",
+    )
+    custom_proxy_create_parser.add_argument(
+        "--auth-passthrough",
+        action="store_true",
+        help=(
+            "Add a caller-overridable Authorization header so the caller's Bearer "
+            "token is forwarded to the backend (a fixed Authorization is rejected)"
+        ),
+    )
+    custom_proxy_create_parser.add_argument(
+        "--visibility", default="private", help="Record visibility (default: private)"
+    )
+    custom_proxy_create_parser.add_argument("--description", help="Record description")
+    custom_proxy_create_parser.add_argument(
+        "--connect-notes",
+        help=(
+            "Operator usage notes stored on the record (proxy_connect_notes) and shown "
+            "in the UI Connect panel, e.g. the API sub-path plus an example command"
+        ),
+    )
+    custom_proxy_create_parser.add_argument(
+        "--json", action="store_true", help="Print raw JSON response"
+    )
+
+    custom_record_list_parser = subparsers.add_parser(
+        "custom-record-list", help="List records of a custom type"
+    )
+    custom_record_list_parser.add_argument("--type", required=True, help="Custom type name")
+    custom_record_list_parser.add_argument(
+        "--json", action="store_true", help="Print raw JSON response"
+    )
+
+    # List command
+    list_parser = subparsers.add_parser("list", help="List all servers")
+    list_parser.add_argument("--query", help="Search query string")
+    list_parser.add_argument(
+        "--limit", type=int, default=20, help="Number of servers to return (1-100, default 20)"
+    )
+    list_parser.add_argument(
+        "--offset", type=int, default=0, help="Number of servers to skip (default 0)"
+    )
+    list_parser.add_argument(
+        "--metadata-fields",
+        help="Comma-separated metadata field paths to include (dot-notation). Example: 'owner,config.region'",
+    )
+    list_parser.add_argument("--json", action="store_true", help="Print raw JSON response")
+
+    # Toggle command
+    toggle_parser = subparsers.add_parser("toggle", help="Toggle server status")
+    toggle_parser.add_argument("--path", required=True, help="Server path to toggle")
+
+    # Per-tool block toggle. A blocked tool is rejected on tools/call and withheld
+    # from tools/list, semantic search and server.json, while the server stays up.
+    toggle_tool_parser = subparsers.add_parser(
+        "toggle-tool", help="Block or unblock a single tool on a server"
+    )
+    toggle_tool_parser.add_argument("--path", required=True, help="Server path, e.g. /context7")
+    toggle_tool_parser.add_argument(
+        "--tool", required=True, help="Tool name, must exist on that server"
+    )
+    toggle_tool_parser.add_argument(
+        "--enabled",
+        type=lambda v: str(v).lower() in ("true", "1", "yes"),
+        required=True,
+        help="true to unblock the tool, false to block it",
+    )
+
+    # Remove command
+    remove_parser = subparsers.add_parser("remove", help="Remove a server")
+    remove_parser.add_argument("--path", required=True, help="Server path to remove")
+    remove_parser.add_argument("--force", action="store_true", help="Skip confirmation prompt")
+
+    # Healthcheck command
+    healthcheck_parser = subparsers.add_parser("healthcheck", help="Health check all servers")
+
+    # Config command
+    config_parser = subparsers.add_parser(
+        "config", help="Get registry configuration (deployment mode, features)"
+    )
+    config_parser.add_argument(
+        "--json", action="store_true", help="Output raw JSON instead of formatted text"
+    )
+
+    # Rate limit commands (issue #295)
+    rate_limit_set_parser = subparsers.add_parser(
+        "rate-limit-set", help="Create or update a rate-limit definition (admin)"
+    )
+    rate_limit_set_parser.add_argument(
+        "--axis",
+        required=True,
+        choices=["caller", "target", "caller_target"],
+        help="Which side: 'caller', 'target', or 'caller_target' (per-caller-per-target)",
+    )
+    rate_limit_set_parser.add_argument(
+        "--entity-type",
+        required=True,
+        dest="entity_type",
+        help="caller: 'group'; target: 'mcp_server' | 'a2a_agent' | 'server_group'",
+    )
+    rate_limit_set_parser.add_argument(
+        "--name", required=True, help="Group name, server path, agent path, or server-group name"
+    )
+    rate_limit_set_parser.add_argument(
+        "--max-requests",
+        type=int,
+        dest="max_requests",
+        help=(
+            "TARGET axis: max requests per window across all callers. For a "
+            "server_group, applies to EACH member server individually."
+        ),
+    )
+    rate_limit_set_parser.add_argument(
+        "--members",
+        dest="members",
+        help=(
+            "server_group target entity only: comma-separated server paths. Each "
+            "listed server gets its own independent max-requests/window bucket "
+            "(per-member uniform, not a shared pool)."
+        ),
+    )
+    rate_limit_set_parser.add_argument(
+        "--user-max-requests",
+        type=int,
+        dest="user_max_requests",
+        help="CALLER/group axis: max requests per window for a human user (>= user floor)",
+    )
+    rate_limit_set_parser.add_argument(
+        "--agent-max-requests",
+        type=int,
+        dest="agent_max_requests",
+        help="CALLER/group axis: max requests per window for an agent/client (>= agent floor)",
+    )
+    rate_limit_set_parser.add_argument(
+        "--window-seconds",
+        type=int,
+        default=60,
+        dest="window_seconds",
+        help="Window length in seconds (default 60; up to 86400)",
+    )
+    rate_limit_set_parser.add_argument(
+        "--fail-closed",
+        action="store_true",
+        dest="fail_closed",
+        help="Deny on backend error (security-critical limits only)",
+    )
+    rate_limit_set_parser.add_argument(
+        "--disabled", action="store_true", help="Store the definition disabled"
+    )
+
+    rate_limit_list_parser = subparsers.add_parser(
+        "rate-limit-list", help="List all rate-limit definitions (admin)"
+    )
+
+    rate_limit_delete_parser = subparsers.add_parser(
+        "rate-limit-delete", help="Delete a rate-limit definition by id (admin)"
+    )
+    rate_limit_delete_parser.add_argument(
+        "--id",
+        required=True,
+        help="Definition id, e.g. 'caller:group:developers:60'",
+    )
+
+    rate_limit_get_parser = subparsers.add_parser(
+        "rate-limit-get", help="Read a single rate-limit definition by id (admin)"
+    )
+    rate_limit_get_parser.add_argument(
+        "--id",
+        required=True,
+        help="Definition id, e.g. 'caller:group:developers:60'",
+    )
+
+    rate_limit_enable_parser = subparsers.add_parser(
+        "rate-limit-enable", help="Enable a rate-limit definition in place (admin)"
+    )
+    rate_limit_enable_parser.add_argument("--id", required=True, help="Definition id")
+
+    rate_limit_disable_parser = subparsers.add_parser(
+        "rate-limit-disable", help="Disable a rate-limit definition without deleting it (admin)"
+    )
+    rate_limit_disable_parser.add_argument("--id", required=True, help="Definition id")
+
+    rate_limit_status_parser = subparsers.add_parser(
+        "rate-limit-status", help="Introspect rate-limit definitions (admin)"
+    )
+    rate_limit_status_parser.add_argument("--identity", help="Caller group name to introspect")
+    rate_limit_status_parser.add_argument(
+        "--entity-type", dest="entity_type", help="Target entity type (e.g. mcp_server)"
+    )
+    rate_limit_status_parser.add_argument("--name", help="Target name")
+
+    # Rate-limit membership commands: map a user/agent to rate-limit group(s).
+    rate_limit_member_set_parser = subparsers.add_parser(
+        "rate-limit-member-set",
+        help="Map a user or agent (client_id) to rate-limit group(s) (admin)",
+    )
+    rate_limit_member_set_parser.add_argument(
+        "--subject-type",
+        required=True,
+        choices=["user", "client"],
+        dest="subject_type",
+        help="'user' (subject = username) or 'client' (subject = client_id)",
+    )
+    rate_limit_member_set_parser.add_argument(
+        "--subject", required=True, help="The username or client_id"
+    )
+    rate_limit_member_set_parser.add_argument(
+        "--groups", required=True, help="Comma-separated rate-limit group names"
+    )
+
+    rate_limit_member_list_parser = subparsers.add_parser(
+        "rate-limit-member-list", help="List all rate-limit memberships (admin)"
+    )
+
+    rate_limit_member_delete_parser = subparsers.add_parser(
+        "rate-limit-member-delete", help="Delete a rate-limit membership by id (admin)"
+    )
+    rate_limit_member_delete_parser.add_argument(
+        "--id", required=True, help="Membership id, e.g. 'user:alice' or 'client:my-agent-id'"
+    )
+
+    # Quarantine (kill-switch) commands: drop ALL data-plane traffic from a caller
+    # or to a target. The server picks the reserved group from the subject type.
+    rate_limit_quarantine_add_parser = subparsers.add_parser(
+        "rate-limit-quarantine-add",
+        help="Quarantine a caller or target: drops ALL its data-plane traffic (admin)",
+    )
+    rate_limit_quarantine_add_parser.add_argument(
+        "--subject-type",
+        required=True,
+        choices=["user", "client", "server", "agent"],
+        dest="subject_type",
+        help="'user'/'client' (caller) or 'server'/'agent' (target)",
+    )
+    rate_limit_quarantine_add_parser.add_argument(
+        "--subject", required=True, help="username / client_id / server name / agent path"
+    )
+
+    rate_limit_quarantine_remove_parser = subparsers.add_parser(
+        "rate-limit-quarantine-remove", help="Remove a caller or target from quarantine (admin)"
+    )
+    rate_limit_quarantine_remove_parser.add_argument(
+        "--subject-type",
+        required=True,
+        choices=["user", "client", "server", "agent"],
+        dest="subject_type",
+        help="'user'/'client' (caller) or 'server'/'agent' (target)",
+    )
+    rate_limit_quarantine_remove_parser.add_argument(
+        "--subject", required=True, help="username / client_id / server name / agent path"
+    )
+
+    subparsers.add_parser(
+        "rate-limit-quarantine-list", help="List everything currently quarantined (admin)"
+    )
+
+    # Add to groups command
+    add_groups_parser = subparsers.add_parser("add-to-groups", help="Add server to groups")
+    add_groups_parser.add_argument("--server", required=True, help="Server name")
+    add_groups_parser.add_argument("--groups", required=True, help="Comma-separated group names")
+
+    # Remove from groups command
+    remove_groups_parser = subparsers.add_parser(
+        "remove-from-groups", help="Remove server from groups"
+    )
+    remove_groups_parser.add_argument("--server", required=True, help="Server name")
+    remove_groups_parser.add_argument("--groups", required=True, help="Comma-separated group names")
+
+    # Create group command
+    create_group_parser = subparsers.add_parser("create-group", help="Create a new group")
+    create_group_parser.add_argument("--name", required=True, help="Group name")
+    create_group_parser.add_argument("--description", help="Group description")
+    create_group_parser.add_argument(
+        "--idp", action="store_true", help="Also create in IdP (Keycloak/Entra)"
+    )
+
+    # Delete group command
+    delete_group_parser = subparsers.add_parser("delete-group", help="Delete a group")
+    delete_group_parser.add_argument("--name", required=True, help="Group name")
+    delete_group_parser.add_argument(
+        "--idp", action="store_true", help="Also delete from IdP (Keycloak/Entra)"
+    )
+    delete_group_parser.add_argument(
+        "--force", action="store_true", help="Force deletion of system groups and skip confirmation"
+    )
+
+    # Import group command
+    import_group_parser = subparsers.add_parser(
+        "import-group", help="Import a complete group definition from JSON file"
+    )
+    import_group_parser.add_argument(
+        "--file", required=True, help="Path to JSON file containing group definition"
+    )
+
+    # List groups command
+    list_groups_parser = subparsers.add_parser("list-groups", help="List all groups")
+    list_groups_parser.add_argument(
+        "--no-keycloak", action="store_true", help="Exclude Keycloak information"
+    )
+    list_groups_parser.add_argument(
+        "--no-scopes", action="store_true", help="Exclude scope information"
+    )
+    list_groups_parser.add_argument("--json", action="store_true", help="Output raw JSON response")
+
+    # Describe group command
+    describe_group_parser = subparsers.add_parser(
+        "describe-group", help="Show detailed information about a specific group"
+    )
+    describe_group_parser.add_argument("--name", required=True, help="Group name to describe")
+    describe_group_parser.add_argument(
+        "--json", action="store_true", help="Output raw JSON response"
+    )
+
+    # Server get command
+    server_get_parser = subparsers.add_parser("server-get", help="Get details of a specific server")
+    server_get_parser.add_argument("--path", required=True, help="Server path (e.g., /my-server)")
+
+    # Server full-replacement update (PUT /api/servers/{path})
+    update_server_parser = subparsers.add_parser(
+        "update-server",
+        help="Replace a server's mutable metadata (PUT /api/servers/{path})",
+    )
+    update_server_parser.add_argument(
+        "--path", required=True, help="Server path (e.g., /my-server)"
+    )
+    update_server_parser.add_argument(
+        "--body",
+        default=None,
+        help=(
+            "Full JSON body for ServerUpdateRequest. When supplied, "
+            "individual field flags are ignored."
+        ),
+    )
+    update_server_parser.add_argument("--server-name", default=None, help="New server display name")
+    update_server_parser.add_argument("--description", default=None, help="New server description")
+    update_server_parser.add_argument(
+        "--proxy-pass-url", default=None, help="Backend URL for remote-deployment servers"
+    )
+    update_server_parser.add_argument("--tags", default=None, help="Comma-separated list of tags")
+    update_server_parser.add_argument("--license", default=None, help="License identifier")
+    update_server_parser.add_argument(
+        "--num-tools", type=int, default=None, help="Number of tools exposed by the server"
+    )
+    update_server_parser.add_argument(
+        "--metadata",
+        default=None,
+        help="JSON object string for the metadata field",
+    )
+    update_server_parser.add_argument(
+        "--visibility",
+        default=None,
+        choices=["public", "private", "group-restricted"],
+        help="Visibility level",
+    )
+    update_server_parser.add_argument(
+        "--allowed-groups",
+        default=None,
+        help="Comma-separated groups for group-restricted visibility",
+    )
+    update_server_parser.add_argument(
+        "--if-match",
+        dest="if_match",
+        default=None,
+        help="Weak ETag for optimistic concurrency (e.g. 'W/\"<epoch_ms>\"')",
+    )
+
+    # Server partial update (PATCH /api/servers/{path}) - RFC 7396 JSON Merge Patch
+    patch_server_parser = subparsers.add_parser(
+        "patch-server",
+        help="Partially update a server (PATCH /api/servers/{path}, RFC 7396 JSON Merge Patch)",
+    )
+    patch_server_parser.add_argument("--path", required=True, help="Server path (e.g., /my-server)")
+    patch_server_parser.add_argument(
+        "--patch",
+        required=True,
+        help="JSON object string with fields to change (RFC 7396 JSON Merge Patch)",
+    )
+    patch_server_parser.add_argument(
+        "--if-match",
+        dest="if_match",
+        default=None,
+        help="Weak ETag for optimistic concurrency (e.g. 'W/\"<epoch_ms>\"')",
+    )
+
+    # Server rate command
+    server_rate_parser = subparsers.add_parser("server-rate", help="Rate a server (1-5 stars)")
+    server_rate_parser.add_argument(
+        "--path", required=True, help="Server path (e.g., /cloudflare-docs)"
+    )
+    server_rate_parser.add_argument(
+        "--rating",
+        required=True,
+        type=int,
+        choices=[1, 2, 3, 4, 5],
+        help="Rating value (1-5 stars)",
+    )
+
+    # Server rating command
+    server_rating_parser = subparsers.add_parser(
+        "server-rating", help="Get rating information for a server"
+    )
+    server_rating_parser.add_argument(
+        "--path", required=True, help="Server path (e.g., /cloudflare-docs)"
+    )
+
+    # Server security scan command
+    security_scan_parser = subparsers.add_parser(
+        "security-scan", help="Get security scan results for a server"
+    )
+    security_scan_parser.add_argument(
+        "--path", required=True, help="Server path (e.g., /cloudflare-docs)"
+    )
+    security_scan_parser.add_argument("--json", action="store_true", help="Output raw JSON")
+
+    # Server rescan command
+    rescan_parser = subparsers.add_parser(
+        "rescan", help="Trigger manual security scan for a server (admin only)"
+    )
+    rescan_parser.add_argument("--path", required=True, help="Server path (e.g., /cloudflare-docs)")
+    rescan_parser.add_argument("--json", action="store_true", help="Output raw JSON")
+
+    # Server credential update command
+    server_update_cred_parser = subparsers.add_parser(
+        "server-update-credential", help="Update authentication credentials for a server"
+    )
+    server_update_cred_parser.add_argument(
+        "--path", required=True, help="Server path (e.g., /cloudflare-api)"
+    )
+    server_update_cred_parser.add_argument(
+        "--auth-scheme",
+        required=True,
+        choices=["none", "bearer", "api_key"],
+        help="Authentication scheme",
+    )
+    server_update_cred_parser.add_argument(
+        "--credential", help="New credential value (required if auth-scheme is not 'none')"
+    )
+    server_update_cred_parser.add_argument(
+        "--auth-header-name", help="Custom header name (optional, for api_key scheme)"
+    )
+    server_update_cred_parser.add_argument(
+        "--custom-header",
+        action="append",
+        default=[],
+        metavar="NAME=VALUE",
+        help="Add a custom header (repeatable). Example: --custom-header X-Tenant-Id=42",
+    )
+    server_update_cred_parser.add_argument("--json", action="store_true", help="Output raw JSON")
+
+    # Server connect-config command
+    server_connect_config_parser = subparsers.add_parser(
+        "server-connect-config",
+        help="Fetch the connect-time configuration (decrypted custom headers) for a server",
+    )
+    server_connect_config_parser.add_argument(
+        "--path", required=True, help="Server path (e.g., /my-server)"
+    )
+    server_connect_config_parser.add_argument("--json", action="store_true", help="Output raw JSON")
+
+    # Egress Auth Commands (per-user egress credential vault)
+
+    # Configure egress auth command
+    egress_configure_parser = subparsers.add_parser(
+        "egress-configure", help="Configure per-user egress auth on a server (admin only)"
+    )
+    egress_configure_parser.add_argument(
+        "--path", required=True, help="Server path (e.g., /github)"
+    )
+    egress_configure_parser.add_argument(
+        "--mode",
+        required=True,
+        choices=["none", "oauth_user", "obo_exchange", "pat"],
+        help="Egress auth mode",
+    )
+    egress_configure_parser.add_argument(
+        "--provider", help="Provider slug/name (required for oauth_user and pat)"
+    )
+    egress_configure_parser.add_argument("--client-id", help="OAuth client id (oauth_user only)")
+    egress_configure_parser.add_argument(
+        "--client-secret", help="OAuth client secret (oauth_user only, write-only)"
+    )
+    egress_configure_parser.add_argument(
+        "--scopes", help="Comma-separated OAuth scopes (e.g., repo,read:org)"
+    )
+    egress_configure_parser.add_argument(
+        "--target-audience", help="Target audience (obo_exchange only)"
+    )
+    # Custom-OIDC provider overrides. --provider custom is unusable without the
+    # two URLs: the server's resolve_provider() rejects the config with
+    # "custom requires custom_authorize_url and custom_token_url".
+    egress_configure_parser.add_argument(
+        "--custom-authorize-url",
+        help="Authorize endpoint (REQUIRED with --provider custom)",
+    )
+    egress_configure_parser.add_argument(
+        "--custom-token-url",
+        help="Token endpoint (REQUIRED with --provider custom)",
+    )
+    egress_configure_parser.add_argument(
+        "--custom-scope-separator",
+        help="Scope delimiter when the provider does not use a space (custom only)",
+    )
+    egress_configure_parser.add_argument(
+        "--custom-token-auth-style",
+        choices=["post_body", "basic_header", "none"],
+        help="Token endpoint auth style; none selects a public PKCE client (custom only)",
+    )
+    egress_configure_parser.add_argument(
+        "--custom-resource",
+        help="RFC 8707 resource indicator, sent on authorize and token requests (custom only)",
+    )
+
+    # Get egress config command
+    egress_config_get_parser = subparsers.add_parser(
+        "egress-config-get", help="Fetch the (non-secret) egress auth config for a server"
+    )
+    egress_config_get_parser.add_argument(
+        "--path", required=True, help="Server path (e.g., /github)"
+    )
+
+    # Submit egress PAT command
+    egress_pat_set_parser = subparsers.add_parser(
+        "egress-pat-set", help="Submit (or replace) a per-user PAT for a server (write-only)"
+    )
+    egress_pat_set_parser.add_argument("--path", required=True, help="Server path (e.g., /github)")
+    egress_pat_set_parser.add_argument(
+        "--secret", required=True, help="The PAT / API key to store (never logged)"
+    )
+    egress_pat_set_parser.add_argument(
+        "--ttl-value",
+        required=True,
+        type=int,
+        help="Positive integer validity amount (capped at 30 days)",
+    )
+    egress_pat_set_parser.add_argument(
+        "--ttl-unit",
+        required=True,
+        choices=["minutes", "hours", "days"],
+        help="Validity unit",
+    )
+    egress_pat_set_parser.add_argument("--sub", help="Admin-only: submit on another user's behalf")
+    egress_pat_set_parser.add_argument(
+        "--auth-method",
+        help="Admin-only (required with --sub): the target's ingress auth method "
+        "(e.g. oauth2), the vault partition the target vends from",
+    )
+
+    # Egress PAT status command
+    egress_pat_status_parser = subparsers.add_parser(
+        "egress-pat-status", help="Report whether a per-user PAT is stored and when it expires"
+    )
+    egress_pat_status_parser.add_argument(
+        "--path", required=True, help="Server path (e.g., /github)"
+    )
+    egress_pat_status_parser.add_argument("--sub", help="Admin-only: query another user's status")
+    egress_pat_status_parser.add_argument(
+        "--auth-method",
+        help="Admin-only (required with --sub): the target's ingress auth method (e.g. oauth2)",
+    )
+
+    # Egress PAT delete command
+    egress_pat_delete_parser = subparsers.add_parser(
+        "egress-pat-delete", help="Delete a stored per-user PAT (idempotent)"
+    )
+    egress_pat_delete_parser.add_argument(
+        "--path", required=True, help="Server path (e.g., /github)"
+    )
+    egress_pat_delete_parser.add_argument("--sub", help="Admin-only: delete another user's PAT")
+    egress_pat_delete_parser.add_argument(
+        "--auth-method",
+        help="Admin-only (required with --sub): the target's ingress auth method (e.g. oauth2)",
+    )
+
+    # Server search command
+    server_search_parser = subparsers.add_parser(
+        "server-search",
+        help="Semantic search across all entity types (servers, tools, agents, skills, virtual servers)",
+    )
+    server_search_parser.add_argument(
+        "--query", required=True, help="Natural language search query (e.g., 'coding assistants')"
+    )
+    server_search_parser.add_argument(
+        "--max-results",
+        type=int,
+        default=10,
+        help="Maximum number of results per entity type (default: 10)",
+    )
+    server_search_parser.add_argument(
+        "--metadata-fields",
+        help="Comma-separated metadata field paths to include in results (dot-notation). Example: 'owner,config.region'",
+    )
+    server_search_parser.add_argument(
+        "--json", action="store_true", help="Output raw JSON with all entity types"
+    )
+
+    # ARD Registry adapter commands (issue #1295)
+    ard_search_parser = subparsers.add_parser(
+        "ard-search", help="ARD Registry search (POST /api/ard/search)"
+    )
+    ard_search_parser.add_argument("--query", required=True, help="Natural-language query")
+    ard_search_parser.add_argument(
+        "--filter",
+        action="append",
+        default=None,
+        help="ARD filter key=value (repeatable), e.g. --filter type=mcp_server --filter tags=finance",
+    )
+    ard_search_parser.add_argument(
+        "--federation",
+        default="auto",
+        choices=["auto", "referrals", "none"],
+        help="Federation mode (default: auto)",
+    )
+    ard_search_parser.add_argument(
+        "--page-size", type=int, default=10, help="Results per page (1-100)"
+    )
+    ard_search_parser.add_argument("--page-token", default=None, help="Opaque pagination cursor")
+    ard_search_parser.add_argument("--json", action="store_true", help="Output raw ARD JSON")
+
+    ard_agents_parser = subparsers.add_parser(
+        "ard-agents", help="ARD Registry browse over all asset types (GET /api/ard/agents)"
+    )
+    ard_agents_parser.add_argument(
+        "--filter",
+        action="append",
+        default=None,
+        help="ARD filter key=value (repeatable), e.g. --filter type=a2a_agent",
+    )
+    ard_agents_parser.add_argument(
+        "--order-by",
+        default="identifier",
+        choices=["identifier", "displayName", "updatedAt"],
+        help="Sort field (default: identifier)",
+    )
+    ard_agents_parser.add_argument(
+        "--page-size", type=int, default=20, help="Items per page (1-100)"
+    )
+    ard_agents_parser.add_argument("--page-token", default=None, help="Opaque pagination cursor")
+    ard_agents_parser.add_argument("--json", action="store_true", help="Output raw ARD JSON")
+
+    ard_ingestion_sync_parser = subparsers.add_parser(
+        "ard-ingestion-sync", help="Trigger ARD ai-catalog ingestion (federation)"
+    )
+    ard_ingestion_sync_parser.add_argument(
+        "--source-id", default=None, help="Sync only this source (default: all enabled)"
+    )
+    ard_ingestion_sync_parser.add_argument("--json", action="store_true", help="Output raw JSON")
+
+    ard_ingestion_status_parser = subparsers.add_parser(
+        "ard-ingestion-status", help="Show ARD ai-catalog ingestion per-source state"
+    )
+    ard_ingestion_status_parser.add_argument("--json", action="store_true", help="Output raw JSON")
+
+    ard_add_source_parser = subparsers.add_parser(
+        "ard-ingestion-add-source", help="Add an ARD ai-catalog ingestion source"
+    )
+    ard_add_source_parser.add_argument("--source-id", required=True, help="Stable source id")
+    ard_add_source_parser.add_argument("--uri", default=None, help="Direct ai-catalog.json URL")
+    ard_add_source_parser.add_argument(
+        "--domain", default=None, help="Domain (resolved via /.well-known/ai-catalog.json)"
+    )
+    ard_add_source_parser.add_argument(
+        "--expected-identity", default=None, help="Optional trustManifest.identity pin"
+    )
+    ard_add_source_parser.add_argument(
+        "--enable", action="store_true", help="Also enable ai_catalog ingestion"
+    )
+    ard_add_source_parser.add_argument("--json", action="store_true", help="Output raw JSON")
+
+    ard_remove_source_parser = subparsers.add_parser(
+        "ard-ingestion-remove-source", help="Remove an ARD ai-catalog ingestion source"
+    )
+    ard_remove_source_parser.add_argument("--source-id", required=True, help="Source id to remove")
+    ard_remove_source_parser.add_argument("--json", action="store_true", help="Output raw JSON")
+
+    # Server Version Management Commands
+
+    # List versions command
+    list_versions_parser = subparsers.add_parser(
+        "list-versions", help="List all versions for a server"
+    )
+    list_versions_parser.add_argument("--path", required=True, help="Server path (e.g., /context7)")
+    list_versions_parser.add_argument("--json", action="store_true", help="Output raw JSON")
+
+    # Remove version command
+    remove_version_parser = subparsers.add_parser(
+        "remove-version", help="Remove a version from a server"
+    )
+    remove_version_parser.add_argument(
+        "--path", required=True, help="Server path (e.g., /context7)"
+    )
+    remove_version_parser.add_argument("--version", required=True, help="Version to remove")
+    remove_version_parser.add_argument("--json", action="store_true", help="Output raw JSON")
+
+    # Set default version command
+    set_default_version_parser = subparsers.add_parser(
+        "set-default-version", help="Set the default version for a server"
+    )
+    set_default_version_parser.add_argument(
+        "--path", required=True, help="Server path (e.g., /context7)"
+    )
+    set_default_version_parser.add_argument(
+        "--version", required=True, help="Version to set as default"
+    )
+    set_default_version_parser.add_argument("--json", action="store_true", help="Output raw JSON")
+
+    # Agent Management Commands
+
+    # Agent register command
+    agent_register_parser = subparsers.add_parser("agent-register", help="Register a new A2A agent")
+    agent_register_parser.add_argument(
+        "--config", required=True, help="Path to agent configuration JSON file"
+    )
+    agent_register_parser.add_argument(
+        "--skip-duplicate-check",
+        action="store_true",
+        help="Do not pre-flight the duplicate check before registering",
+    )
+    agent_register_parser.add_argument(
+        "--fail-on-duplicate",
+        action="store_true",
+        help="Abort the registration when the duplicate check finds a match",
+    )
+
+    # Agent list command
+    agent_list_parser = subparsers.add_parser("agent-list", help="List all A2A agents")
+    agent_list_parser.add_argument("--query", help="Search query string")
+    agent_list_parser.add_argument(
+        "--enabled-only", action="store_true", help="Show only enabled agents"
+    )
+    agent_list_parser.add_argument(
+        "--visibility",
+        choices=["public", "private", "group-restricted"],
+        help="Filter by visibility level",
+    )
+    agent_list_parser.add_argument(
+        "--limit", type=int, default=20, help="Number of agents to return (1-100, default 20)"
+    )
+    agent_list_parser.add_argument(
+        "--offset", type=int, default=0, help="Number of agents to skip (default 0)"
+    )
+    agent_list_parser.add_argument(
+        "--allowed-groups",
+        help="Filter by allowed_groups (comma-separated). Returns only group-restricted agents matching these groups.",
+    )
+    agent_list_parser.add_argument(
+        "--metadata-fields",
+        help="Comma-separated metadata field paths to include (dot-notation). Example: 'owner,config.region'",
+    )
+    agent_list_parser.add_argument("--json", action="store_true", help="Output raw JSON response")
+
+    # Agent get command
+    agent_get_parser = subparsers.add_parser("agent-get", help="Get agent details")
+    agent_get_parser.add_argument("--path", required=True, help="Agent path (e.g., /code-reviewer)")
+    agent_get_parser.add_argument(
+        "--metadata-fields",
+        help="Comma-separated metadata field paths to include (dot-notation). Example: 'owner,config.region'",
+    )
+
+    # Agent update command
+    agent_update_parser = subparsers.add_parser("agent-update", help="Update an existing agent")
+    agent_update_parser.add_argument("--path", required=True, help="Agent path")
+    agent_update_parser.add_argument(
+        "--config", required=True, help="Path to updated agent configuration JSON file"
+    )
+
+    # Agent patch command (RFC 7396 JSON Merge Patch)
+    agent_patch_parser = subparsers.add_parser(
+        "agent-patch", help="Partially update an agent (JSON Merge Patch)"
+    )
+    agent_patch_parser.add_argument("--path", required=True, help="Agent path")
+    agent_patch_parser.add_argument(
+        "--config", required=True, help="Path to JSON file containing fields to patch"
+    )
+    agent_patch_parser.add_argument(
+        "--if-match",
+        dest="if_match",
+        default=None,
+        help="Weak ETag from a prior GET/PATCH for optimistic concurrency",
+    )
+
+    # Agent batch submit command
+    agent_batch_submit_parser = subparsers.add_parser(
+        "agent-batch-submit", help="Submit an async batch of agent operations"
+    )
+    agent_batch_submit_parser.add_argument(
+        "--file", required=True, help="Path to JSON file with batch items"
+    )
+    agent_batch_submit_parser.add_argument(
+        "--idempotency-key",
+        dest="idempotency_key",
+        default=None,
+        help="Optional idempotency key to dedupe re-submissions",
+    )
+    agent_batch_submit_parser.add_argument(
+        "--json", action="store_true", help="Output raw JSON response"
+    )
+
+    # Agent batch status command
+    agent_batch_status_parser = subparsers.add_parser(
+        "agent-batch-status", help="Get the status and results of a batch job"
+    )
+    agent_batch_status_parser.add_argument(
+        "--job-id", dest="job_id", required=True, help="Batch job identifier"
+    )
+    agent_batch_status_parser.add_argument(
+        "--json", action="store_true", help="Output raw JSON response"
+    )
+
+    # Agent delete command
+    agent_delete_parser = subparsers.add_parser("agent-delete", help="Delete an agent")
+    agent_delete_parser.add_argument("--path", required=True, help="Agent path")
+    agent_delete_parser.add_argument(
+        "--force", action="store_true", help="Skip confirmation prompt"
+    )
+
+    # Agent toggle command
+    agent_toggle_parser = subparsers.add_parser(
+        "agent-toggle", help="Toggle agent enabled/disabled status"
+    )
+    agent_toggle_parser.add_argument("--path", required=True, help="Agent path")
+    agent_toggle_parser.add_argument(
+        "--enabled",
+        required=True,
+        type=lambda x: x.lower() == "true",
+        help="True to enable, false to disable",
+    )
+
+    # Agent discover command
+    agent_discover_parser = subparsers.add_parser(
+        "agent-discover", help="Discover agents by skills"
+    )
+    agent_discover_parser.add_argument(
+        "--skills", required=True, help="Comma-separated list of required skills"
+    )
+    agent_discover_parser.add_argument("--tags", help="Comma-separated list of tag filters")
+    agent_discover_parser.add_argument(
+        "--max-results", type=int, default=10, help="Maximum number of results (default: 10)"
+    )
+
+    # Agent search command
+    agent_search_parser = subparsers.add_parser("agent-search", help="Semantic search for agents")
+    agent_search_parser.add_argument("--query", required=True, help="Natural language search query")
+    agent_search_parser.add_argument(
+        "--max-results", type=int, default=10, help="Maximum number of results (default: 10)"
+    )
+    agent_search_parser.add_argument("--json", action="store_true", help="Output results as JSON")
+
+    # Agent rate command
+    agent_rate_parser = subparsers.add_parser("agent-rate", help="Rate an agent (1-5 stars)")
+    agent_rate_parser.add_argument(
+        "--path", required=True, help="Agent path (e.g., /code-reviewer)"
+    )
+    agent_rate_parser.add_argument(
+        "--rating",
+        required=True,
+        type=int,
+        choices=[1, 2, 3, 4, 5],
+        help="Rating value (1-5 stars)",
+    )
+
+    # Agent rating command
+    agent_rating_parser = subparsers.add_parser(
+        "agent-rating", help="Get rating information for an agent"
+    )
+    agent_rating_parser.add_argument(
+        "--path", required=True, help="Agent path (e.g., /code-reviewer)"
+    )
+
+    # Agent security scan command
+    agent_security_scan_parser = subparsers.add_parser(
+        "agent-security-scan", help="Get security scan results for an agent"
+    )
+    agent_security_scan_parser.add_argument(
+        "--path", required=True, help="Agent path (e.g., /code-reviewer)"
+    )
+
+    # Agent rescan command
+    agent_rescan_parser = subparsers.add_parser(
+        "agent-rescan", help="Trigger manual security scan for an agent (admin only)"
+    )
+    agent_rescan_parser.add_argument(
+        "--path", required=True, help="Agent path (e.g., /code-reviewer)"
+    )
+    agent_rescan_parser.add_argument("--json", action="store_true", help="Output raw JSON")
+
+    # Agent pull-card command
+    agent_pull_card_parser = subparsers.add_parser(
+        "agent-pull-card",
+        help=(
+            "Pull the latest A2A agent card from the remote endpoint. Default "
+            "is a dry-run preview; use --apply to persist A2A-spec changes."
+        ),
+    )
+    agent_pull_card_parser.add_argument(
+        "--path", required=True, help="Agent path (e.g., /jewel-homes-support-agent)"
+    )
+    agent_pull_card_parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="Apply A2A-spec changes (default is a dry-run preview).",
+    )
+    agent_pull_card_parser.add_argument(
+        "--json", action="store_true", help="Output raw JSON instead of the pretty summary."
+    )
+
+    # Agent ANS (Agent Name Service) commands
+    agent_ans_link_parser = subparsers.add_parser(
+        "agent-ans-link", help="Link an ANS Agent ID to an agent"
+    )
+    agent_ans_link_parser.add_argument(
+        "--path", required=True, help="Agent path (e.g., /code-reviewer)"
+    )
+    agent_ans_link_parser.add_argument(
+        "--ans-agent-id",
+        required=True,
+        help="ANS Agent ID (e.g., ans://v1.example.com)",
+    )
+
+    agent_ans_status_parser = subparsers.add_parser(
+        "agent-ans-status", help="Get ANS verification status for an agent"
+    )
+    agent_ans_status_parser.add_argument(
+        "--path", required=True, help="Agent path (e.g., /code-reviewer)"
+    )
+    agent_ans_status_parser.add_argument("--json", action="store_true", help="Output raw JSON")
+
+    agent_ans_unlink_parser = subparsers.add_parser(
+        "agent-ans-unlink", help="Remove ANS link from an agent"
+    )
+    agent_ans_unlink_parser.add_argument(
+        "--path", required=True, help="Agent path (e.g., /code-reviewer)"
+    )
+
+    # ==========================================
+    # Agent Skills Commands
+    # ==========================================
+
+    # Skill register command
+    skill_register_parser = subparsers.add_parser(
+        "skill-register", help="Register a new Agent Skill"
+    )
+    skill_register_parser.add_argument(
+        "--name", required=True, help="Skill name (lowercase alphanumeric with hyphens)"
+    )
+    skill_register_parser.add_argument("--url", required=True, help="URL to SKILL.md file")
+    skill_register_parser.add_argument(
+        "--skip-duplicate-check",
+        action="store_true",
+        help="Do not pre-flight the duplicate check before registering",
+    )
+    skill_register_parser.add_argument(
+        "--fail-on-duplicate",
+        action="store_true",
+        help="Abort the registration when the duplicate check finds a match",
+    )
+    skill_register_parser.add_argument(
+        "--id",
+        help="Optional caller-supplied id (UUID, ARN, ...). Auto-generated if omitted. "
+        "Honored only when the registry enables ALLOW_CALLER_SUPPLIED_ASSET_ID.",
+    )
+    skill_register_parser.add_argument("--description", help="Skill description")
+    skill_register_parser.add_argument("--version", help="Skill version (e.g., 1.0.0)")
+    skill_register_parser.add_argument("--tags", help="Comma-separated tags")
+    skill_register_parser.add_argument(
+        "--target-agents",
+        help="Comma-separated target coding assistants (e.g., claude-code,cursor)",
+    )
+    skill_register_parser.add_argument(
+        "--metadata",
+        help='Custom metadata as JSON string (e.g., \'{"category": "data-processing"}\')',
+    )
+    skill_register_parser.add_argument(
+        "--visibility",
+        choices=["public", "private", "group"],
+        default="public",
+        help="Visibility level (default: public)",
+    )
+
+    # Skill list command
+    skill_list_parser = subparsers.add_parser("skill-list", help="List all Agent Skills")
+    skill_list_parser.add_argument(
+        "--include-disabled", action="store_true", help="Include disabled skills"
+    )
+    skill_list_parser.add_argument("--tag", help="Filter by tag")
+    skill_list_parser.add_argument(
+        "--limit", type=int, default=20, help="Number of skills to return (1-100, default 20)"
+    )
+    skill_list_parser.add_argument(
+        "--offset", type=int, default=0, help="Number of skills to skip (default 0)"
+    )
+    skill_list_parser.add_argument(
+        "--metadata-fields",
+        help="Comma-separated metadata field paths to include (dot-notation). Example: 'author,extra.team'",
+    )
+    skill_list_parser.add_argument("--json", action="store_true", help="Output raw JSON response")
+
+    # Skill get command
+    skill_get_parser = subparsers.add_parser("skill-get", help="Get skill details")
+    skill_get_parser.add_argument(
+        "--path", required=True, help="Skill path or name (e.g., pdf-processing)"
+    )
+
+    # Skill delete command
+    skill_delete_parser = subparsers.add_parser("skill-delete", help="Delete a skill")
+    skill_delete_parser.add_argument("--path", required=True, help="Skill path or name")
+
+    # Skill toggle command
+    skill_toggle_parser = subparsers.add_parser(
+        "skill-toggle", help="Toggle skill enabled/disabled state"
+    )
+    skill_toggle_parser.add_argument("--path", required=True, help="Skill path or name")
+    skill_toggle_parser.add_argument(
+        "--enable",
+        type=lambda x: x.lower() == "true",
+        required=True,
+        help="Enable (true) or disable (false)",
+    )
+
+    # Skill health command
+    skill_health_parser = subparsers.add_parser(
+        "skill-health", help="Check skill health (SKILL.md accessibility)"
+    )
+    skill_health_parser.add_argument("--path", required=True, help="Skill path or name")
+
+    # Skill content command
+    skill_content_parser = subparsers.add_parser(
+        "skill-content", help="Get SKILL.md content for a skill"
+    )
+    skill_content_parser.add_argument("--path", required=True, help="Skill path or name")
+    skill_content_parser.add_argument("--raw", action="store_true", help="Output raw content only")
+
+    # Skill search command
+    skill_search_parser = subparsers.add_parser("skill-search", help="Search for skills")
+    skill_search_parser.add_argument("--query", required=True, help="Search query")
+    skill_search_parser.add_argument("--tags", help="Comma-separated tags filter")
+
+    # Skill rate command
+    skill_rate_parser = subparsers.add_parser("skill-rate", help="Rate a skill (1-5 stars)")
+    skill_rate_parser.add_argument("--path", required=True, help="Skill path or name")
+    skill_rate_parser.add_argument(
+        "--rating", type=int, required=True, choices=[1, 2, 3, 4, 5], help="Rating (1-5 stars)"
+    )
+
+    # Skill rating command
+    skill_rating_parser = subparsers.add_parser(
+        "skill-rating", help="Get rating information for a skill"
+    )
+    skill_rating_parser.add_argument("--path", required=True, help="Skill path or name")
+
+    # Skill security scan command
+    skill_security_scan_parser = subparsers.add_parser(
+        "skill-security-scan", help="Get security scan results for a skill"
+    )
+    skill_security_scan_parser.add_argument("--path", required=True, help="Skill path or name")
+
+    # Skill rescan command
+    skill_rescan_parser = subparsers.add_parser(
+        "skill-rescan", help="Trigger manual security scan for a skill (admin only)"
+    )
+    skill_rescan_parser.add_argument("--path", required=True, help="Skill path or name")
+    skill_rescan_parser.add_argument(
+        "--json", dest="json_output", action="store_true", help="Output raw JSON only"
+    )
+
+    # Anthropic Registry API Commands
+
+    # Anthropic list servers command
+    anthropic_list_parser = subparsers.add_parser(
+        "anthropic-list", help="List all servers (Anthropic Registry API v0.1)"
+    )
+    anthropic_list_parser.add_argument("--limit", type=int, help="Maximum results per page")
+    anthropic_list_parser.add_argument(
+        "--raw", action="store_true", help="Output raw JSON response"
+    )
+
+    # Anthropic list versions command
+    anthropic_versions_parser = subparsers.add_parser(
+        "anthropic-versions", help="List versions for a server (Anthropic Registry API v0.1)"
+    )
+    anthropic_versions_parser.add_argument(
+        "--server-name",
+        required=True,
+        help="Server name in reverse-DNS format (e.g., 'io.mcpgateway/example-server')",
+    )
+    anthropic_versions_parser.add_argument(
+        "--raw", action="store_true", help="Output raw JSON response"
+    )
+
+    # Anthropic get server command
+    anthropic_get_parser = subparsers.add_parser(
+        "anthropic-get", help="Get server details (Anthropic Registry API v0.1)"
+    )
+    anthropic_get_parser.add_argument(
+        "--server-name", required=True, help="Server name in reverse-DNS format"
+    )
+    anthropic_get_parser.add_argument(
+        "--version", default="latest", help="Server version (default: latest)"
+    )
+    anthropic_get_parser.add_argument("--raw", action="store_true", help="Output raw JSON response")
+
+    # User Management Commands (Management API)
+
+    # List users command
+    user_list_parser = subparsers.add_parser("user-list", help="List Keycloak users")
+    user_list_parser.add_argument("--search", help="Search string to filter users")
+    user_list_parser.add_argument(
+        "--limit", type=int, default=500, help="Maximum number of results (default: 500)"
+    )
+
+    # Create M2M account command
+    user_m2m_parser = subparsers.add_parser("user-create-m2m", help="Create M2M service account")
+    user_m2m_parser.add_argument("--name", required=True, help="Service account name/client ID")
+    user_m2m_parser.add_argument(
+        "--groups", required=True, help="Comma-separated list of group names"
+    )
+    user_m2m_parser.add_argument("--description", help="Account description")
+
+    # Create human user command
+    user_human_parser = subparsers.add_parser("user-create-human", help="Create human user account")
+    user_human_parser.add_argument("--username", required=True, help="Username")
+    user_human_parser.add_argument("--email", required=True, help="Email address")
+    user_human_parser.add_argument("--first-name", required=True, help="First name")
+    user_human_parser.add_argument("--last-name", required=True, help="Last name")
+    user_human_parser.add_argument(
+        "--groups", required=True, help="Comma-separated list of group names"
+    )
+    user_human_parser.add_argument("--password", help="Initial password (optional)")
+
+    # Delete user command
+    user_delete_parser = subparsers.add_parser("user-delete", help="Delete a user")
+    user_delete_parser.add_argument("--username", required=True, help="Username to delete")
+    user_delete_parser.add_argument("--force", action="store_true", help="Skip confirmation prompt")
+
+    # -------------------------------------------------------------------------
+    # M2M direct registration commands (issue #851)
+    # Write to idp_m2m_clients without IdP Admin API. Admin only for mutations.
+    # -------------------------------------------------------------------------
+
+    m2m_create_parser = subparsers.add_parser(
+        "m2m-client-create",
+        help="Register an M2M client directly (no IdP Admin API required)",
+    )
+    m2m_create_parser.add_argument(
+        "--client-id", required=True, help="IdP application client ID to register"
+    )
+    m2m_create_parser.add_argument(
+        "--client-name", required=True, help="Human-readable name for the client"
+    )
+    m2m_create_parser.add_argument(
+        "--groups",
+        default="",
+        help="Comma-separated group names (empty string = no groups)",
+    )
+    m2m_create_parser.add_argument("--description", help="Optional description")
+
+    m2m_list_parser = subparsers.add_parser(
+        "m2m-client-list", help="List registered M2M clients (paginated)"
+    )
+    m2m_list_parser.add_argument("--provider", help="Filter by provider (e.g. manual, okta, auth0)")
+    m2m_list_parser.add_argument(
+        "--limit", type=int, default=500, help="Max records per page (1-1000, default 500)"
+    )
+    m2m_list_parser.add_argument(
+        "--skip", type=int, default=0, help="Offset for pagination (default 0)"
+    )
+    m2m_list_parser.add_argument(
+        "--json", action="store_true", help="Output raw JSON instead of formatted text"
+    )
+
+    m2m_get_parser = subparsers.add_parser(
+        "m2m-client-get", help="Get a single M2M client by client_id"
+    )
+    m2m_get_parser.add_argument("--client-id", required=True, help="IdP client ID")
+    m2m_get_parser.add_argument(
+        "--json", action="store_true", help="Output raw JSON instead of formatted text"
+    )
+
+    m2m_update_parser = subparsers.add_parser(
+        "m2m-client-update",
+        help="Partially update an M2M client (manual records only)",
+    )
+    m2m_update_parser.add_argument("--client-id", required=True, help="IdP client ID")
+    m2m_update_parser.add_argument(
+        "--client-name", help="New client name (omit to leave unchanged)"
+    )
+    m2m_update_parser.add_argument(
+        "--groups",
+        help="Comma-separated new groups list; empty string clears groups; omit to leave unchanged",
+    )
+    m2m_update_parser.add_argument(
+        "--description", help="New description (omit to leave unchanged)"
+    )
+    m2m_update_parser.add_argument(
+        "--enabled",
+        choices=["true", "false"],
+        help="Set enabled flag (omit to leave unchanged)",
+    )
+
+    m2m_delete_parser = subparsers.add_parser(
+        "m2m-client-delete",
+        help="Delete an M2M client (manual records only)",
+    )
+    m2m_delete_parser.add_argument("--client-id", required=True, help="IdP client ID")
+    m2m_delete_parser.add_argument("--force", action="store_true", help="Skip confirmation prompt")
+
+    # -------------------------------------------------------------------------
+    # User-group fallback commands (issue #1127)
+    # Write to idp_user_groups for IdPs (e.g. PingFederate) that don't carry
+    # group memberships in JWTs. Admin only for mutations.
+    # -------------------------------------------------------------------------
+
+    user_group_create_parser = subparsers.add_parser(
+        "user-group-create",
+        help="Register a username -> groups mapping in idp_user_groups (admin only)",
+    )
+    user_group_create_parser.add_argument(
+        "--username", required=True, help="IdP username (sub, email, or login id)"
+    )
+    user_group_create_parser.add_argument(
+        "--groups",
+        required=True,
+        help="Comma-separated group names (use empty string for no groups)",
+    )
+    user_group_create_parser.add_argument("--email", help="Optional user email")
+    user_group_create_parser.add_argument(
+        "--provider", help="Optional provider hint (server forces 'manual' today)"
+    )
+    user_group_create_parser.add_argument(
+        "--disabled",
+        action="store_true",
+        help="Create the record in disabled state (default: enabled)",
+    )
+    user_group_create_parser.add_argument(
+        "--json", action="store_true", help="Output raw JSON instead of formatted text"
+    )
+
+    user_group_list_parser = subparsers.add_parser(
+        "user-group-list",
+        help="List user-group fallback records (paginated)",
+    )
+    user_group_list_parser.add_argument(
+        "--skip", type=int, default=0, help="Offset for pagination (default 0)"
+    )
+    user_group_list_parser.add_argument(
+        "--limit", type=int, default=50, help="Max records per page (default 50)"
+    )
+    user_group_list_parser.add_argument(
+        "--provider", help="Filter by provider (e.g. manual, pingfederate)"
+    )
+    user_group_list_parser.add_argument("--q", help="Substring filter on username/email")
+    user_group_list_parser.add_argument(
+        "--json", action="store_true", help="Output raw JSON instead of formatted text"
+    )
+
+    user_group_get_parser = subparsers.add_parser(
+        "user-group-get",
+        help="Get a single user-group record by username",
+    )
+    user_group_get_parser.add_argument("--username", required=True, help="IdP username to look up")
+    user_group_get_parser.add_argument(
+        "--json", action="store_true", help="Output raw JSON instead of formatted text"
+    )
+
+    user_group_update_parser = subparsers.add_parser(
+        "user-group-update",
+        help="Update fields on an existing user-group record (admin only)",
+    )
+    user_group_update_parser.add_argument(
+        "--username", required=True, help="IdP username to update"
+    )
+    user_group_update_parser.add_argument(
+        "--groups",
+        help="Comma-separated new groups list; empty string clears groups; omit to leave unchanged",
+    )
+    user_group_update_parser.add_argument("--email", help="New email (omit to leave unchanged)")
+    user_group_update_enabled = user_group_update_parser.add_mutually_exclusive_group()
+    user_group_update_enabled.add_argument(
+        "--enabled", action="store_true", help="Set enabled=True"
+    )
+    user_group_update_enabled.add_argument(
+        "--disabled", action="store_true", help="Set enabled=False"
+    )
+    user_group_update_parser.add_argument(
+        "--json", action="store_true", help="Output raw JSON instead of formatted text"
+    )
+
+    user_group_delete_parser = subparsers.add_parser(
+        "user-group-delete",
+        help="Delete a user-group record by username (admin only)",
+    )
+    user_group_delete_parser.add_argument(
+        "--username", required=True, help="IdP username to delete"
+    )
+    user_group_delete_parser.add_argument(
+        "--force", action="store_true", help="Skip confirmation prompt"
+    )
+
+    pingfederate_user_create_parser = subparsers.add_parser(
+        "pingfederate-user-create",
+        help="Create or update a user inside PingFederate's Simple PCV (admin only)",
+        description=(
+            "Create or update a user inside PingFederate's Simple Password "
+            "Credential Validator (PCV). Requires AUTH_PROVIDER=pingfederate "
+            "server-side. The password is collected via an interactive prompt "
+            "(so it never appears in shell history) unless --password-stdin is "
+            "passed in which case one line is read from stdin. The registry "
+            "never stores the password."
+        ),
+    )
+    pingfederate_user_create_parser.add_argument(
+        "--username", required=True, help="Target username inside PingFederate"
+    )
+    pingfederate_user_create_parser.add_argument(
+        "--password-stdin",
+        action="store_true",
+        help="Read password from stdin instead of prompting interactively",
+    )
+
+    # Create IAM group command
+    group_create_parser = subparsers.add_parser("group-create", help="Create a new IAM group")
+    group_create_parser.add_argument("--name", required=True, help="Group name")
+    group_create_parser.add_argument("--description", help="Group description")
+    group_create_parser.add_argument(
+        "--idp",
+        action="store_true",
+        help="Also create the group in the configured IdP (Keycloak/Entra), not just the local scopes store",
+    )
+
+    # Delete IAM group command
+    group_delete_parser = subparsers.add_parser("group-delete", help="Delete an IAM group")
+    group_delete_parser.add_argument("--name", required=True, help="Group name to delete")
+    group_delete_parser.add_argument(
+        "--force", action="store_true", help="Skip confirmation prompt"
+    )
+
+    # List IAM groups command
+    group_list_parser = subparsers.add_parser("group-list", help="List IAM groups")
+
+    # Federation Management Commands
+
+    # Get federation config command
+    federation_get_parser = subparsers.add_parser(
+        "federation-get", help="Get federation configuration"
+    )
+    federation_get_parser.add_argument(
+        "--config-id", default="default", help="Configuration ID (default: default)"
+    )
+    federation_get_parser.add_argument(
+        "--json", action="store_true", help="Output raw JSON instead of formatted text"
+    )
+
+    # Save federation config command
+    federation_save_parser = subparsers.add_parser(
+        "federation-save", help="Save federation configuration from JSON file"
+    )
+    federation_save_parser.add_argument(
+        "--config", required=True, help="Path to federation config JSON file"
+    )
+    federation_save_parser.add_argument(
+        "--config-id", default="default", help="Configuration ID (default: default)"
+    )
+
+    # Delete federation config command
+    federation_delete_parser = subparsers.add_parser(
+        "federation-delete", help="Delete federation configuration"
+    )
+    federation_delete_parser.add_argument(
+        "--config-id", default="default", help="Configuration ID to delete (default: default)"
+    )
+    federation_delete_parser.add_argument(
+        "--force", action="store_true", help="Skip confirmation prompt"
+    )
+
+    # List federation configs command
+    federation_list_parser = subparsers.add_parser(
+        "federation-list", help="List all federation configurations"
+    )
+    federation_list_parser.add_argument(
+        "--json", action="store_true", help="Output raw JSON instead of formatted text"
+    )
+
+    # Add Anthropic server command
+    federation_add_anthropic_parser = subparsers.add_parser(
+        "federation-add-anthropic-server", help="Add Anthropic server to federation config"
+    )
+    federation_add_anthropic_parser.add_argument(
+        "--server-name",
+        required=True,
+        help="Anthropic server name (e.g., io.github.jgador/websharp)",
+    )
+    federation_add_anthropic_parser.add_argument(
+        "--config-id", default="default", help="Configuration ID (default: default)"
+    )
+
+    # Remove Anthropic server command
+    federation_remove_anthropic_parser = subparsers.add_parser(
+        "federation-remove-anthropic-server", help="Remove Anthropic server from federation config"
+    )
+    federation_remove_anthropic_parser.add_argument(
+        "--server-name", required=True, help="Anthropic server name to remove"
+    )
+    federation_remove_anthropic_parser.add_argument(
+        "--config-id", default="default", help="Configuration ID (default: default)"
+    )
+
+    # Add ASOR agent command
+    federation_add_asor_parser = subparsers.add_parser(
+        "federation-add-asor-agent", help="Add ASOR agent to federation config"
+    )
+    federation_add_asor_parser.add_argument(
+        "--agent-id", required=True, help="ASOR agent ID (e.g., aws_assistant)"
+    )
+    federation_add_asor_parser.add_argument(
+        "--config-id", default="default", help="Configuration ID (default: default)"
+    )
+
+    # Remove ASOR agent command
+    federation_remove_asor_parser = subparsers.add_parser(
+        "federation-remove-asor-agent", help="Remove ASOR agent from federation config"
+    )
+    federation_remove_asor_parser.add_argument(
+        "--agent-id", required=True, help="ASOR agent ID to remove"
+    )
+    federation_remove_asor_parser.add_argument(
+        "--config-id", default="default", help="Configuration ID (default: default)"
+    )
+
+    # Federation sync command
+    federation_sync_parser = subparsers.add_parser(
+        "federation-sync", help="Trigger manual federation sync to import servers/agents"
+    )
+    federation_sync_parser.add_argument(
+        "--config-id", default="default", help="Configuration ID (default: default)"
+    )
+    federation_sync_parser.add_argument(
+        "--source",
+        choices=["anthropic", "asor", "aws_registry"],
+        help="Optional source filter (anthropic, asor, or aws_registry). Syncs all enabled sources if not specified.",
+    )
+    federation_sync_parser.add_argument(
+        "--json", action="store_true", help="Output raw JSON instead of formatted text"
+    )
+
+    # ==========================================
+    # Peer Registry Management Commands
+    # ==========================================
+
+    # List peers command
+    peer_list_parser = subparsers.add_parser(
+        "peer-list", help="List all configured peer registries"
+    )
+    peer_list_parser.add_argument(
+        "--enabled-only", action="store_true", help="Show only enabled peers"
+    )
+    peer_list_parser.add_argument(
+        "--json", action="store_true", help="Output raw JSON instead of formatted text"
+    )
+
+    # Add peer command
+    peer_add_parser = subparsers.add_parser(
+        "peer-add", help="Add a new peer registry from JSON config"
+    )
+    peer_add_parser.add_argument(
+        "--config", required=True, help="Path to peer configuration JSON file"
+    )
+    peer_add_parser.add_argument(
+        "--federation-token",
+        required=False,
+        help="Federation static token from the remote peer registry. "
+        "Overrides federation_token in the JSON config file if both are provided.",
+    )
+
+    # Get peer command
+    peer_get_parser = subparsers.add_parser(
+        "peer-get", help="Get details of a specific peer registry"
+    )
+    peer_get_parser.add_argument("--peer-id", required=True, help="Peer registry identifier")
+    peer_get_parser.add_argument(
+        "--json", action="store_true", help="Output raw JSON instead of formatted text"
+    )
+
+    # Update peer command
+    peer_update_parser = subparsers.add_parser(
+        "peer-update", help="Update an existing peer registry"
+    )
+    peer_update_parser.add_argument("--peer-id", required=True, help="Peer registry identifier")
+    peer_update_parser.add_argument(
+        "--config", required=True, help="Path to updated peer configuration JSON file"
+    )
+    peer_update_parser.add_argument(
+        "--federation-token",
+        required=False,
+        help="Federation static token from the remote peer registry. "
+        "Overrides federation_token in the JSON config file if both are provided.",
+    )
+
+    # Update peer token command
+    peer_update_token_parser = subparsers.add_parser(
+        "peer-update-token", help="Update only the federation token for a peer registry"
+    )
+    peer_update_token_parser.add_argument(
+        "--peer-id", required=True, help="Peer registry identifier"
+    )
+    peer_update_token_parser.add_argument(
+        "--federation-token",
+        required=True,
+        help="New federation static token from the remote peer registry. "
+        "Use this to recover from token loss (issue #561) or rotate tokens.",
+    )
+
+    # Remove peer command
+    peer_remove_parser = subparsers.add_parser("peer-remove", help="Remove a peer registry")
+    peer_remove_parser.add_argument("--peer-id", required=True, help="Peer registry identifier")
+    peer_remove_parser.add_argument("--force", action="store_true", help="Skip confirmation prompt")
+
+    # Sync from specific peer command
+    peer_sync_parser = subparsers.add_parser(
+        "peer-sync", help="Trigger sync from a specific peer registry"
+    )
+    peer_sync_parser.add_argument(
+        "--peer-id", required=True, help="Peer registry identifier to sync from"
+    )
+    peer_sync_parser.add_argument(
+        "--json", action="store_true", help="Output raw JSON instead of formatted text"
+    )
+
+    # Sync from all peers command
+    peer_sync_all_parser = subparsers.add_parser(
+        "peer-sync-all", help="Trigger sync from all enabled peer registries"
+    )
+    peer_sync_all_parser.add_argument(
+        "--json", action="store_true", help="Output raw JSON instead of formatted text"
+    )
+
+    # Get peer sync status command
+    peer_status_parser = subparsers.add_parser(
+        "peer-status", help="Get sync status for a specific peer registry"
+    )
+    peer_status_parser.add_argument("--peer-id", required=True, help="Peer registry identifier")
+    peer_status_parser.add_argument(
+        "--json", action="store_true", help="Output raw JSON instead of formatted text"
+    )
+
+    # Enable peer command
+    peer_enable_parser = subparsers.add_parser("peer-enable", help="Enable a peer registry")
+    peer_enable_parser.add_argument("--peer-id", required=True, help="Peer registry identifier")
+
+    # Disable peer command
+    peer_disable_parser = subparsers.add_parser("peer-disable", help="Disable a peer registry")
+    peer_disable_parser.add_argument("--peer-id", required=True, help="Peer registry identifier")
+
+    # Get peer connections command
+    peer_connections_parser = subparsers.add_parser(
+        "peer-connections", help="Get all federation connections across all peers"
+    )
+    peer_connections_parser.add_argument(
+        "--json", action="store_true", help="Output raw JSON instead of formatted text"
+    )
+
+    # Get shared resources command
+    peer_shared_resources_parser = subparsers.add_parser(
+        "peer-shared-resources", help="Get resource sharing summary across all peers"
+    )
+    peer_shared_resources_parser.add_argument(
+        "--json", action="store_true", help="Output raw JSON instead of formatted text"
+    )
+
+    # ==========================================
+    # Virtual MCP Server Commands
+    # ==========================================
+
+    # Create virtual server command
+    vs_create_parser = subparsers.add_parser(
+        "vs-create", help="Create a virtual MCP server from JSON config"
+    )
+    vs_create_parser.add_argument(
+        "--config", required=True, help="Path to virtual server configuration JSON file"
+    )
+
+    # List virtual servers command
+    vs_list_parser = subparsers.add_parser("vs-list", help="List all virtual MCP servers")
+    vs_list_parser.add_argument(
+        "--enabled-only", action="store_true", help="Show only enabled virtual servers"
+    )
+    vs_list_parser.add_argument("--tag", help="Filter by tag")
+    vs_list_parser.add_argument(
+        "--json", action="store_true", help="Output raw JSON instead of formatted text"
+    )
+
+    # Get virtual server command
+    vs_get_parser = subparsers.add_parser("vs-get", help="Get virtual MCP server details")
+    vs_get_parser.add_argument(
+        "--path", required=True, help="Virtual server path (e.g., /virtual/dev-tools)"
+    )
+    vs_get_parser.add_argument(
+        "--json", action="store_true", help="Output raw JSON instead of formatted text"
+    )
+
+    # Update virtual server command
+    vs_update_parser = subparsers.add_parser(
+        "vs-update", help="Update a virtual MCP server from JSON config"
+    )
+    vs_update_parser.add_argument("--path", required=True, help="Virtual server path to update")
+    vs_update_parser.add_argument(
+        "--config", required=True, help="Path to updated configuration JSON file"
+    )
+
+    # Delete virtual server command
+    vs_delete_parser = subparsers.add_parser("vs-delete", help="Delete a virtual MCP server")
+    vs_delete_parser.add_argument("--path", required=True, help="Virtual server path to delete")
+    vs_delete_parser.add_argument("--force", action="store_true", help="Skip confirmation prompt")
+
+    # Toggle virtual server command
+    vs_toggle_parser = subparsers.add_parser(
+        "vs-toggle", help="Enable or disable a virtual MCP server"
+    )
+    vs_toggle_parser.add_argument("--path", required=True, help="Virtual server path")
+    vs_toggle_parser.add_argument(
+        "--enabled",
+        required=True,
+        choices=["true", "false"],
+        help="Enable (true) or disable (false)",
+    )
+
+    # Rate virtual server command
+    vs_rate_parser = subparsers.add_parser("vs-rate", help="Rate a virtual MCP server (1-5 stars)")
+    vs_rate_parser.add_argument("--path", required=True, help="Virtual server path")
+    vs_rate_parser.add_argument(
+        "--rating", required=True, type=int, choices=[1, 2, 3, 4, 5], help="Rating (1-5 stars)"
+    )
+
+    # Get virtual server rating command
+    vs_rating_parser = subparsers.add_parser(
+        "vs-rating", help="Get rating information for a virtual MCP server"
+    )
+    vs_rating_parser.add_argument("--path", required=True, help="Virtual server path")
+
+    # ==========================================
+    # Registry Card Management Commands
+    # ==========================================
+
+    # Get registry card command
+    registry_card_get_parser = subparsers.add_parser(
+        "registry-card-get", help="Get the registry card"
+    )
+
+    # Discover registry card via .well-known endpoint
+    registry_card_discover_parser = subparsers.add_parser(
+        "registry-card-discover", help="Discover registry card via .well-known endpoint"
+    )
+
+    # Update registry card command
+    registry_card_update_parser = subparsers.add_parser(
+        "registry-card-update", help="Update the registry card"
+    )
+    registry_card_update_parser.add_argument("--name", help="Registry name")
+    registry_card_update_parser.add_argument("--description", help="Registry description")
+    registry_card_update_parser.add_argument("--contact-email", help="Contact email address")
+    registry_card_update_parser.add_argument("--contact-url", help="Contact URL")
+
+    # Telemetry management commands
+    subparsers.add_parser(
+        "telemetry-heartbeat",
+        help="Force an immediate heartbeat telemetry event (admin only)",
+    )
+    subparsers.add_parser(
+        "telemetry-startup",
+        help="Force an immediate startup telemetry event (admin only)",
+    )
+
+    # ==========================================
+    # Application Log Commands (issue #886)
+    # ==========================================
+
+    # Embeddings admin commands
+    embeddings_missing_parser = subparsers.add_parser(
+        "embeddings-missing",
+        help="Find documents missing from the search embeddings index (admin only)",
+    )
+    embeddings_missing_parser.add_argument("--json", action="store_true", help="Output raw JSON")
+
+    embeddings_reindex_parser = subparsers.add_parser(
+        "embeddings-reindex",
+        help="Re-index documents to generate search embeddings (admin only)",
+    )
+    embeddings_reindex_parser.add_argument(
+        "--paths",
+        nargs="+",
+        help="Specific paths to reindex (e.g. /cloudflare-docs /my-agent)",
+    )
+    embeddings_reindex_parser.add_argument(
+        "--all-missing",
+        action="store_true",
+        help="Reindex all documents missing from the embeddings index",
+    )
+    embeddings_reindex_parser.add_argument(
+        "--json", action="store_true", help="Output raw JSON per batch"
+    )
+
+    embeddings_stale_parser = subparsers.add_parser(
+        "embeddings-stale",
+        help="Find orphaned embeddings with no source document (admin only)",
+    )
+    embeddings_stale_parser.add_argument("--json", action="store_true", help="Output raw JSON")
+
+    embeddings_stale_cleanup_parser = subparsers.add_parser(
+        "embeddings-stale-cleanup",
+        help="Remove orphaned embeddings from the search index (admin only)",
+    )
+    embeddings_stale_cleanup_parser.add_argument(
+        "--paths",
+        nargs="+",
+        help="Specific stale paths to remove (e.g. /old-server /old-agent)",
+    )
+    embeddings_stale_cleanup_parser.add_argument(
+        "--all-stale",
+        action="store_true",
+        help="Remove all orphaned embeddings detected by embeddings-stale",
+    )
+    embeddings_stale_cleanup_parser.add_argument(
+        "--json", action="store_true", help="Output raw JSON per batch"
+    )
+
+    logs_parser = subparsers.add_parser("logs", help="Query application logs (admin only)")
+    logs_parser.add_argument("--service", help="Filter by service name")
+    logs_parser.add_argument(
+        "--level",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        help="Minimum log level",
+    )
+    logs_parser.add_argument("--hostname", help="Filter by hostname/pod")
+    logs_parser.add_argument("--search", help="Substring search in messages")
+    logs_parser.add_argument("--start", help="Start timestamp (ISO-8601)")
+    logs_parser.add_argument("--end", help="End timestamp (ISO-8601)")
+    logs_parser.add_argument("--limit", type=int, default=100, help="Page size (default: 100)")
+    logs_parser.add_argument("--offset", type=int, default=0, help="Offset for pagination")
+    logs_parser.add_argument(
+        "--metadata", action="store_true", help="Show available filter values instead of logs"
+    )
+    logs_parser.add_argument(
+        "--json", action="store_true", help="Output raw JSON instead of formatted text"
+    )
+
+    args = parser.parse_args()
+
+    # Enable debug logging if requested
+    if args.debug:
+        logging.getLogger().setLevel(logging.DEBUG)
+
+    # Dispatch to command handler
+    if not args.command:
+        parser.print_help()
+        return 1
+
+    command_handlers = {
+        "register": cmd_register,
+        "custom-type-create": cmd_custom_type_create,
+        "custom-type-list": cmd_custom_type_list,
+        "custom-record-create": cmd_custom_record_create,
+        "custom-proxy-create": cmd_custom_proxy_create,
+        "custom-record-list": cmd_custom_record_list,
+        "list": cmd_list,
+        "toggle": cmd_toggle,
+        "toggle-tool": cmd_toggle_tool,
+        "remove": cmd_remove,
+        "healthcheck": cmd_healthcheck,
+        "config": cmd_config,
+        "rate-limit-set": cmd_rate_limit_set,
+        "rate-limit-list": cmd_rate_limit_list,
+        "rate-limit-get": cmd_rate_limit_get,
+        "rate-limit-delete": cmd_rate_limit_delete,
+        "rate-limit-enable": cmd_rate_limit_enable,
+        "rate-limit-disable": cmd_rate_limit_disable,
+        "rate-limit-status": cmd_rate_limit_status,
+        "rate-limit-member-set": cmd_rate_limit_member_set,
+        "rate-limit-member-list": cmd_rate_limit_member_list,
+        "rate-limit-member-delete": cmd_rate_limit_member_delete,
+        "rate-limit-quarantine-add": cmd_rate_limit_quarantine_add,
+        "rate-limit-quarantine-remove": cmd_rate_limit_quarantine_remove,
+        "rate-limit-quarantine-list": cmd_rate_limit_quarantine_list,
+        "add-to-groups": cmd_add_to_groups,
+        "remove-from-groups": cmd_remove_from_groups,
+        "create-group": cmd_create_group,
+        "delete-group": cmd_delete_group,
+        "import-group": cmd_import_group,
+        "list-groups": cmd_list_groups,
+        "describe-group": cmd_describe_group,
+        "server-get": cmd_server_get,
+        "update-server": cmd_update_server,
+        "patch-server": cmd_patch_server,
+        "server-rate": cmd_server_rate,
+        "server-rating": cmd_server_rating,
+        "security-scan": cmd_security_scan,
+        "rescan": cmd_rescan,
+        "server-update-credential": cmd_server_update_credential,
+        "server-connect-config": cmd_server_connect_config,
+        "egress-configure": cmd_egress_configure,
+        "egress-config-get": cmd_egress_config_get,
+        "egress-pat-set": cmd_egress_pat_set,
+        "egress-pat-status": cmd_egress_pat_status,
+        "egress-pat-delete": cmd_egress_pat_delete,
+        "server-search": cmd_server_search,
+        "ard-search": cmd_ard_search,
+        "ard-agents": cmd_ard_agents,
+        "ard-ingestion-sync": cmd_ard_ingestion_sync,
+        "ard-ingestion-status": cmd_ard_ingestion_status,
+        "ard-ingestion-add-source": cmd_ard_ingestion_add_source,
+        "ard-ingestion-remove-source": cmd_ard_ingestion_remove_source,
+        "list-versions": cmd_list_versions,
+        "remove-version": cmd_remove_version,
+        "set-default-version": cmd_set_default_version,
+        "agent-register": cmd_agent_register,
+        "agent-list": cmd_agent_list,
+        "agent-get": cmd_agent_get,
+        "agent-update": cmd_agent_update,
+        "agent-patch": cmd_agent_patch,
+        "agent-batch-submit": cmd_agent_batch_submit,
+        "agent-batch-status": cmd_agent_batch_status,
+        "agent-delete": cmd_agent_delete,
+        "agent-toggle": cmd_agent_toggle,
+        "agent-discover": cmd_agent_discover,
+        "agent-search": cmd_agent_search,
+        "agent-rate": cmd_agent_rate,
+        "agent-rating": cmd_agent_rating,
+        "agent-security-scan": cmd_agent_security_scan,
+        "agent-rescan": cmd_agent_rescan,
+        "agent-pull-card": cmd_agent_pull_card,
+        "agent-ans-link": cmd_agent_ans_link,
+        "agent-ans-status": cmd_agent_ans_status,
+        "agent-ans-unlink": cmd_agent_ans_unlink,
+        # Skill commands
+        "skill-register": cmd_skill_register,
+        "skill-list": cmd_skill_list,
+        "skill-get": cmd_skill_get,
+        "skill-delete": cmd_skill_delete,
+        "skill-toggle": cmd_skill_toggle,
+        "skill-health": cmd_skill_health,
+        "skill-content": cmd_skill_content,
+        "skill-search": cmd_skill_search,
+        "skill-rate": cmd_skill_rate,
+        "skill-rating": cmd_skill_rating,
+        "skill-security-scan": cmd_skill_security_scan,
+        "skill-rescan": cmd_skill_rescan,
+        "anthropic-list": cmd_anthropic_list_servers,
+        "anthropic-versions": cmd_anthropic_list_versions,
+        "anthropic-get": cmd_anthropic_get_server,
+        "user-list": cmd_user_list,
+        "user-create-m2m": cmd_user_create_m2m,
+        "user-create-human": cmd_user_create_human,
+        "user-delete": cmd_user_delete,
+        # Direct M2M client registration (issue #851)
+        "m2m-client-create": cmd_m2m_client_create,
+        "m2m-client-list": cmd_m2m_client_list,
+        "m2m-client-get": cmd_m2m_client_get,
+        "m2m-client-update": cmd_m2m_client_update,
+        "m2m-client-delete": cmd_m2m_client_delete,
+        # Direct user-group fallback registration (issue #1127)
+        "user-group-create": cmd_user_group_create,
+        "user-group-list": cmd_user_group_list,
+        "user-group-get": cmd_user_group_get,
+        "user-group-update": cmd_user_group_update,
+        "user-group-delete": cmd_user_group_delete,
+        "pingfederate-user-create": cmd_pingfederate_user_create,
+        "group-create": cmd_group_create,
+        "group-delete": cmd_group_delete,
+        "group-list": cmd_group_list,
+        "federation-get": cmd_federation_get,
+        "federation-save": cmd_federation_save,
+        "federation-delete": cmd_federation_delete,
+        "federation-list": cmd_federation_list,
+        "federation-add-anthropic-server": cmd_federation_add_anthropic_server,
+        "federation-remove-anthropic-server": cmd_federation_remove_anthropic_server,
+        "federation-add-asor-agent": cmd_federation_add_asor_agent,
+        "federation-remove-asor-agent": cmd_federation_remove_asor_agent,
+        "federation-sync": cmd_federation_sync,
+        "peer-list": cmd_peer_list,
+        "peer-add": cmd_peer_add,
+        "peer-get": cmd_peer_get,
+        "peer-update": cmd_peer_update,
+        "peer-update-token": cmd_peer_update_token,
+        "peer-remove": cmd_peer_remove,
+        "peer-sync": cmd_peer_sync,
+        "peer-sync-all": cmd_peer_sync_all,
+        "peer-status": cmd_peer_status,
+        "peer-enable": cmd_peer_enable,
+        "peer-disable": cmd_peer_disable,
+        "peer-connections": cmd_peer_connections,
+        "peer-shared-resources": cmd_peer_shared_resources,
+        # Virtual server commands
+        "vs-create": cmd_vs_create,
+        "vs-list": cmd_vs_list,
+        "vs-get": cmd_vs_get,
+        "vs-update": cmd_vs_update,
+        "vs-delete": cmd_vs_delete,
+        "vs-toggle": cmd_vs_toggle,
+        "vs-rate": cmd_vs_rate,
+        "vs-rating": cmd_vs_rating,
+        # Registry card commands
+        "registry-card-get": cmd_registry_card_get,
+        "registry-card-discover": cmd_registry_card_discover,
+        "registry-card-update": cmd_registry_card_update,
+        # Telemetry management commands
+        "telemetry-heartbeat": cmd_telemetry_heartbeat,
+        "telemetry-startup": cmd_telemetry_startup,
+        "logs": cmd_logs,
+        # Embeddings admin commands
+        "embeddings-missing": cmd_embeddings_missing,
+        "embeddings-reindex": cmd_embeddings_reindex,
+        "embeddings-stale": cmd_embeddings_stale,
+        "embeddings-stale-cleanup": cmd_embeddings_stale_cleanup,
+        # Registration duplicate check (issue #1696)
+        "check-duplicates": cmd_check_duplicates,
+    }
+
+    handler = command_handlers.get(args.command)
+    if not handler:
+        logger.error(f"Unknown command: {args.command}")
+        return 1
+
+    return handler(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

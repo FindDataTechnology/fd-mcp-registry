@@ -1,0 +1,19 @@
+{
+  "server_name": "AWS kb",
+  "description": "A fully managed remote MCP server that provides up-to-date documentation, code samples, knowledge about the regional availability of AWS APIs and CloudFormation resources, and other official AWS content.",
+  "path": "/aws-kb",
+  "proxy_pass_url": "https://knowledge-mcp.global.api.aws",
+  "tags": ["aws", "kb", "documentation", "knowledge-base"],
+  "auth_scheme": "none",
+  "supported_transports": ["streamable-http"],
+  "mcp_endpoint": "https://knowledge-mcp.global.api.aws",
+  "metadata": {
+    "category": "documentation",
+    "official": true,
+    "provider": "AWS"
+  },
+  "status": "active",
+  "provider_organization": "Amazon Web Services",
+  "provider_url": "https://aws.amazon.com",
+  "visibility": "public"
+}

@@ -1,0 +1,556 @@
+"""
+DocumentDB (MongoDB) implementation for skill repository.
+
+Implements all recommendations:
+- Index creation on initialization
+- Batch operations for federation sync
+- Database-level filtering
+- Duplicate key handling
+"""
+
+import asyncio
+import logging
+from datetime import datetime
+from typing import (
+    Any,
+)
+
+from motor.motor_asyncio import AsyncIOMotorCollection
+from pymongo.errors import DuplicateKeyError
+
+from ...exceptions import (
+    AssetIdConflictError,
+    SkillAlreadyExistsError,
+    SkillServiceError,
+)
+from ...schemas.skill_models import SkillCard
+from ...utils.url_normalize import (
+    ENTITY_TYPE_SKILL,
+    NORMALIZED_IDENTITY_URL_FIELD,
+    derive_normalized_identity_url,
+)
+from ..interfaces import SkillRepositoryBase
+from ._identity_url_sidecar import (
+    backfill_normalized_identity_url,
+    ensure_is_proxied_index,
+    find_by_normalized_identity_url,
+)
+from ._unique_id_index import (
+    backfill_missing_id,
+    ensure_unique_id_index,
+    find_doc_by_id,
+)
+from .client import get_collection_name, get_documentdb_client
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s,p%(process)s,{%(filename)s:%(lineno)d},%(levelname)s,%(message)s",
+)
+logger = logging.getLogger(__name__)
+
+
+def _skill_to_document(
+    skill: SkillCard,
+) -> dict[str, Any]:
+    """Convert SkillCard to MongoDB document.
+
+    Populates the ``_identity_url_normalized`` sidecar field from
+    ``skill_md_url`` so :meth:`find_by_identity_url` can do an indexed
+    ``$eq`` lookup. The sidecar is omitted entirely when the URL is
+    missing or unparseable so the sparse index doesn't keep a stale
+    value.
+    """
+    doc = skill.model_dump(mode="json")
+    doc["_id"] = skill.path
+    normalized = derive_normalized_identity_url(doc, ENTITY_TYPE_SKILL)
+    if normalized is not None:
+        doc[NORMALIZED_IDENTITY_URL_FIELD] = normalized
+    return doc
+
+
+def _normalize_metadata(
+    metadata: Any,
+) -> dict[str, Any] | None:
+    """Normalize metadata to SkillMetadata-compatible dict.
+
+    Handles legacy flat dicts (e.g., {category: 'x'}) by wrapping
+    them into the SkillMetadata structure with an 'extra' field.
+    """
+    if not metadata or not isinstance(metadata, dict):
+        return None
+
+    # Already in SkillMetadata format (has 'extra' key)
+    if "extra" in metadata:
+        return metadata
+
+    # Legacy flat dict — wrap into SkillMetadata structure
+    return {
+        "author": metadata.pop("author", None),
+        "version": metadata.pop("version", None),
+        "extra": metadata,
+    }
+
+
+def _document_to_skill(
+    doc: dict[str, Any],
+) -> SkillCard:
+    """Convert MongoDB document to SkillCard."""
+    doc_copy = dict(doc)
+    doc_copy.pop("_id", None)
+    doc_copy["metadata"] = _normalize_metadata(doc_copy.get("metadata"))
+    return SkillCard(**doc_copy)
+
+
+class DocumentDBSkillRepository(SkillRepositoryBase):
+    """MongoDB implementation for skill storage."""
+
+    def __init__(self):
+        self._collection: AsyncIOMotorCollection | None = None
+        self._collection_name = get_collection_name("agent_skills")
+        self._indexes_created = False
+        # See server_repository for the rationale; same pattern.
+        self._init_lock: asyncio.Lock | None = None
+
+    async def _get_collection(self) -> AsyncIOMotorCollection:
+        """Get DocumentDB collection.
+
+        On first acquisition we also create the collection's indexes
+        (name, tags, visibility, registry_name, owner, normalized
+        identity URL sidecar, and the compound index used for common
+        queries) and lazily backfill the identity-URL sidecar onto
+        documents registered before that field existed. The init
+        block runs under an ``asyncio.Lock`` so concurrent callers
+        don't race on the backfill cursor.
+        """
+        if self._collection is not None:
+            return self._collection
+        if self._init_lock is None:
+            self._init_lock = asyncio.Lock()
+        async with self._init_lock:
+            if self._collection is not None:
+                return self._collection
+            db = await get_documentdb_client()
+            collection = db[self._collection_name]
+            # ensure_indexes reads self._collection internally — it
+            # was originally written to acquire its own collection.
+            # Set _collection before calling ensure_indexes so the
+            # nested _get_collection call short-circuits, then run
+            # the backfill, then return.
+            self._collection = collection
+            await self.ensure_indexes()
+            await backfill_normalized_identity_url(
+                collection,
+                self._collection_name,
+                ENTITY_TYPE_SKILL,
+            )
+            # Unique id index (#1276): backfill BEFORE building the unique
+            # partial index so the build never fails on legacy rows.
+            await backfill_missing_id(collection, self._collection_name)
+            await ensure_unique_id_index(collection, self._collection_name)
+            return self._collection
+
+    async def ensure_indexes(self) -> None:
+        """Create required indexes if not present."""
+        if self._indexes_created:
+            return
+
+        collection = await self._get_collection()
+
+        try:
+            # Name index (unique)
+            await collection.create_index("name", unique=True)
+
+            # Tags index for filtering
+            await collection.create_index("tags")
+
+            # Visibility index for access control
+            await collection.create_index("visibility")
+
+            # Registry name for federation queries
+            await collection.create_index("registry_name")
+
+            # Owner for private visibility
+            await collection.create_index("owner")
+
+            # Normalized identity URL sidecar for find_by_identity_url
+            # (registration dedup). Sparse — only present on documents
+            # whose user-facing skill_md_url is non-null and parseable.
+            await collection.create_index(NORMALIZED_IDENTITY_URL_FIELD, sparse=True)
+
+            # Compound index for common query patterns
+            await collection.create_index(
+                [("visibility", 1), ("is_enabled", 1), ("registry_name", 1)]
+            )
+
+            self._indexes_created = True
+            logger.info(f"Created indexes for {self._collection_name} collection")
+        except Exception as e:
+            logger.warning(f"Could not create indexes: {e}")
+
+        # Optional is_proxied index for the list_proxied() hot path. Runs AFTER
+        # _indexes_created is set and never raises (see ensure_is_proxied_index):
+        # DocumentDB may reject partialFilterExpression, and an exception here
+        # must NOT leave _indexes_created False (that would re-run every index on
+        # every skill op). Falls back to a plain index so the hot path stays fast.
+        await ensure_is_proxied_index(collection, self._collection_name)
+
+    async def get(
+        self,
+        path: str,
+    ) -> SkillCard | None:
+        """Get a skill by path."""
+        await self.ensure_indexes()
+        collection = await self._get_collection()
+        doc = await collection.find_one({"_id": path})
+        if doc:
+            return _document_to_skill(doc)
+        return None
+
+    async def list_proxied(self) -> list[dict[str, Any]]:
+        """Projected list of proxied skills for the nginx render hot path.
+
+        Skills have no native backend URL, so proxy_target_url is required (no
+        fallback field). Returns raw dicts (not SkillCard) so a bypass-written
+        invalid row can't crash the reload via model reconstruction.
+        """
+        projection = {
+            "is_proxied": 1,
+            "is_enabled": 1,
+            "proxy_target_url": 1,
+            "proxy_streaming": 1,
+            "custom_header_names": 1,
+            "custom_header_overridable_names": 1,
+            "custom_headers_encrypted": 1,
+            "proxy_resolved_ips": 1,
+            "proxy_target_host": 1,
+            "proxy_disabled_reason": 1,
+            "sync_metadata": 1,
+        }
+        try:
+            await self.ensure_indexes()
+            collection = await self._get_collection()
+            cursor = collection.find({"is_proxied": True}, projection)
+            rows = []
+            async for doc in cursor:
+                doc["path"] = doc.pop("_id")
+                rows.append(doc)
+            return rows
+        except Exception as e:
+            logger.error(f"Error listing proxied skills from DocumentDB: {e}", exc_info=True)
+            return []
+
+    async def list_all(
+        self,
+        skip: int = 0,
+        limit: int = 100,
+    ) -> list[SkillCard]:
+        """List all skills with pagination.
+
+        Args:
+            skip: Number of records to skip (offset)
+            limit: Maximum number of records to return
+
+        Returns:
+            List of SkillCard objects
+        """
+        await self.ensure_indexes()
+        collection = await self._get_collection()
+        skills = []
+        cursor = collection.find({}).skip(skip).limit(limit)
+        async for doc in cursor:
+            try:
+                skills.append(_document_to_skill(doc))
+            except Exception as e:
+                logger.error(f"Failed to parse skill document: {e}")
+        return skills
+
+    async def list_paginated(
+        self,
+        skip: int = 0,
+        limit: int = 100,
+    ) -> list[SkillCard]:
+        """List skills with DB-level pagination and deterministic ordering.
+
+        Args:
+            skip: Number of documents to skip.
+            limit: Maximum number of documents to return.
+
+        Returns:
+            List of SkillCard objects for the requested page.
+        """
+        await self.ensure_indexes()
+        collection = await self._get_collection()
+        skills = []
+        cursor = collection.find({}).sort("_id", 1).skip(skip).limit(limit)
+        async for doc in cursor:
+            try:
+                skills.append(_document_to_skill(doc))
+            except Exception as e:
+                logger.error(f"Failed to parse skill document: {e}")
+        return skills
+
+    async def list_by_paths(
+        self,
+        paths: list[str],
+    ) -> dict[str, dict[str, Any]]:
+        """List skills whose _id is in the given set of paths.
+
+        Returns raw documents (not SkillCard objects) for metadata projection
+        use cases where the full Pydantic parse is not needed.
+
+        Args:
+            paths: Exact skill paths to fetch.
+
+        Returns:
+            Dictionary mapping skill path to raw skill document for found paths.
+        """
+        if not paths:
+            return {}
+
+        await self.ensure_indexes()
+        collection = await self._get_collection()
+        try:
+            cursor = collection.find({"_id": {"$in": paths}})
+            skills: dict[str, dict[str, Any]] = {}
+            async for doc in cursor:
+                path = doc.pop("_id")
+                doc["path"] = path
+                skills[path] = doc
+            logger.debug(
+                "DocumentDB READ: Retrieved %d of %d requested skills by path",
+                len(skills),
+                len(paths),
+            )
+            return skills
+        except Exception as e:
+            logger.error(f"Error listing skills by paths: {e}", exc_info=True)
+            return {}
+
+    async def list_filtered(
+        self,
+        include_disabled: bool = False,
+        tag: str | None = None,
+        visibility: str | None = None,
+        registry_name: str | None = None,
+        limit: int | None = None,
+    ) -> list[SkillCard]:
+        """List skills with database-level filtering."""
+        await self.ensure_indexes()
+        collection = await self._get_collection()
+
+        query: dict[str, Any] = {}
+
+        if not include_disabled:
+            query["is_enabled"] = True
+
+        if tag:
+            query["tags"] = tag
+
+        if visibility:
+            query["visibility"] = visibility
+
+        if registry_name:
+            query["registry_name"] = registry_name
+
+        skills = []
+        cursor = collection.find(query)
+        if limit is not None:
+            cursor = cursor.limit(limit)
+        async for doc in cursor:
+            try:
+                skills.append(_document_to_skill(doc))
+            except Exception as e:
+                logger.error(f"Failed to parse skill document: {e}")
+        return skills
+
+    async def create(
+        self,
+        skill: SkillCard,
+    ) -> SkillCard:
+        """Create a new skill."""
+        await self.ensure_indexes()
+        collection = await self._get_collection()
+        doc = _skill_to_document(skill)
+
+        try:
+            await collection.insert_one(doc)
+            logger.info(f"Created skill: {skill.path}")
+            return skill
+        except DuplicateKeyError as exc:
+            # Disambiguate id-collision from path/name-collision (#1276). An id
+            # collision here means two registrations raced past the pre-check.
+            key_pattern = (exc.details or {}).get("keyPattern", {})
+            if "id" in key_pattern:
+                raise AssetIdConflictError(
+                    asset_type="skill", asset_id=getattr(skill, "id", "")
+                ) from exc
+            logger.error(f"Skill already exists: {skill.path}")
+            raise SkillAlreadyExistsError(skill.name)
+        except Exception as e:
+            logger.error(f"Failed to create skill {skill.path}: {e}")
+            raise SkillServiceError(f"Failed to create skill: {e}") from e
+
+    async def find_by_id(
+        self,
+        asset_id: str,
+    ) -> dict[str, Any] | None:
+        """Indexed lookup by ``id`` (#1276). Overrides the scanning default."""
+        if not asset_id:
+            return None
+        collection = await self._get_collection()
+        return await find_doc_by_id(collection, asset_id)
+
+    async def update(
+        self,
+        path: str,
+        updates: dict[str, Any],
+    ) -> SkillCard | None:
+        """Update a skill."""
+        await self.ensure_indexes()
+        collection = await self._get_collection()
+        updates["updated_at"] = datetime.utcnow().isoformat()
+
+        # Keep the normalized sidecar in sync when this update touches
+        # skill_md_url. If skill_md_url isn't in the patch we leave the
+        # existing sidecar alone; if it's explicitly cleared we drop
+        # the sidecar so the sparse index doesn't keep a stale value.
+        unset_ops: dict[str, str] = {}
+        if "skill_md_url" in updates:
+            new_url = updates.get("skill_md_url")
+            if new_url:
+                normalized = derive_normalized_identity_url(updates, ENTITY_TYPE_SKILL)
+                if normalized is None:
+                    unset_ops[NORMALIZED_IDENTITY_URL_FIELD] = ""
+                else:
+                    updates[NORMALIZED_IDENTITY_URL_FIELD] = normalized
+            else:
+                unset_ops[NORMALIZED_IDENTITY_URL_FIELD] = ""
+
+        update_spec: dict[str, dict[str, Any]] = {"$set": updates}
+        if unset_ops:
+            update_spec["$unset"] = unset_ops
+
+        try:
+            result = await collection.find_one_and_update(
+                {"_id": path}, update_spec, return_document=True
+            )
+
+            if result:
+                logger.info(f"Updated skill: {path}")
+                return _document_to_skill(result)
+            return None
+        except Exception as e:
+            logger.error(f"Failed to update skill {path}: {e}")
+            raise SkillServiceError(f"Failed to update skill: {e}") from e
+
+    async def delete(
+        self,
+        path: str,
+    ) -> bool:
+        """Delete a skill."""
+        await self.ensure_indexes()
+        collection = await self._get_collection()
+        result = await collection.delete_one({"_id": path})
+        if result.deleted_count > 0:
+            logger.info(f"Deleted skill: {path}")
+            return True
+        return False
+
+    async def get_state(
+        self,
+        path: str,
+    ) -> bool:
+        """Get skill enabled state."""
+        await self.ensure_indexes()
+        collection = await self._get_collection()
+        doc = await collection.find_one({"_id": path}, {"is_enabled": 1})
+        return doc.get("is_enabled", False) if doc else False
+
+    async def set_state(
+        self,
+        path: str,
+        enabled: bool,
+    ) -> bool:
+        """Set skill enabled state."""
+        await self.ensure_indexes()
+        collection = await self._get_collection()
+        result = await collection.update_one(
+            {"_id": path},
+            {"$set": {"is_enabled": enabled, "updated_at": datetime.utcnow().isoformat()}},
+        )
+        if result.modified_count > 0:
+            logger.info(f"Set skill {path} enabled={enabled}")
+            return True
+        return False
+
+    async def create_many(
+        self,
+        skills: list[SkillCard],
+    ) -> list[SkillCard]:
+        """Create multiple skills in single operation."""
+        await self.ensure_indexes()
+        collection = await self._get_collection()
+
+        if not skills:
+            return []
+
+        docs = [_skill_to_document(s) for s in skills]
+
+        try:
+            await collection.insert_many(docs, ordered=False)
+            logger.info(f"Created {len(skills)} skills in batch")
+            return skills
+        except Exception as e:
+            logger.error(f"Failed to create skills in batch: {e}")
+            raise SkillServiceError(f"Batch create failed: {e}") from e
+
+    async def update_many(
+        self,
+        updates: dict[str, dict[str, Any]],
+    ) -> int:
+        """Update multiple skills by path, return count."""
+        await self.ensure_indexes()
+        collection = await self._get_collection()
+
+        if not updates:
+            return 0
+
+        count = 0
+        for path, update_data in updates.items():
+            update_data["updated_at"] = datetime.utcnow().isoformat()
+            result = await collection.update_one({"_id": path}, {"$set": update_data}, upsert=True)
+            if result.modified_count > 0 or result.upserted_id:
+                count += 1
+
+        logger.info(f"Updated {count} skills in batch")
+        return count
+
+    async def count(self) -> int:
+        """Get total count of skills.
+
+        Returns:
+            Total number of skills in the repository.
+        """
+        await self.ensure_indexes()
+        collection = await self._get_collection()
+
+        try:
+            count = await collection.count_documents({})
+            logger.debug(f"DocumentDB COUNT: Found {count} skills")
+            return count
+        except Exception as e:
+            logger.error(f"Error counting skills in DocumentDB: {e}", exc_info=True)
+            return 0
+
+    async def find_by_identity_url(
+        self,
+        identity_url: str,
+    ) -> dict[str, Any] | None:
+        """Find a skill whose ``skill_md_url`` normalizes to ``identity_url``.
+
+        Indexed ``$eq`` lookup against the ``_identity_url_normalized``
+        sidecar field, populated from ``skill_md_url`` at write time.
+        """
+        collection = await self._get_collection()
+        return await find_by_normalized_identity_url(collection, identity_url)

@@ -1,0 +1,11 @@
+{
+  "peer_id": "test-peer-registry-1",
+  "name": "Test Peer Registry 1",
+  "endpoint": "https://peer1.registry.example.com",
+  "enabled": true,
+  "sync_mode": "all",
+  "whitelist_servers": [],
+  "whitelist_agents": [],
+  "tag_filter": [],
+  "federation_token": "YOUR_FEDERATION_TOKEN_HERE"
+}

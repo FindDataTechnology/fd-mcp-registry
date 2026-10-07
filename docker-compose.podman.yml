@@ -1,0 +1,1015 @@
+version: '3.8'
+
+services:
+  # OpenBao - per-user egress credential vault (third-party OBO support).
+  # Runs in DEV mode: in-memory storage, auto-unsealed, with a fixed root
+  # token. This is the local-dev equivalent of the Helm standalone OpenBao
+  # (charts/mcp-gateway-registry-stack); the Helm path is sealed + file-backed
+  # and bootstraps via an init Job, none of which is needed for local compose.
+  # Data is NOT persisted across restarts (dev mode is in-memory by design).
+  # The registry reaches it via token auth using OPENBAO_TOKEN. Port 8200 is
+  # non-privileged, so this works under rootless podman without changes.
+  openbao:
+    image: openbao/openbao:2.5.5
+    container_name: mcp-openbao
+    command: ["server", "-dev"]
+    environment:
+      # Dev mode auto-mounts KV v2 at secret/ and auto-unseals with this token.
+      # OPENBAO_TOKEN is required (no default): reaching :8200 with a known token
+      # grants root access to every stored egress credential, so we fail fast
+      # rather than ship a guessable "dev-root-token" default.
+      - BAO_DEV_ROOT_TOKEN_ID=${OPENBAO_TOKEN:?Set OPENBAO_TOKEN in .env (a strong random value; do not reuse the old dev-root-token default)}
+      - BAO_DEV_LISTEN_ADDRESS=0.0.0.0:8200
+    # Published on loopback only: the dev vault is auto-unsealed and must never
+    # be reachable from other hosts on the network.
+    ports:
+      # Loopback-only: vault root == all egress credentials; never expose beyond
+      # the host. Override with HOST_BIND_IP=0.0.0.0 only if you understand the risk.
+      - "${HOST_BIND_IP:-127.0.0.1}:8200:8200"
+    healthcheck:
+      # Health endpoint reports 200 once the API is listening (dev mode is
+      # always unsealed + initialized, so the default codes are fine).
+      test: ["CMD", "bao", "status", "-address=http://127.0.0.1:8200"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
+  # Registry service (includes nginx, SSL, FAISS, models)
+  # PODMAN VERSION: Uses non-privileged ports for rootless operation
+  registry:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.registry
+      args:
+        BUILD_VERSION: ${BUILD_VERSION:-1.0.0}
+    environment:
+      # Deployment Mode Configuration
+      - DEPLOYMENT_MODE=${DEPLOYMENT_MODE:-with-gateway}
+      - REGISTRY_MODE=${REGISTRY_MODE:-full}
+      # Internal/workshop deployment classification (telemetry labels; issue #1216)
+      - INTERNAL_ONLY_DEPLOYMENT=${INTERNAL_ONLY_DEPLOYMENT:-false}
+      - INTERNAL_DEPLOYMENT_TYPE=${INTERNAL_DEPLOYMENT_TYPE:-none}
+      # Tab visibility overrides (AND-ed with REGISTRY_MODE)
+      - SHOW_SERVERS_TAB=${SHOW_SERVERS_TAB:-true}
+      - SHOW_VIRTUAL_SERVERS_TAB=${SHOW_VIRTUAL_SERVERS_TAB:-true}
+      - SHOW_SKILLS_TAB=${SHOW_SKILLS_TAB:-true}
+      - SHOW_AGENTS_TAB=${SHOW_AGENTS_TAB:-true}
+      # Coding assistants allowlist (comma-separated: cursor,roo-code,claude-code,kiro). Empty = show all.
+      - CODING_ASSISTANTS=${CODING_ASSISTANTS:-}
+      # UI title override. Empty = deployment-mode-aware default.
+      - UI_TITLE=${UI_TITLE:-}
+      # Base64-encoded HTML snippet served as /rum.js for frontend RUM. Empty disables RUM. May contain a vendor token.
+      - RUM_SNIPPET_B64=${RUM_SNIPPET_B64:-}
+      # Comma-separated host allowlist for the RUM snippet (fail-closed when set). Empty disables the check.
+      - RUM_ALLOWED_HOSTS=${RUM_ALLOWED_HOSTS:-}
+      - GATEWAY_ADDITIONAL_SERVER_NAMES=${GATEWAY_ADDITIONAL_SERVER_NAMES:-}
+      # SSRF guard allowlist for internal MCP-server / A2A-agent upstreams at
+      # private IPs (e.g. docker-network hostnames); mirrors docker-compose.yml.
+      - SSRF_ALLOWED_HOSTS=${SSRF_ALLOWED_HOSTS:-}
+      - SSRF_ALLOWED_CIDRS=${SSRF_ALLOWED_CIDRS:-}
+      # CIMD (Client ID Metadata Document) publisher -- registry-consumed; default off.
+      - CIMD_PUBLISHER_ENABLED=${CIMD_PUBLISHER_ENABLED:-false}
+      - CIMD_CACHE_TTL=${CIMD_CACHE_TTL:-3600}
+      - CIMD_CLIENT_NAME=${CIMD_CLIENT_NAME:-AI Registry Tools}
+      - CIMD_REDIRECT_URIS=${CIMD_REDIRECT_URIS:-}
+      - CIMD_SCOPE=${CIMD_SCOPE:-}
+      - CIMD_LOGO_URI=${CIMD_LOGO_URI:-}
+      - CIMD_CONTACTS=${CIMD_CONTACTS:-}
+      # Registry Card Configuration
+      - REGISTRY_URL=${REGISTRY_URL:-http://localhost}
+      # Request-source trust (audit client IP + OAuth external-URL host allowlist)
+      - TRUSTED_PROXY_HOPS=${TRUSTED_PROXY_HOPS:-1}
+      - TRUSTED_EXTERNAL_HOSTS=${TRUSTED_EXTERNAL_HOSTS:-}
+      # Trusted proxy CIDRs for nginx real-IP recovery (empty = edge deploy, no rewrite)
+      - TRUSTED_REAL_IP_CIDRS=${TRUSTED_REAL_IP_CIDRS:-}
+      # ARD Catalog Publisher (issue #1294)
+      - ARD_CATALOG_ENABLED=${ARD_CATALOG_ENABLED:-true}
+      - ARD_REGISTRY_ENABLED=${ARD_REGISTRY_ENABLED:-true}
+      - ARD_PUBLISHER_DOMAIN=${ARD_PUBLISHER_DOMAIN:-}
+      - ARD_CATALOG_DEFAULT_NAMESPACE=${ARD_CATALOG_DEFAULT_NAMESPACE:-}
+      - REGISTRY_NAME=${REGISTRY_NAME:-AI Registry}
+      - REGISTRY_ORGANIZATION_NAME=${REGISTRY_ORGANIZATION_NAME:-ACME Inc.}
+      - REGISTRY_DESCRIPTION=${REGISTRY_DESCRIPTION:-}
+      - REGISTRY_CONTACT_EMAIL=${REGISTRY_CONTACT_EMAIL:-}
+      - REGISTRY_CONTACT_URL=${REGISTRY_CONTACT_URL:-}
+      # Gateway generic-proxy feature (registry-consumed): ships disabled by default
+      - GATEWAY_GENERIC_PROXY_ENABLED=${GATEWAY_GENERIC_PROXY_ENABLED:-false}
+      - GATEWAY_CANONICAL_NAMESPACE_ENABLED=${GATEWAY_CANONICAL_NAMESPACE_ENABLED:-false}
+      - GATEWAY_PROXY_ALLOW_PRIVATE_TARGETS=${GATEWAY_PROXY_ALLOW_PRIVATE_TARGETS:-false}
+      - GATEWAY_GENERIC_CLIENT_MAX_BODY_SIZE=${GATEWAY_GENERIC_CLIENT_MAX_BODY_SIZE:-1m}
+      - GATEWAY_PROXY_PREFIX=${GATEWAY_PROXY_PREFIX:-gateway}
+      - GATEWAY_GENERIC_STREAM_READ_TIMEOUT_SECONDS=${GATEWAY_GENERIC_STREAM_READ_TIMEOUT_SECONDS:-3600}
+      - SECRET_KEY=${SECRET_KEY}
+      # Per-user egress credential vault (off by default)
+      - EGRESS_AUTH_ENABLED=${EGRESS_AUTH_ENABLED:-false}
+      - SECRET_STORE_BACKEND=${SECRET_STORE_BACKEND:-openbao}
+      - EGRESS_OAUTH_CALLBACK_BASE_URL=${EGRESS_OAUTH_CALLBACK_BASE_URL:-}
+      - EGRESS_TOKEN_REFRESH_SKEW_SECONDS=${EGRESS_TOKEN_REFRESH_SKEW_SECONDS:-300}
+      - EGRESS_STATE_TTL_SECONDS=${EGRESS_STATE_TTL_SECONDS:-600}
+      - EGRESS_OBO_ALLOWED_AUDIENCES=${EGRESS_OBO_ALLOWED_AUDIENCES:-}
+      - EGRESS_OAUTH_TRUSTED_IDP_HOSTS=${EGRESS_OAUTH_TRUSTED_IDP_HOSTS:-}
+      - EGRESS_CREDENTIAL_ENCRYPTION_KEY=${EGRESS_CREDENTIAL_ENCRYPTION_KEY:-}
+      - EGRESS_CREDENTIAL_ENCRYPTION_REQUIRE_ENCRYPTED=${EGRESS_CREDENTIAL_ENCRYPTION_REQUIRE_ENCRYPTED:-false}
+      # Egress httpx client connection pooling (shared by url_guard). Keep
+      # keepalive_expiry below the shortest upstream/LB idle timeout.
+      - EGRESS_HTTP_POOL_MAX_CONNECTIONS=${EGRESS_HTTP_POOL_MAX_CONNECTIONS:-100}
+      - EGRESS_HTTP_POOL_MAX_KEEPALIVE=${EGRESS_HTTP_POOL_MAX_KEEPALIVE:-20}
+      - EGRESS_HTTP_POOL_KEEPALIVE_EXPIRY_SECONDS=${EGRESS_HTTP_POOL_KEEPALIVE_EXPIRY_SECONDS:-30}
+      - EGRESS_HTTP_POOL_CONNECT_RETRIES=${EGRESS_HTTP_POOL_CONNECT_RETRIES:-1}
+      # Forward-proxy egress for the SSRF-guarded clients (issue #1832). OFF by
+      # default; enabling it relaxes IP-rebind pinning for targets that resolve
+      # exclusively to public addresses. Set HTTP_PROXY / HTTPS_PROXY / NO_PROXY
+      # through extra_env/registry.env and extra_env/auth-server.env.
+      # The CA bundle is only needed when the proxy re-signs TLS with an internal
+      # CA, and the PEM must exist INSIDE the container, so mount it as well:
+      #   volumes:
+      #     - ./certs/corporate-ca.pem:/etc/ssl/mcp-gateway/ca-bundle.pem:ro
+      - EGRESS_FORWARD_PROXY_ENABLED=${EGRESS_FORWARD_PROXY_ENABLED:-false}
+      # Close boto3's IMDS credential fallback (issue #1839). Helm and
+      # Terraform/ECS default this to "true" because task roles and IRSA supply
+      # credentials there, so IMDS is only a fallback. Compose defaults to
+      # "false" because an EC2-hosted Compose deployment often uses the instance
+      # role as its real credential source for Amazon Bedrock and AgentCore, and
+      # "true" would break it. Set it to "true" if you do not need the instance
+      # role. botocore only treats the literal "true" as disabled, so "false" is
+      # exactly equivalent to leaving it unset.
+      - AWS_EC2_METADATA_DISABLED=${AWS_EC2_METADATA_DISABLED:-false}
+      - EGRESS_FORWARD_PROXY_CA_BUNDLE=${EGRESS_FORWARD_PROXY_CA_BUNDLE:-}
+      - AUTH_SERVER_NGINX_MARKER_SECRET=${AUTH_SERVER_NGINX_MARKER_SECRET:-}
+      - AWS_SECRETS_REGION=${AWS_SECRETS_REGION:-}
+      - SECRETS_MANAGER_KMS_KEY_ID=${SECRETS_MANAGER_KMS_KEY_ID:-}
+      - SECRETS_MANAGER_PATH_PREFIX=${SECRETS_MANAGER_PATH_PREFIX:-mcp/egress}
+      # Default to the in-stack OpenBao container (dev mode). Override for an
+      # external vault.
+      - OPENBAO_ADDR=${OPENBAO_ADDR:-http://openbao:8200}
+      - OPENBAO_NAMESPACE=${OPENBAO_NAMESPACE:-}
+      - OPENBAO_KV_MOUNT=${OPENBAO_KV_MOUNT:-secret}
+      - OPENBAO_AUTH_METHOD=${OPENBAO_AUTH_METHOD:-token}
+      - OPENBAO_ROLE=${OPENBAO_ROLE:-}
+      # AppRole credentials for OPENBAO_AUTH_METHOD=approle. Empty defaults keep
+      # the token and kubernetes paths unaffected (issue #1771).
+      - OPENBAO_ROLE_ID=${OPENBAO_ROLE_ID:-}
+      - OPENBAO_SECRET_ID=${OPENBAO_SECRET_ID:-}
+      # Static token for OPENBAO_AUTH_METHOD=token; matches the dev OpenBao root
+      # token. Required for token auth (kubernetes auth is EKS-only).
+      - OPENBAO_TOKEN=${OPENBAO_TOKEN:?Set OPENBAO_TOKEN in .env (a strong random value; do not reuse the old dev-root-token default)}
+      - AUTH_SERVER_URL=${AUTH_SERVER_URL}
+      - AUTH_SERVER_EXTERNAL_URL=${AUTH_SERVER_EXTERNAL_URL}
+      - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID}
+      - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET}
+      - GITHUB_ENABLED=${GITHUB_ENABLED:-false}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+      - GOOGLE_ENABLED=${GOOGLE_ENABLED:-false}
+      - COGNITO_CLIENT_ID=${COGNITO_CLIENT_ID}
+      - COGNITO_CLIENT_SECRET=${COGNITO_CLIENT_SECRET}
+      - COGNITO_USER_POOL_ID=${COGNITO_USER_POOL_ID}
+      - COGNITO_ENABLED=${COGNITO_ENABLED:-false}
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+      - HEALTH_CHECK_INTERVAL_SECONDS=${HEALTH_CHECK_INTERVAL_SECONDS:-30}
+      - SRE_GATEWAY_AUTH_TOKEN=${SRE_GATEWAY_AUTH_TOKEN}
+      - ATLASSIAN_AUTH_TOKEN=${ATLASSIAN_AUTH_TOKEN}
+      # Metrics configuration
+      - METRICS_SERVICE_URL=http://metrics-service:8890
+      - METRICS_API_KEY=${METRICS_API_KEY_REGISTRY}
+      - METRICS_API_KEY_NGINX=${METRICS_API_KEY_REGISTRY}
+      # OTel-native metrics emission (issue #1122)
+      - METRICS_LEGACY_HTTP_POST=${METRICS_LEGACY_HTTP_POST:-false}
+      - OTEL_METRIC_EXPORT_INTERVAL_MS=${OTEL_METRIC_EXPORT_INTERVAL_MS:-15000}
+      - OTEL_EXPORTER_PROMETHEUS_HOST=${OTEL_EXPORTER_PROMETHEUS_HOST:-0.0.0.0}
+      - OTEL_EXPORTER_PROMETHEUS_PORT=${OTEL_EXPORTER_PROMETHEUS_PORT:-9464}
+      # Keycloak configuration
+      - AUTH_PROVIDER=${AUTH_PROVIDER:-cognito}
+      - KEYCLOAK_ENABLED=${KEYCLOAK_ENABLED:-false}
+      - KEYCLOAK_URL=${KEYCLOAK_URL:-http://keycloak:8080}
+      # Browser-reachable Keycloak URL: the wellknown/OAuth-discovery responses
+      # must advertise a host clients can reach, not the internal keycloak:8080.
+      # Podman maps Keycloak to host 18080 (8080 is taken by the registry UI).
+      - KEYCLOAK_EXTERNAL_URL=${KEYCLOAK_EXTERNAL_URL:-http://localhost:18080}
+      # Allow plain-HTTP resource URLs for local dev; the RFC 9728
+      # /.well-known/oauth-protected-resource endpoint 500s otherwise (enforce_https).
+      - MCP_HTTPS_REQUIRED=${MCP_HTTPS_REQUIRED:-false}
+      - KEYCLOAK_REALM=${KEYCLOAK_REALM:-mcp-gateway}
+      - KEYCLOAK_CLIENT_ID=${KEYCLOAK_CLIENT_ID:-mcp-gateway-web}
+      - KEYCLOAK_CLIENT_SECRET=${KEYCLOAK_CLIENT_SECRET}
+      - KEYCLOAK_ADMIN=${KEYCLOAK_ADMIN:-admin}
+      - KEYCLOAK_ADMIN_PASSWORD=${KEYCLOAK_ADMIN_PASSWORD}
+      - KEYCLOAK_M2M_CLIENT_ID=${KEYCLOAK_M2M_CLIENT_ID}
+      - KEYCLOAK_M2M_CLIENT_SECRET=${KEYCLOAK_M2M_CLIENT_SECRET}
+      # IDE OAuth login public client_id (PR #1224). Public, not a secret.
+      - IDE_OAUTH_CLIENT_ID=${IDE_OAUTH_CLIENT_ID:-}
+      # Fixed OAuth callback port for IdPs that match redirect_uri literally
+      # (Okta/Entra/Cognito). 0/unset = let the IDE pick (Keycloak/DCR).
+      - IDE_OAUTH_CALLBACK_PORT=${IDE_OAUTH_CALLBACK_PORT:-0}
+      # Scopes advertised in the PRM for IDE OAuth login.
+      - MCP_ADVERTISED_SCOPES=${MCP_ADVERTISED_SCOPES:-}
+      # Entra ID configuration
+      - ENTRA_TENANT_ID=${ENTRA_TENANT_ID}
+      - ENTRA_CLIENT_ID=${ENTRA_CLIENT_ID}
+      - ENTRA_CLIENT_SECRET=${ENTRA_CLIENT_SECRET}
+      - ENTRA_ENABLED=${ENTRA_ENABLED:-false}
+      # Sovereign-cloud login host for the registry's OWN client_credentials
+      # grant (headless backend discovery/health against obo_exchange servers).
+      - ENTRA_LOGIN_BASE_URL=${ENTRA_LOGIN_BASE_URL:-https://login.microsoftonline.com}
+      # PingFederate configuration
+      - PINGFEDERATE_BASE_URL=${PINGFEDERATE_BASE_URL:-}
+      - PINGFEDERATE_EXTERNAL_URL=${PINGFEDERATE_EXTERNAL_URL:-}
+      - PINGFEDERATE_CLIENT_ID=${PINGFEDERATE_CLIENT_ID:-}
+      - PINGFEDERATE_CLIENT_SECRET=${PINGFEDERATE_CLIENT_SECRET:-}
+      - PINGFEDERATE_M2M_CLIENT_ID=${PINGFEDERATE_M2M_CLIENT_ID:-}
+      - PINGFEDERATE_M2M_CLIENT_SECRET=${PINGFEDERATE_M2M_CLIENT_SECRET:-}
+      - PINGFEDERATE_APPLICATION_ID_URI=${PINGFEDERATE_APPLICATION_ID_URI:-}
+      - PINGFEDERATE_GROUPS_CLAIM=${PINGFEDERATE_GROUPS_CLAIM:-groups}
+      - PINGFEDERATE_M2M_ALLOWED_AUDIENCES=${PINGFEDERATE_M2M_ALLOWED_AUDIENCES:-}
+      - PINGFEDERATE_ENABLED=${PINGFEDERATE_ENABLED:-false}
+      # PingFederate Admin API (registry only). PF_ADMIN_PASS has no default:
+      # the registry drives the PF admin API with it, so a shipped vendor
+      # default would be a usable credential. Set it in .env when the
+      # pingfederate profile is enabled; leave empty otherwise.
+      - PF_ADMIN_URL=${PF_ADMIN_URL:-https://pingfederate:9999}
+      - PF_ADMIN_USER=${PF_ADMIN_USER:-administrator}
+      - PF_ADMIN_PASS=${PF_ADMIN_PASS:-}
+      # Login-time IdP group allowlist (blank = auto-derive from scope mappings)
+      - ALLOWED_IDP_GROUPS=${ALLOWED_IDP_GROUPS:-}
+      # IdP user-to-group fallback (issue #1127)
+      - IDP_USER_GROUP_FALLBACK_ENABLED_PROVIDERS=${IDP_USER_GROUP_FALLBACK_ENABLED_PROVIDERS:-pingfederate}
+      # External Registry Configuration
+      - EXTERNAL_REGISTRY_TAGS=${EXTERNAL_REGISTRY_TAGS:-anthropic-registry,workday-asor}
+      - ASOR_ACCESS_TOKEN=${ASOR_ACCESS_TOKEN}
+      - ASOR_CLIENT_CREDENTIALS=${ASOR_CLIENT_CREDENTIALS}
+      # Security Scanning Configuration
+      - SECURITY_SCAN_ENABLED=${SECURITY_SCAN_ENABLED:-true}
+      - SECURITY_SCAN_ON_REGISTRATION=${SECURITY_SCAN_ON_REGISTRATION:-true}
+      - SECURITY_BLOCK_UNSAFE_SERVERS=${SECURITY_BLOCK_UNSAFE_SERVERS:-true}
+      - SECURITY_ALLOW_UNSAFE_SERVERS=${SECURITY_ALLOW_UNSAFE_SERVERS:-false}
+      - SECURITY_BLOCK_ON_SCAN_FAILURE=${SECURITY_BLOCK_ON_SCAN_FAILURE:-true}
+      - SECURITY_ANALYZERS=${SECURITY_ANALYZERS:-yara}
+      - SECURITY_SCAN_TIMEOUT=${SECURITY_SCAN_TIMEOUT:-60}
+      - SECURITY_ADD_PENDING_TAG=${SECURITY_ADD_PENDING_TAG:-true}
+      - MCP_SCANNER_LLM_API_KEY=${MCP_SCANNER_LLM_API_KEY}
+      # GitHub Private Repository Access (SKILL.md fetching)
+      - GITHUB_PAT=${GITHUB_PAT:-}
+      - GITHUB_APP_ID=${GITHUB_APP_ID:-}
+      - GITHUB_APP_INSTALLATION_ID=${GITHUB_APP_INSTALLATION_ID:-}
+      - GITHUB_APP_PRIVATE_KEY=${GITHUB_APP_PRIVATE_KEY:-}
+      - GITHUB_EXTRA_HOSTS=${GITHUB_EXTRA_HOSTS:-}
+      - GITHUB_API_BASE_URL=${GITHUB_API_BASE_URL:-https://api.github.com}
+      # Storage Backend Configuration
+      - STORAGE_BACKEND=${STORAGE_BACKEND:-mongodb-ce}
+      # DocumentDB/MongoDB Configuration (when STORAGE_BACKEND=documentdb)
+      # MONGODB_CONNECTION_STRING: Optional full URI override (e.g. for MongoDB
+      # Atlas, mongodb+srv://...). When set, takes precedence over the discrete
+      # DOCUMENTDB_* values below.
+      - MONGODB_CONNECTION_STRING=${MONGODB_CONNECTION_STRING:-}
+      - DOCUMENTDB_HOST=${DOCUMENTDB_HOST:-mongodb}
+      - DOCUMENTDB_PORT=${DOCUMENTDB_PORT:-27017}
+      - DOCUMENTDB_USERNAME=${DOCUMENTDB_USERNAME}
+      - DOCUMENTDB_PASSWORD=${DOCUMENTDB_PASSWORD}
+      - DOCUMENTDB_DATABASE=${DOCUMENTDB_DATABASE:-mcp_registry}
+      - DOCUMENTDB_NAMESPACE=${DOCUMENTDB_NAMESPACE:-default}
+      - DOCUMENTDB_USE_TLS=${DOCUMENTDB_USE_TLS:-false}
+      - DOCUMENTDB_TLS_CA_FILE=${DOCUMENTDB_TLS_CA_FILE:-}
+      - DOCUMENTDB_USE_IAM=${DOCUMENTDB_USE_IAM:-false}
+      - DOCUMENTDB_REPLICA_SET=${DOCUMENTDB_REPLICA_SET:-rs0}
+      - DOCUMENTDB_READ_PREFERENCE=${DOCUMENTDB_READ_PREFERENCE:-secondaryPreferred}
+      # Rate Limiting Configuration (issue #295). Off by default.
+      - RATE_LIMITING_ENABLED=${RATE_LIMITING_ENABLED:-false}
+      - RATE_LIMIT_BACKEND=${RATE_LIMIT_BACKEND:-documentdb}
+      - RATE_LIMIT_FAIL_OPEN=${RATE_LIMIT_FAIL_OPEN:-true}
+      - RATE_LIMIT_QUARANTINE_FAIL_CLOSED=${RATE_LIMIT_QUARANTINE_FAIL_CLOSED:-false}
+      - RATE_LIMIT_DEFINITIONS_CACHE_TTL_SECONDS=${RATE_LIMIT_DEFINITIONS_CACHE_TTL_SECONDS:-30}
+      - RATE_LIMIT_BACKEND_TIMEOUT_MS=${RATE_LIMIT_BACKEND_TIMEOUT_MS:-250}
+      # Lockout-safeguard floors (registry validates group definitions at config time).
+      - RATE_LIMIT_USER_FLOOR_PER_MIN=${RATE_LIMIT_USER_FLOOR_PER_MIN:-20}
+      - RATE_LIMIT_AGENT_FLOOR_PER_MIN=${RATE_LIMIT_AGENT_FLOOR_PER_MIN:-10}
+      # Embeddings Configuration
+      - EMBEDDINGS_PROVIDER=${EMBEDDINGS_PROVIDER:-sentence-transformers}
+      - EMBEDDINGS_MODEL_NAME=${EMBEDDINGS_MODEL_NAME:-all-MiniLM-L6-v2}
+      - EMBEDDINGS_MODEL_DIMENSIONS=${EMBEDDINGS_MODEL_DIMENSIONS:-384}
+      - EMBEDDINGS_API_KEY=${EMBEDDINGS_API_KEY}
+      - EMBEDDINGS_API_BASE=${EMBEDDINGS_API_BASE}
+      - EMBEDDINGS_AWS_REGION=${EMBEDDINGS_AWS_REGION:-us-east-1}
+      # Embeddings IdP Auth (only when EMBEDDINGS_AUTH_MODE=idp)
+      - EMBEDDINGS_AUTH_MODE=${EMBEDDINGS_AUTH_MODE}
+      - EMBEDDINGS_IDP_TOKEN_ENDPOINT=${EMBEDDINGS_IDP_TOKEN_ENDPOINT}
+      - EMBEDDINGS_IDP_CLIENT_ID=${EMBEDDINGS_IDP_CLIENT_ID}
+      - EMBEDDINGS_IDP_CLIENT_SECRET=${EMBEDDINGS_IDP_CLIENT_SECRET}
+      - EMBEDDINGS_IDP_SCOPE=${EMBEDDINGS_IDP_SCOPE}
+      - EMBEDDINGS_IDP_TIMEOUT_SECONDS=${EMBEDDINGS_IDP_TIMEOUT_SECONDS:-30}
+      - EMBEDDINGS_IDP_ALLOW_INSECURE=${EMBEDDINGS_IDP_ALLOW_INSECURE:-false}
+      # ANS (Agent Name Service) Configuration
+      - ANS_INTEGRATION_ENABLED=${ANS_INTEGRATION_ENABLED:-false}
+      - ANS_API_ENDPOINT=${ANS_API_ENDPOINT:-https://api.godaddy.com}
+      - ANS_API_KEY=${ANS_API_KEY:-}
+      - ANS_API_SECRET=${ANS_API_SECRET:-}
+      - ANS_API_TIMEOUT_SECONDS=${ANS_API_TIMEOUT_SECONDS:-30}
+      - ANS_SYNC_INTERVAL_HOURS=${ANS_SYNC_INTERVAL_HOURS:-6}
+      - ANS_VERIFICATION_CACHE_TTL_SECONDS=${ANS_VERIFICATION_CACHE_TTL_SECONDS:-3600}
+      # Podman/local: allow the dashboard to call /api/* using the session cookie
+      # (disables nginx auth_request for /api/*; FastAPI still enforces auth)
+      - NGINX_DISABLE_API_AUTH_REQUEST=${NGINX_DISABLE_API_AUTH_REQUEST:-true}
+      # Federation static token auth
+      - FEDERATION_STATIC_TOKEN_AUTH_ENABLED=${FEDERATION_STATIC_TOKEN_AUTH_ENABLED:-false}
+      - FEDERATION_STATIC_TOKEN=${FEDERATION_STATIC_TOKEN:-}
+      # Auth server config (mirrored for config panel visibility)
+      - REGISTRY_STATIC_TOKEN_AUTH_ENABLED=${REGISTRY_STATIC_TOKEN_AUTH_ENABLED:-false}
+      - REGISTRY_API_TOKEN=${REGISTRY_API_TOKEN:-}
+      - REGISTRY_API_KEYS=${REGISTRY_API_KEYS:-}
+      # Registration Webhook
+      - REGISTRATION_WEBHOOK_URL=${REGISTRATION_WEBHOOK_URL:-}
+      - REGISTRATION_WEBHOOK_AUTH_HEADER=${REGISTRATION_WEBHOOK_AUTH_HEADER:-Authorization}
+      - REGISTRATION_WEBHOOK_AUTH_TOKEN=${REGISTRATION_WEBHOOK_AUTH_TOKEN:-}
+      - REGISTRATION_WEBHOOK_TIMEOUT_SECONDS=${REGISTRATION_WEBHOOK_TIMEOUT_SECONDS:-10}
+      - REGISTRATION_WEBHOOK_SIGNING_SECRET=${REGISTRATION_WEBHOOK_SIGNING_SECRET:-}
+      - REGISTRATION_ENFORCED_STATUS=${REGISTRATION_ENFORCED_STATUS:-}
+      # Agent Batch API (issue #956)
+      - BATCH_WORKER_ENABLED=${BATCH_WORKER_ENABLED:-true}
+      - BATCH_MAX_OPERATIONS_PER_JOB=${BATCH_MAX_OPERATIONS_PER_JOB:-1000}
+      - BATCH_MAX_CONCURRENT_JOBS_PER_USER=${BATCH_MAX_CONCURRENT_JOBS_PER_USER:-3}
+      - BATCH_JOB_RETENTION_DAYS=${BATCH_JOB_RETENTION_DAYS:-7}
+      - BATCH_WORKER_POLL_INTERVAL_SECONDS=${BATCH_WORKER_POLL_INTERVAL_SECONDS:-1.0}
+      - BATCH_MAX_REQUEST_BYTES=${BATCH_MAX_REQUEST_BYTES:-4194304}
+      # Caller-supplied asset id (Issue #1276)
+      - ALLOW_CALLER_SUPPLIED_ASSET_ID=${ALLOW_CALLER_SUPPLIED_ASSET_ID:-false}
+      # Registration duplicate-check advisory (Issue #1696)
+      - DEDUP_REGISTRATION_HINT_ENABLED=${DEDUP_REGISTRATION_HINT_ENABLED:-true}
+      # Unset by default: the registry picks the threshold calibrated for the
+      # configured embeddings model (0.45 for all-MiniLM-L6-v2, 0.85 for
+      # text-embedding-ada-002). Set a value only to override that.
+      - DEDUP_SCORE_THRESHOLD=${DEDUP_SCORE_THRESHOLD:-}
+      - DEDUP_MAX_SUGGESTIONS=${DEDUP_MAX_SUGGESTIONS:-3}
+      # Registration Gate (Admission Control)
+      - REGISTRATION_GATE_ENABLED=${REGISTRATION_GATE_ENABLED:-false}
+      - REGISTRATION_GATE_URL=${REGISTRATION_GATE_URL:-}
+      - REGISTRATION_GATE_AUTH_TYPE=${REGISTRATION_GATE_AUTH_TYPE:-none}
+      - REGISTRATION_GATE_AUTH_CREDENTIAL=${REGISTRATION_GATE_AUTH_CREDENTIAL:-}
+      - REGISTRATION_GATE_AUTH_HEADER_NAME=${REGISTRATION_GATE_AUTH_HEADER_NAME:-X-Api-Key}
+      - REGISTRATION_GATE_TIMEOUT_SECONDS=${REGISTRATION_GATE_TIMEOUT_SECONDS:-5}
+      - REGISTRATION_GATE_MAX_RETRIES=${REGISTRATION_GATE_MAX_RETRIES:-2}
+      - REGISTRATION_GATE_OAUTH2_TOKEN_URL=${REGISTRATION_GATE_OAUTH2_TOKEN_URL:-}
+      - REGISTRATION_GATE_OAUTH2_CLIENT_ID=${REGISTRATION_GATE_OAUTH2_CLIENT_ID:-}
+      - REGISTRATION_GATE_OAUTH2_CLIENT_SECRET=${REGISTRATION_GATE_OAUTH2_CLIENT_SECRET:-}
+      - REGISTRATION_GATE_OAUTH2_SCOPE=${REGISTRATION_GATE_OAUTH2_SCOPE:-}
+      # M2M Direct Registration
+      - M2M_DIRECT_REGISTRATION_ENABLED=${M2M_DIRECT_REGISTRATION_ENABLED:-true}
+      - MAX_TOKENS_PER_USER_PER_HOUR=${MAX_TOKENS_PER_USER_PER_HOUR:-100}
+      # MCP access-token lifetime (hours). Default when omitted / hard cap on
+      # requests. Read by the registry (validation); mirrored to auth-server
+      # (minting). Max is bounded to a 7-day ceiling in code. Issue #1477.
+      - MCP_TOKEN_DEFAULT_TTL_HOURS=${MCP_TOKEN_DEFAULT_TTL_HOURS:-8}
+      - MCP_TOKEN_MAX_TTL_HOURS=${MCP_TOKEN_MAX_TTL_HOURS:-24}
+      # Telemetry Configuration
+      # Disable all:       set MCP_TELEMETRY_DISABLED=1  to disable all telemetry (startup ping + heartbeat)
+      # Heartbeat opt-out: set MCP_TELEMETRY_OPT_OUT=1   to disable daily heartbeat only
+      # Heartbeat interval: set MCP_TELEMETRY_HEARTBEAT_INTERVAL_MINUTES=1440  (default: 1440 = 24h)
+      # Endpoint: set TELEMETRY_ENDPOINT=<url>   to use a self-hosted collector
+      # Debug:    set TELEMETRY_DEBUG=true        to log payloads without sending
+      - MCP_TELEMETRY_DISABLED=${MCP_TELEMETRY_DISABLED:-}
+      - MCP_TELEMETRY_OPT_OUT=${MCP_TELEMETRY_OPT_OUT:-}
+      - MCP_TELEMETRY_HEARTBEAT_INTERVAL_MINUTES=${MCP_TELEMETRY_HEARTBEAT_INTERVAL_MINUTES:-1440}
+      - TELEMETRY_DEBUG=${TELEMETRY_DEBUG:-false}
+      - MCP_TELEMETRY_IMDS_PROBE_DISABLED=${MCP_TELEMETRY_IMDS_PROBE_DISABLED:-}
+      - MCP_CLOUD_PROVIDER=${MCP_CLOUD_PROVIDER:-}
+      # Application Log Configuration
+      - APP_LOG_MAX_BYTES=${APP_LOG_MAX_BYTES:-52428800}
+      - APP_LOG_BACKUP_COUNT=${APP_LOG_BACKUP_COUNT:-5}
+      - APP_LOG_CENTRALIZED_ENABLED=${APP_LOG_CENTRALIZED_ENABLED:-true}
+      - APP_LOG_CENTRALIZED_TTL_DAYS=${APP_LOG_CENTRALIZED_TTL_DAYS:-1}
+      - APP_LOG_MONGODB_BUFFER_SIZE=${APP_LOG_MONGODB_BUFFER_SIZE:-50}
+      - APP_LOG_MONGODB_FLUSH_INTERVAL_SECONDS=${APP_LOG_MONGODB_FLUSH_INTERVAL_SECONDS:-5.0}
+      - APP_LOG_LEVEL=${APP_LOG_LEVEL:-INFO}
+      - APP_LOG_EXCLUDED_LOGGERS=${APP_LOG_EXCLUDED_LOGGERS:-uvicorn.access,httpx,pymongo,motor}
+      # Application file-log location (Issue #987) + format (json|text)
+      - APP_LOG_DIR=${APP_LOG_DIR:-/var/log/containers/ai-registry}
+      - APP_LOG_FILE_FORMAT=${APP_LOG_FILE_FORMAT:-json}
+      - APP_LOG_CONSOLE_FORMAT=${APP_LOG_CONSOLE_FORMAT:-json}
+      # Tool-level access control (Issue #1026)
+      - MCP_TOOLS_LIST_FILTER_ENABLED=${MCP_TOOLS_LIST_FILTER_ENABLED:-true}
+      - TOOL_FILTER_AUDIT_LOG_LEVEL=${TOOL_FILTER_AUDIT_LOG_LEVEL:-INFO}
+      # Custom entity types (admin-defined, schema-driven catalog types)
+      - CUSTOM_ENTITY_TYPES_ENABLED=${CUSTOM_ENTITY_TYPES_ENABLED:-false}
+      - CUSTOM_TYPE_CACHE_TTL_SECONDS=${CUSTOM_TYPE_CACHE_TTL_SECONDS:-60}
+      - MAX_CUSTOM_RECORDS_PER_TYPE=${MAX_CUSTOM_RECORDS_PER_TYPE:-1000}
+      - MAX_CUSTOM_TYPES=${MAX_CUSTOM_TYPES:-50}
+      # Registry-UI internal token verification (the /api/ hop; mints in auth-server)
+      - INTERNAL_TOKEN_TTL_SECONDS=${INTERNAL_TOKEN_TTL_SECONDS:-30}
+      - INTERNAL_TOKEN_LEEWAY_SECONDS=${INTERNAL_TOKEN_LEEWAY_SECONDS:-5}
+    ports:
+      - "80:8080"   # Map host 80 to container 8080 (non-root nginx)
+      - "443:8443"  # Map host 443 to container 8443 (non-root nginx)
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    env_file:
+      - path: ${MCP_EXTRA_ENV_DIR:-./extra_env}/registry.env
+        required: false
+    volumes:
+      - ${HOME}/mcp-gateway/servers:/app/registry/servers
+      - ${HOME}/mcp-gateway/agents:/app/registry/agents
+      - ${HOME}/mcp-gateway/models:/app/registry/models
+      # Audit logs kept under ${HOME}/mcp-gateway/logs (legacy path)
+      - ${HOME}/mcp-gateway/logs:/app/logs
+      - ${HOME}/mcp-gateway/security_scans:/app/security_scans
+      - ${HOME}/mcp-gateway/federation.json:/app/config/federation.json
+      - ${HOME}/mcp-gateway/ssl:/etc/ssl:ro
+      # Application log files (bind mount to host for Splunk ingestion, Issue #987)
+      - /var/log/containers/ai-registry:/var/log/containers/ai-registry
+    depends_on:
+      auth-server:
+        condition: service_started
+      metrics-service:
+        condition: service_healthy
+      mongodb-init:
+        condition: service_completed_successfully
+      openbao:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Metrics Collection Service
+  metrics-service:
+    build:
+      context: metrics-service
+      dockerfile: Dockerfile
+      args:
+        BUILD_VERSION: ${BUILD_VERSION:-1.0.0}
+    environment:
+      - METRICS_SERVICE_PORT=8890
+      - METRICS_SERVICE_HOST=0.0.0.0
+      - SQLITE_DB_PATH=/var/lib/sqlite/metrics.db
+      - METRICS_RETENTION_DAYS=90
+      - METRICS_API_KEY_AUTH=${METRICS_API_KEY_AUTH_SERVER}
+      - METRICS_API_KEY_REGISTRY=${METRICS_API_KEY_REGISTRY}
+      - METRICS_API_KEY_MCPGW=${METRICS_API_KEY_MCPGW_SERVER}
+      # Per-deployment pepper for API-key hashing. Required: the metrics-service
+      # refuses to start without a strong value. Generated into .env by
+      # build_and_run.sh; rotating it invalidates existing API-key hashes.
+      - METRICS_KEY_PEPPER=${METRICS_KEY_PEPPER}
+      # Dedicated admin API key that gates /admin/* (retention/cleanup/db stats).
+      # Must be distinct from the ingest keys above; /admin/* denies by default
+      # until it is set. Do NOT set it equal to an ingest key.
+      - METRICS_ADMIN_API_KEY=${METRICS_ADMIN_API_KEY}
+      - OTEL_SERVICE_NAME=mcp-metrics-service
+      - OTEL_PROMETHEUS_ENABLED=true
+      - OTEL_PROMETHEUS_PORT=9465
+      - OTEL_OTLP_ENDPOINT=${OTEL_OTLP_ENDPOINT:-}
+      - OTEL_EXPORTER_OTLP_HEADERS=${OTEL_EXPORTER_OTLP_HEADERS:-}
+      - OTEL_OTLP_EXPORT_INTERVAL_MS=${OTEL_OTLP_EXPORT_INTERVAL_MS:-30000}
+      - OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE=${OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE:-cumulative}
+      - METRICS_RATE_LIMIT=1000
+    ports:
+      # Loopback-only API port (build_and_run.sh health-checks it from the host).
+      - "${HOST_BIND_IP:-127.0.0.1}:8890:8890"
+      # 9465 (Prometheus exporter) is scraped container-to-container by Prometheus
+      # (see config/prometheus.yml job 'mcp-metrics-service' -> metrics-service:9465),
+      # so it needs no host mapping. Not published.
+    volumes:
+      - metrics-db-data:/var/lib/sqlite
+      - ${HOME}/mcp-gateway/logs:/app/logs
+    depends_on:
+      - metrics-db
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8890/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Auth service (separate and scalable)
+  auth-server:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.auth
+      args:
+        BUILD_VERSION: ${BUILD_VERSION:-1.0.0}
+    environment:
+      - REGISTRY_URL=${REGISTRY_URL}
+      # Request-source trust (audit client IP + OAuth external-URL host allowlist)
+      - TRUSTED_PROXY_HOPS=${TRUSTED_PROXY_HOPS:-1}
+      - TRUSTED_EXTERNAL_HOSTS=${TRUSTED_EXTERNAL_HOSTS:-}
+      - SECRET_KEY=${SECRET_KEY}
+      # MCP access-token lifetime (hours). auth-server mints + clamps to the
+      # configured max (bounded to a 7-day ceiling in code). Must match the
+      # registry's values. Issue #1477.
+      - MCP_TOKEN_DEFAULT_TTL_HOURS=${MCP_TOKEN_DEFAULT_TTL_HOURS:-8}
+      - MCP_TOKEN_MAX_TTL_HOURS=${MCP_TOKEN_MAX_TTL_HOURS:-24}
+      # Exact-match allowlist of OAuth login/logout redirect URIs (comma-separated
+      # absolute URLs). Empty (default) falls back to the weaker cookie-domain
+      # heuristic; set it to harden against open-redirect via a controlled subdomain.
+      - OAUTH2_ALLOWED_REDIRECT_URIS=${OAUTH2_ALLOWED_REDIRECT_URIS:-}
+      # Per-user egress credential vault: auth-server only needs the feature flag,
+      # the internal vend URL, and the nginx marker secret (it does NOT touch the
+      # secret store, so no SECRET_STORE/AWS/OPENBAO vars here).
+      - EGRESS_AUTH_ENABLED=${EGRESS_AUTH_ENABLED:-false}
+      - EGRESS_REGISTRY_INTERNAL_URL=${EGRESS_REGISTRY_INTERNAL_URL:-http://registry:8091}
+      # OBO (same-IdP) token exchange against a self-hosted IdP: allowlist its
+      # private-resolving token endpoint. Must match the registry's value.
+      - EGRESS_OAUTH_TRUSTED_IDP_HOSTS=${EGRESS_OAUTH_TRUSTED_IDP_HOSTS:-}
+      # Egress httpx client connection pooling (shared by url_guard). Keep
+      # keepalive_expiry below the shortest upstream/LB idle timeout.
+      - EGRESS_HTTP_POOL_MAX_CONNECTIONS=${EGRESS_HTTP_POOL_MAX_CONNECTIONS:-100}
+      - EGRESS_HTTP_POOL_MAX_KEEPALIVE=${EGRESS_HTTP_POOL_MAX_KEEPALIVE:-20}
+      - EGRESS_HTTP_POOL_KEEPALIVE_EXPIRY_SECONDS=${EGRESS_HTTP_POOL_KEEPALIVE_EXPIRY_SECONDS:-30}
+      - EGRESS_HTTP_POOL_CONNECT_RETRIES=${EGRESS_HTTP_POOL_CONNECT_RETRIES:-1}
+      # Forward-proxy egress for the SSRF-guarded clients (issue #1832). OFF by
+      # default; enabling it relaxes IP-rebind pinning for targets that resolve
+      # exclusively to public addresses. Set HTTP_PROXY / HTTPS_PROXY / NO_PROXY
+      # through extra_env/registry.env and extra_env/auth-server.env.
+      # The CA bundle is only needed when the proxy re-signs TLS with an internal
+      # CA, and the PEM must exist INSIDE the container, so mount it as well:
+      #   volumes:
+      #     - ./certs/corporate-ca.pem:/etc/ssl/mcp-gateway/ca-bundle.pem:ro
+      - EGRESS_FORWARD_PROXY_ENABLED=${EGRESS_FORWARD_PROXY_ENABLED:-false}
+      # Close boto3's IMDS credential fallback (issue #1839). Helm and
+      # Terraform/ECS default this to "true" because task roles and IRSA supply
+      # credentials there, so IMDS is only a fallback. Compose defaults to
+      # "false" because an EC2-hosted Compose deployment often uses the instance
+      # role as its real credential source for Amazon Bedrock and AgentCore, and
+      # "true" would break it. Set it to "true" if you do not need the instance
+      # role. botocore only treats the literal "true" as disabled, so "false" is
+      # exactly equivalent to leaving it unset.
+      - AWS_EC2_METADATA_DISABLED=${AWS_EC2_METADATA_DISABLED:-false}
+      - EGRESS_FORWARD_PROXY_CA_BUNDLE=${EGRESS_FORWARD_PROXY_CA_BUNDLE:-}
+      - AUTH_SERVER_NGINX_MARKER_SECRET=${AUTH_SERVER_NGINX_MARKER_SECRET:-}
+      - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID}
+      - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET}
+      - GITHUB_ENABLED=${GITHUB_ENABLED:-false}
+      - COGNITO_CLIENT_ID=${COGNITO_CLIENT_ID}
+      - COGNITO_CLIENT_SECRET=${COGNITO_CLIENT_SECRET}
+      - COGNITO_USER_POOL_ID=${COGNITO_USER_POOL_ID}
+      - COGNITO_DOMAIN=${COGNITO_DOMAIN:-auto}
+      - COGNITO_ENABLED=${COGNITO_ENABLED:-false}
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+      - GOOGLE_ENABLED=${GOOGLE_ENABLED:-false}
+      # Gateway generic-proxy feature (auth-server-consumed): ships disabled by default
+      - GATEWAY_GENERIC_PROXY_ENABLED=${GATEWAY_GENERIC_PROXY_ENABLED:-false}
+      - GENERIC_PROXY_TOKEN_TTL_SECONDS=${GENERIC_PROXY_TOKEN_TTL_SECONDS:-30}
+      - GENERIC_PROXY_MAX_BODY_BYTES=${GENERIC_PROXY_MAX_BODY_BYTES:-10485760}
+      - GATEWAY_GENERIC_REQUIRE_BEARER_FOR_WRITES=${GATEWAY_GENERIC_REQUIRE_BEARER_FOR_WRITES:-true}
+      - GATEWAY_EGRESS_SELFCHECK_ENABLED=${GATEWAY_EGRESS_SELFCHECK_ENABLED:-true}
+      - GATEWAY_GENERIC_TLS_VERIFY=${GATEWAY_GENERIC_TLS_VERIFY:-true}
+      - GATEWAY_GENERIC_MAX_CONCURRENCY=${GATEWAY_GENERIC_MAX_CONCURRENCY:-32}
+      - GATEWAY_GENERIC_STREAM_MAX_CONCURRENCY=${GATEWAY_GENERIC_STREAM_MAX_CONCURRENCY:-8}
+      - GATEWAY_GENERIC_ACQUIRE_TIMEOUT_SECONDS=${GATEWAY_GENERIC_ACQUIRE_TIMEOUT_SECONDS:-5}
+      - GATEWAY_GENERIC_STREAM_MAX_DURATION_SECONDS=${GATEWAY_GENERIC_STREAM_MAX_DURATION_SECONDS:-3600}
+      - GATEWAY_GENERIC_STREAM_MAX_BYTES=${GATEWAY_GENERIC_STREAM_MAX_BYTES:-104857600}
+      # Metrics configuration
+      - METRICS_SERVICE_URL=http://metrics-service:8890
+      - METRICS_API_KEY=${METRICS_API_KEY_AUTH_SERVER}
+      # OTel-native metrics emission (issue #1122)
+      - METRICS_LEGACY_HTTP_POST=${METRICS_LEGACY_HTTP_POST:-false}
+      - OTEL_METRIC_EXPORT_INTERVAL_MS=${OTEL_METRIC_EXPORT_INTERVAL_MS:-15000}
+      - OTEL_EXPORTER_PROMETHEUS_HOST=${OTEL_EXPORTER_PROMETHEUS_HOST:-0.0.0.0}
+      - OTEL_EXPORTER_PROMETHEUS_PORT=${OTEL_EXPORTER_PROMETHEUS_PORT:-9464}
+      # Keycloak configuration
+      - AUTH_PROVIDER=${AUTH_PROVIDER:-cognito}  # 'cognito' or 'keycloak'
+      - KEYCLOAK_ENABLED=${KEYCLOAK_ENABLED:-true}  # Enable Keycloak by default
+      - KEYCLOAK_URL=${KEYCLOAK_URL:-http://keycloak:8080}
+      # Podman note: host port 8080 is used by the registry UI (8080->80),
+      # so Keycloak is exposed on 18080->8080 by default in this Podman compose.
+      - KEYCLOAK_EXTERNAL_URL=${KEYCLOAK_EXTERNAL_URL:-http://localhost:18080}
+      # Allow plain-HTTP resource URLs for local dev (see registry service note).
+      - MCP_HTTPS_REQUIRED=${MCP_HTTPS_REQUIRED:-false}
+      - KEYCLOAK_REALM=${KEYCLOAK_REALM:-mcp-gateway}
+      - KEYCLOAK_CLIENT_ID=${KEYCLOAK_CLIENT_ID:-mcp-gateway-web}
+      - KEYCLOAK_CLIENT_SECRET=${KEYCLOAK_CLIENT_SECRET}
+      - KEYCLOAK_M2M_CLIENT_ID=${KEYCLOAK_M2M_CLIENT_ID:-mcp-gateway-m2m}
+      - KEYCLOAK_M2M_CLIENT_SECRET=${KEYCLOAK_M2M_CLIENT_SECRET}
+      # Entra ID configuration
+      - ENTRA_TENANT_ID=${ENTRA_TENANT_ID}
+      - ENTRA_CLIENT_ID=${ENTRA_CLIENT_ID}
+      - ENTRA_CLIENT_SECRET=${ENTRA_CLIENT_SECRET}
+      - ENTRA_ENABLED=${ENTRA_ENABLED:-false}
+      # Okta configuration
+      - OKTA_DOMAIN=${OKTA_DOMAIN:-}
+      - OKTA_CLIENT_ID=${OKTA_CLIENT_ID:-}
+      - OKTA_CLIENT_SECRET=${OKTA_CLIENT_SECRET:-}
+      - OKTA_M2M_CLIENT_ID=${OKTA_M2M_CLIENT_ID:-}
+      - OKTA_M2M_CLIENT_SECRET=${OKTA_M2M_CLIENT_SECRET:-}
+      - OKTA_API_TOKEN=${OKTA_API_TOKEN:-}
+      - OKTA_AUTH_SERVER_ID=${OKTA_AUTH_SERVER_ID:-}
+      - OKTA_M2M_ALLOWED_AUDIENCES=${OKTA_M2M_ALLOWED_AUDIENCES:-}
+      - OKTA_M2M_CLIENT_GROUPS=${OKTA_M2M_CLIENT_GROUPS:-}
+      # PingFederate configuration
+      - PINGFEDERATE_BASE_URL=${PINGFEDERATE_BASE_URL:-}
+      - PINGFEDERATE_EXTERNAL_URL=${PINGFEDERATE_EXTERNAL_URL:-}
+      - PINGFEDERATE_CLIENT_ID=${PINGFEDERATE_CLIENT_ID:-}
+      - PINGFEDERATE_CLIENT_SECRET=${PINGFEDERATE_CLIENT_SECRET:-}
+      - PINGFEDERATE_M2M_CLIENT_ID=${PINGFEDERATE_M2M_CLIENT_ID:-}
+      - PINGFEDERATE_M2M_CLIENT_SECRET=${PINGFEDERATE_M2M_CLIENT_SECRET:-}
+      - PINGFEDERATE_APPLICATION_ID_URI=${PINGFEDERATE_APPLICATION_ID_URI:-}
+      - PINGFEDERATE_GROUPS_CLAIM=${PINGFEDERATE_GROUPS_CLAIM:-groups}
+      - PINGFEDERATE_M2M_ALLOWED_AUDIENCES=${PINGFEDERATE_M2M_ALLOWED_AUDIENCES:-}
+      - PINGFEDERATE_ENABLED=${PINGFEDERATE_ENABLED:-false}
+      # Login-time IdP group allowlist (blank = auto-derive from scope mappings)
+      - ALLOWED_IDP_GROUPS=${ALLOWED_IDP_GROUPS:-}
+      # IdP user-to-group fallback (issue #1127)
+      - IDP_USER_GROUP_FALLBACK_ENABLED_PROVIDERS=${IDP_USER_GROUP_FALLBACK_ENABLED_PROVIDERS:-pingfederate}
+      # Storage Backend Configuration
+      - STORAGE_BACKEND=${STORAGE_BACKEND:-mongodb-ce}
+      # DocumentDB/MongoDB Configuration (when STORAGE_BACKEND=documentdb or mongodb-ce)
+      # MONGODB_CONNECTION_STRING: Optional full URI override (e.g. for MongoDB
+      # Atlas, mongodb+srv://...). When set, takes precedence over the discrete
+      # DOCUMENTDB_* values below.
+      - MONGODB_CONNECTION_STRING=${MONGODB_CONNECTION_STRING:-}
+      - DOCUMENTDB_HOST=${DOCUMENTDB_HOST:-mongodb}
+      - DOCUMENTDB_PORT=${DOCUMENTDB_PORT:-27017}
+      - DOCUMENTDB_USERNAME=${DOCUMENTDB_USERNAME}
+      - DOCUMENTDB_PASSWORD=${DOCUMENTDB_PASSWORD}
+      - DOCUMENTDB_DATABASE=${DOCUMENTDB_DATABASE:-mcp_registry}
+      - DOCUMENTDB_NAMESPACE=${DOCUMENTDB_NAMESPACE:-default}
+      - DOCUMENTDB_USE_TLS=${DOCUMENTDB_USE_TLS:-false}
+      - DOCUMENTDB_TLS_CA_FILE=${DOCUMENTDB_TLS_CA_FILE}
+      - DOCUMENTDB_USE_IAM=${DOCUMENTDB_USE_IAM:-false}
+      - DOCUMENTDB_REPLICA_SET=${DOCUMENTDB_REPLICA_SET:-rs0}
+      - DOCUMENTDB_READ_PREFERENCE=${DOCUMENTDB_READ_PREFERENCE:-secondaryPreferred}
+      # Rate Limiting Configuration (issue #295). Off by default; enforced here.
+      - RATE_LIMITING_ENABLED=${RATE_LIMITING_ENABLED:-false}
+      - RATE_LIMIT_BACKEND=${RATE_LIMIT_BACKEND:-documentdb}
+      - RATE_LIMIT_FAIL_OPEN=${RATE_LIMIT_FAIL_OPEN:-true}
+      - RATE_LIMIT_QUARANTINE_FAIL_CLOSED=${RATE_LIMIT_QUARANTINE_FAIL_CLOSED:-false}
+      - RATE_LIMIT_DEFINITIONS_CACHE_TTL_SECONDS=${RATE_LIMIT_DEFINITIONS_CACHE_TTL_SECONDS:-30}
+      - RATE_LIMIT_BACKEND_TIMEOUT_MS=${RATE_LIMIT_BACKEND_TIMEOUT_MS:-250}
+      # Registry API static token auth
+      - REGISTRY_STATIC_TOKEN_AUTH_ENABLED=${REGISTRY_STATIC_TOKEN_AUTH_ENABLED:-false}
+      - REGISTRY_API_TOKEN=${REGISTRY_API_TOKEN:-}
+      - REGISTRY_API_KEYS=${REGISTRY_API_KEYS:-}
+      # Application Log Configuration
+      - APP_LOG_MAX_BYTES=${APP_LOG_MAX_BYTES:-52428800}
+      - APP_LOG_BACKUP_COUNT=${APP_LOG_BACKUP_COUNT:-5}
+      - APP_LOG_CENTRALIZED_ENABLED=${APP_LOG_CENTRALIZED_ENABLED:-true}
+      - APP_LOG_CENTRALIZED_TTL_DAYS=${APP_LOG_CENTRALIZED_TTL_DAYS:-1}
+      - APP_LOG_MONGODB_BUFFER_SIZE=${APP_LOG_MONGODB_BUFFER_SIZE:-50}
+      - APP_LOG_MONGODB_FLUSH_INTERVAL_SECONDS=${APP_LOG_MONGODB_FLUSH_INTERVAL_SECONDS:-5.0}
+      - APP_LOG_LEVEL=${APP_LOG_LEVEL:-INFO}
+      - APP_LOG_EXCLUDED_LOGGERS=${APP_LOG_EXCLUDED_LOGGERS:-uvicorn.access,httpx,pymongo,motor}
+      # Application file-log location (Issue #987) + format (json|text)
+      - APP_LOG_DIR=${APP_LOG_DIR:-/var/log/containers/ai-registry}
+      - APP_LOG_FILE_FORMAT=${APP_LOG_FILE_FORMAT:-json}
+      - APP_LOG_CONSOLE_FORMAT=${APP_LOG_CONSOLE_FORMAT:-json}
+      # Tool-level access control (Issue #1026)
+      - MCP_TOOLS_LIST_FILTER_ENABLED=${MCP_TOOLS_LIST_FILTER_ENABLED:-true}
+      - MCP_PROXY_MAX_BODY_BYTES=${MCP_PROXY_MAX_BODY_BYTES:-2097152}
+      - MCP_PROXY_TIMEOUT=${MCP_PROXY_TIMEOUT:-30}
+      - TOOL_FILTER_AUDIT_LOG_LEVEL=${TOOL_FILTER_AUDIT_LOG_LEVEL:-INFO}
+      - INTERNAL_TOKEN_TTL_SECONDS=${INTERNAL_TOKEN_TTL_SECONDS:-30}
+      - INTERNAL_TOKEN_LEEWAY_SECONDS=${INTERNAL_TOKEN_LEEWAY_SECONDS:-5}
+    ports:
+      # Loopback-only: normal traffic goes through the nginx front door; direct
+      # port is for host health checks / tests only.
+      - "${HOST_BIND_IP:-127.0.0.1}:8888:8888"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    env_file:
+      - path: ${MCP_EXTRA_ENV_DIR:-./extra_env}/auth-server.env
+        required: false
+    volumes:
+      # Audit logs kept under ${HOME}/mcp-gateway/logs (legacy path)
+      - ${HOME}/mcp-gateway/logs:/app/logs
+      # Application log files (bind mount to host for Splunk ingestion, Issue #987)
+      - /var/log/containers/ai-registry:/var/log/containers/ai-registry
+    depends_on:
+      metrics-service:
+        condition: service_healthy
+      mongodb-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # Current Time MCP Server
+  currenttime-server:
+    build:
+      context: servers/currenttime
+      dockerfile: ../../docker/Dockerfile.mcp-server
+      args:
+        BUILD_VERSION: ${BUILD_VERSION:-1.0.0}
+    environment:
+      - PORT=8000
+      - MCP_TRANSPORT=streamable-http
+    ports:
+      # Loopback-only: reached through the nginx front door in normal use.
+      - "${HOST_BIND_IP:-127.0.0.1}:8000:8000"
+    restart: unless-stopped
+
+  # MCP Gateway Server
+  mcpgw-server:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.mcp-server
+      args:
+        SERVER_DIR: servers/mcpgw
+        BUILD_VERSION: ${BUILD_VERSION:-1.0.0}
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8003
+      - REGISTRY_BASE_URL=http://registry:8080
+      # Application file-log location (Issue #987) + format (json|text)
+      - APP_LOG_DIR=${APP_LOG_DIR:-/var/log/containers/ai-registry}
+      - APP_LOG_FILE_FORMAT=${APP_LOG_FILE_FORMAT:-json}
+      - APP_LOG_CONSOLE_FORMAT=${APP_LOG_CONSOLE_FORMAT:-json}
+      - APP_LOG_LEVEL=${APP_LOG_LEVEL:-INFO}
+      - APP_LOG_MAX_BYTES=${APP_LOG_MAX_BYTES:-52428800}
+      - APP_LOG_BACKUP_COUNT=${APP_LOG_BACKUP_COUNT:-5}
+      # OTel-native metrics emission (issue #1122)
+      - METRICS_LEGACY_HTTP_POST=${METRICS_LEGACY_HTTP_POST:-false}
+      - OTEL_METRIC_EXPORT_INTERVAL_MS=${OTEL_METRIC_EXPORT_INTERVAL_MS:-15000}
+      - OTEL_EXPORTER_PROMETHEUS_HOST=${OTEL_EXPORTER_PROMETHEUS_HOST:-0.0.0.0}
+      - OTEL_EXPORTER_PROMETHEUS_PORT=${OTEL_EXPORTER_PROMETHEUS_PORT:-9464}
+    env_file:
+      - path: ${MCP_EXTRA_ENV_DIR:-./extra_env}/mcpgw.env
+        required: false
+    volumes:
+      - ${HOME}/mcp-gateway/servers:/app/registry/servers
+      - ${HOME}/mcp-gateway/models:/app/registry/models
+      # Application log file (bind mount to host for Splunk ingestion, Issue #987)
+      - /var/log/containers/ai-registry:/var/log/containers/ai-registry
+    ports:
+      # Loopback-only: reached through the nginx front door in normal use.
+      - "${HOST_BIND_IP:-127.0.0.1}:8003:8003"
+    depends_on:
+      - registry
+    restart: unless-stopped
+
+  # Real Server Fake Tools MCP Server
+  realserverfaketools-server:
+    build:
+      context: servers/realserverfaketools
+      dockerfile: ../../docker/Dockerfile.mcp-server
+      args:
+        BUILD_VERSION: ${BUILD_VERSION:-1.0.0}
+    environment:
+      - PORT=8002
+    ports:
+      # Loopback-only: reached through the nginx front door in normal use.
+      - "${HOST_BIND_IP:-127.0.0.1}:8002:8002"
+    restart: unless-stopped
+
+
+  # SQLite container for metrics database
+  metrics-db:
+    # Pinned (not :latest) so rebuilds are reproducible.
+    image: alpine:3.21
+    volumes:
+      - metrics-db-data:/var/lib/sqlite
+    command: ["sh", "-c", "apk add --no-cache sqlite && mkdir -p /var/lib/sqlite && sqlite3 /var/lib/sqlite/metrics.db 'CREATE TABLE IF NOT EXISTS _health (id INTEGER);' && tail -f /dev/null"]
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "sqlite3", "/var/lib/sqlite/metrics.db", ".tables"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Prometheus for metrics collection
+  prometheus:
+    # Pinned (not :latest) to match the main compose stack.
+    image: prom/prometheus:v3.11.3
+    ports:
+      # Loopback-only: Prometheus UI is a local-dev convenience, not a public surface.
+      - "${HOST_BIND_IP:-127.0.0.1}:9090:9090"
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+
+  # Grafana for metrics visualization
+  grafana:
+    image: grafana/grafana:12.3.1
+    ports:
+      # Loopback-only: Grafana UI is a local-dev convenience, not a public surface.
+      - "${HOST_BIND_IP:-127.0.0.1}:3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?Set GRAFANA_ADMIN_PASSWORD in .env}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_AUTH_ANONYMOUS_ENABLED=false
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./config/grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./config/grafana/datasources:/etc/grafana/provisioning/datasources
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+  # PostgreSQL database for Keycloak
+  keycloak-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: keycloak
+      POSTGRES_USER: keycloak
+      # No default: the Keycloak realm lives in this database, so a shipped
+      # "keycloak" password would be a usable credential. Set it in .env.
+      POSTGRES_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?Set KEYCLOAK_DB_PASSWORD in .env}
+    volumes:
+      - keycloak_db_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U keycloak"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Keycloak Identity Provider
+  keycloak:
+    image: quay.io/keycloak/keycloak:25.0
+    # Realm setup is NOT done by --import-realm. The mcp-gateway realm, clients,
+    # groups, and users are created programmatically by keycloak/setup/init-keycloak.sh,
+    # which you run once after the stack is up (see docs/complete-setup-guide.md).
+    # keycloak/import/realm-config.json is not imported here (it is not compatible
+    # with stock --import-realm on this Keycloak version), so do NOT add
+    # --import-realm expecting it to work -- run init-keycloak.sh instead.
+    command: start-dev  # Use 'start' for production with proper SSL
+    environment:
+      # Database configuration
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://keycloak-db:5432/keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?Set KEYCLOAK_DB_PASSWORD in .env}
+
+      # Admin credentials. No default password: this bootstraps the Keycloak
+      # master-realm admin, so an empty/guessable value would be a full
+      # takeover of the IdP. Set KEYCLOAK_ADMIN_PASSWORD in .env.
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN:-admin}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?Set KEYCLOAK_ADMIN_PASSWORD in .env}
+
+      # HTTP configuration
+      KC_HTTP_ENABLED: 'true'
+      KC_HTTP_PORT: 8080
+      KC_HOSTNAME_STRICT: 'false'
+      KC_HOSTNAME_STRICT_HTTPS: 'false'
+      KC_PROXY: edge  # Running behind nginx
+
+      # Frontend URL for external JWT issuer
+      # Podman note: host port 8080 is used by the registry UI (8080->80),
+      # so Keycloak is exposed on 18080->8080 by default in this Podman compose.
+      KC_FRONTEND_URL: ${KEYCLOAK_EXTERNAL_URL:-http://localhost:18080}
+
+      # Features
+      KC_FEATURES: token-exchange,admin-api
+
+      # Logging
+      KC_LOG_LEVEL: INFO
+
+      # Health endpoints (required for /health/ready)
+      KC_HEALTH_ENABLED: 'true'
+
+    ports:
+      # Loopback-only: Keycloak is reached through the nginx front door in normal use.
+      - "${HOST_BIND_IP:-127.0.0.1}:18080:8080"
+    depends_on:
+      keycloak-db:
+        condition: service_healthy
+    volumes:
+      - ./keycloak/themes:/opt/keycloak/themes
+      - ./keycloak/providers:/opt/keycloak/providers
+      - ./keycloak/import:/opt/keycloak/data/import
+    restart: unless-stopped
+    healthcheck:
+      # The Keycloak image deliberately ships without curl (upstream removes HTTP
+      # clients to cut attack surface), so a curl-based check can never succeed
+      # and leaves the container permanently unhealthy. Use bash's /dev/tcp
+      # redirection, which is what the Keycloak health guide documents for
+      # HEALTHCHECK. Since Keycloak 25 the health endpoints are served on the
+      # management port (9000), not on the main HTTP port.
+      test:
+        - CMD
+        - /bin/bash
+        - -c
+        - "{ printf 'HEAD /health/ready HTTP/1.0\\r\\n\\r\\n' >&0; grep 'HTTP/1.[01] 200'; } 0<>/dev/tcp/localhost/9000"
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      # First boot runs the Keycloak DB schema migration; a short start_period
+      # reports the container unhealthy during an otherwise normal startup.
+      start_period: 120s
+
+  pingfederate:
+    image: pingidentity/pingfederate:13.0.2
+    container_name: pingfederate
+    profiles: ["pingfederate"]
+    environment:
+      - PING_IDENTITY_ACCEPT_EULA=${PING_IDENTITY_ACCEPT_EULA}
+      - PING_IDENTITY_DEVOPS_USER=${PING_IDENTITY_DEVOPS_USER}
+      - PING_IDENTITY_DEVOPS_KEY=${PING_IDENTITY_DEVOPS_KEY}
+      - SERVER_PROFILE_URL=https://github.com/pingidentity/pingidentity-server-profiles.git
+      - SERVER_PROFILE_PATH=getting-started/pingfederate
+      # Bootstrap the console administrator from the operator-supplied
+      # PF_ADMIN_PASS instead of the Ping vendor default. This profile
+      # (getting-started) interpolates PING_IDENTITY_PASSWORD straight into
+      # instance/bulk-config/data.json.subst, where baseline routes it through
+      # administrativeAccounts_items_Administrator_password -- different
+      # mechanism, same operator-settable variable. Empty is NOT neutral: both
+      # profiles' env_vars apply ${PING_IDENTITY_PASSWORD:=2FederateM0re}, and
+      # `:=` substitutes on null, so build_and_run.sh rejects an empty
+      # PF_ADMIN_PASS when PINGFEDERATE_ENABLED is true.
+      - PING_IDENTITY_PASSWORD=${PF_ADMIN_PASS:-}
+    ports:
+      # Loopback-only: PingFederate runtime + admin console stay on the host.
+      - "${HOST_BIND_IP:-127.0.0.1}:9031:9031"
+      - "${HOST_BIND_IP:-127.0.0.1}:9999:9999"
+    volumes:
+      - pingfederate-data:/opt/out/instance/server/default/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -ksf https://localhost:9031/pf/heartbeat.ping || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 180s
+
+  # MongoDB Community Edition 8.2 (alternative to DocumentDB for local development)
+  # Vector search is implemented in application code (see search_repository.py)
+  # Runs without authentication for local development simplicity. The published
+  # port is bound to 127.0.0.1 (loopback) so the unauthenticated database is
+  # reachable only from the local host, never from other machines on the
+  # network. For a network-exposed / production MongoDB, use the --prebuilt
+  # variant (authenticated + keyfile) or an external managed DocumentDB.
+  mongodb:
+    image: mongo:8.2
+    container_name: mcp-mongodb
+    command: mongod --replSet rs0 --bind_ip 127.0.0.1,mongodb
+    ports:
+      # Loopback-only: host tools (mongosh, tests) reach it via localhost, but it
+      # is never exposed on other interfaces. Set HOST_BIND_IP=0.0.0.0 to override.
+      - "${HOST_BIND_IP:-127.0.0.1}:27017:27017"
+    volumes:
+      - mongodb-data:/data/db
+      - mongodb-config:/data/configdb
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETUID   # Required by gosu to switch to mongodb user at startup
+      - SETGID   # Required by gosu to switch to mongodb group at startup
+      - CHOWN    # Required by entrypoint to fix /data/db ownership
+      - DAC_OVERRIDE  # Required by entrypoint to read /data/db before chown
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 60s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  # MongoDB initialization (creates replica set, indexes, and loads admin scope)
+  mongodb-init:
+    image: python:3.14-slim
+    container_name: mcp-mongodb-init
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    environment:
+      - DOCUMENTDB_HOST=mongodb
+      - DOCUMENTDB_PORT=27017
+      - DOCUMENTDB_DATABASE=${DOCUMENTDB_DATABASE:-mcp_registry}
+      # The paired mongodb service in this file runs WITHOUT authentication, so
+      # these must default to empty (not admin/admin) -- init-mongodb-ce.py only
+      # builds a SCRAM auth string when a username is set, and authenticating
+      # against a no-user Mongo fails. Leave blank for the no-auth local setup.
+      - DOCUMENTDB_USERNAME=${DOCUMENTDB_USERNAME:-}
+      - DOCUMENTDB_PASSWORD=${DOCUMENTDB_PASSWORD:-}
+      - DOCUMENTDB_NAMESPACE=${DOCUMENTDB_NAMESPACE:-default}
+      - ENTRA_GROUP_ADMIN_ID=${ENTRA_GROUP_ADMIN_ID:-}
+    volumes:
+      - ./scripts/init-mongodb-ce.py:/app/scripts/init-mongodb-ce.py:ro
+      - ./scripts/registry-admins.json:/app/scripts/registry-admins.json:ro
+      - ./scripts/federation-service.json:/app/scripts/federation-service.json:ro
+    command: >
+      sh -c "
+      pip install --quiet motor pymongo &&
+      python /app/scripts/init-mongodb-ce.py
+      "
+    restart: "no"
+
+volumes:
+  ssl_data:
+  keycloak_db_data:
+  metrics-db-data:
+  prometheus-data:
+  grafana-data:
+  mongodb-data:
+  mongodb-config:
+  pingfederate-data:

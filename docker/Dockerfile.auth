@@ -1,0 +1,98 @@
+# Auth Dockerfile - multi-stage build for smaller image and better caching
+
+# ===== BUILD STAGE =====
+FROM python:3.14.7-slim AS builder
+
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+# Install build dependencies (only needed for compiling wheels).
+# apt-get upgrade pulls in security patches against the base image's
+# already-installed packages (e.g. libc6 / glibc CVE updates) that would
+# otherwise stay at whatever version was baked into python:3.14-slim.
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
+    build-essential \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install uv and create venv (rarely changes)
+RUN pip install --no-cache-dir uv==0.11.14 && \
+    uv venv .venv --python 3.14
+
+# Copy dependency manifests first so the install layer is cached on the
+# (pyproject, lock) pair, not on source changes.
+COPY auth_server/pyproject.toml /app/pyproject.toml
+COPY auth_server/uv.lock        /app/uv.lock
+
+# Install dependencies from uv.lock. --frozen uses uv.lock as the source of truth.
+RUN uv sync --frozen --no-dev
+
+# ===== RUNTIME STAGE =====
+FROM python:3.14.7-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+# Issue #1122: prefer IPv4 over IPv6 in glibc getaddrinfo. ECS Service Connect
+# populates /etc/hosts with both A (127.255.0.x) and AAAA (2600:f0f0::x)
+# entries; the Fargate task netns has no IPv6 routing, so the default RFC 6724
+# IPv6 preference makes outbound calls (auth-server to mcpgw, DocumentDB)
+# fail with "Network is unreachable". Compose and EKS are unaffected because
+# their /etc/hosts has no IPv6 dual entries to compare against.
+RUN echo 'precedence ::ffff:0:0/96  100' >> /etc/gai.conf
+
+# Install only runtime system dependencies.
+# apt-get upgrade pulls in security patches against the base image's
+# already-installed packages (e.g. libc6 / glibc CVE updates) that would
+# otherwise stay at whatever version was baked into python:3.14-slim.
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy the pre-built virtual environment from builder
+COPY --from=builder /app/.venv /app/.venv
+
+# Copy entrypoint script early (rarely changes, avoids cache bust from code changes)
+COPY docker/auth-entrypoint.sh /app/auth-entrypoint.sh
+RUN chmod +x /app/auth-entrypoint.sh
+
+# Now copy the actual application code (this layer changes frequently but deps are cached above)
+COPY auth_server/ /app/
+COPY registry/ /app/registry/
+
+# Create logs and certs directories.
+# /app/logs is kept for audit logs; application logs now go to
+# /var/log/containers/ai-registry per issue #987.
+RUN mkdir -p /app/logs && \
+    mkdir -p /app/certs && \
+    mkdir -p /var/log/containers/ai-registry
+
+# Expose port
+EXPOSE 8888
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD curl -f http://localhost:${AUTH_LISTEN_PORT:-8888}/health || exit 1
+
+# Create non-root user for security (CIS Docker Benchmark 4.1)
+RUN groupadd -g 1000 appuser && useradd -u 1000 -g appuser appuser
+
+# Set ownership of application files, venv, logs, certs, and entrypoint
+RUN chown -R appuser:appuser /app /app/.venv /app/logs /app/certs /var/log/containers/ai-registry /app/auth-entrypoint.sh
+
+# Bake the build version into the image so `docker inspect` and any future
+# version-reporting code path (issue #919) can read it. Requires
+# `docker build --build-arg BUILD_VERSION=$VERSION`; defaults to "1.0.0" when
+# unset, which matches the legacy behavior for ad-hoc builds.
+ARG BUILD_VERSION="1.0.0"
+ENV BUILD_VERSION=$BUILD_VERSION
+
+# Switch to non-root user
+USER appuser
+
+# Start the auth server via entrypoint
+ENTRYPOINT ["/app/auth-entrypoint.sh"]

@@ -1,0 +1,37 @@
+# Documentation - contains example credentials and test data
+docs/
+*.md
+
+# Test files - contains test credentials and mock data
+**/test/**
+**/tests/**
+*test*.py
+*test*.sh
+*test*.ts
+*test*.js
+cli/test_*.py
+cli/test_*.sh
+agents/*/test/
+
+# Test configurations
+docker-compose.federation-test.yml
+
+# Reports and build artifacts - not source code
+*.json
+**/semgrep_report.json
+**/bandit_report.json
+build/
+dist/
+.pytest_cache/
+*.log
+
+# Node modules and dependencies
+node_modules/
+.venv/
+venv/
+ENV/
+
+# CI/CD and generated files
+.github/workflows/
+*.pyc
+__pycache__/

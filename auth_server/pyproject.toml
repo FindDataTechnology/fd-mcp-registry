@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=42.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["auth_server"]
+
+[project]
+name = "auth_server"
+version = "0.1.0"
+description = "Authentication server for validating JWT tokens against Amazon Cognito"
+requires-python = ">=3.14"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.34.0",
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.14.2",
+    "requests>=2.32.4",
+    "python-dotenv>=1.0.0",
+    "boto3>=1.28.0",
+    "pyjwt[crypto]>=2.10.0",
+    "cryptography>=48.0.1",
+    "pyyaml>=6.0.0",
+    "httpx>=0.25.0",
+    "itsdangerous>=2.1.0",
+    "opensearch-py>=2.4.0",
+    "aiohttp>=3.14.0",
+    "motor>=3.3.0",
+    "pymongo>=4.6.3",
+    "aiofiles>=24.1.0",
+    "opentelemetry-api>=1.41.1",
+    "opentelemetry-sdk>=1.41.1",
+    "opentelemetry-exporter-prometheus>=0.62b1",
+    "opentelemetry-exporter-otlp>=1.41.1",
+    "opentelemetry-distro[otlp]>=0.62b1",
+    "opentelemetry-instrumentation>=0.62b1",
+    "opentelemetry-instrumentation-fastapi>=0.62b1",
+    "opentelemetry-instrumentation-httpx>=0.62b1",
+    "opentelemetry-instrumentation-asyncio>=0.62b1",
+    "opentelemetry-instrumentation-logging>=0.62b1",
+    "opentelemetry-instrumentation-pymongo>=0.62b1",
+    "opentelemetry-propagator-b3>=1.41.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "black>=23.0.0",
+    "isort>=5.12.0"
+]
+
+[tool.uv]
+# Local-only project - never resolve from PyPI
+package = false

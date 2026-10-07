@@ -1,0 +1,597 @@
+"""
+Service for managing A2A agent registration and state.
+
+This module provides CRUD operations for agent cards following the A2A protocol,
+using repository pattern for storage abstraction.
+
+Based on: registry/services/server_service.py
+"""
+
+import logging
+from datetime import UTC, datetime
+from typing import Any
+
+from ..core.metrics import ASSET_ID_CONFLICT_TOTAL
+from ..exceptions import AssetIdConflictError
+from ..repositories.factory import get_agent_repository, get_search_repository
+from ..repositories.interfaces import AgentRepositoryBase, SearchRepositoryBase
+from ..schemas.agent_models import AgentCard
+from ..schemas.proxy_mixin import (
+    clear_upstream_headers_on_repoint,
+    effective_proxy_target,
+    validate_and_pin_proxy_target,
+)
+from ..utils.url_guard import validate_agent_url
+
+logger = logging.getLogger(__name__)
+
+
+async def _validate_and_pin_agent_proxy(
+    agent_card: AgentCard,
+) -> None:
+    """Reject non-HTTP transports + resolve/validate/pin an agent's proxy target.
+
+    No-op when the agent is not proxied. When proxied:
+    - reject a GRPC ``preferred_transport`` (an HTTP location block can't serve
+      it) with a clear ValueError (surfaced as 4xx by the route);
+    - resolve the effective target (proxy_target_url or the agent url) and
+      validate every resolved IP against the egress policy (layer 2),
+      pinning the resolved IPs onto the card.
+    """
+    if not agent_card.is_proxied:
+        return
+    transport = (agent_card.preferred_transport or "").strip().upper()
+    if transport == "GRPC":
+        raise ValueError(
+            "is_proxied=true is not supported for an a2a_agent with "
+            "preferred_transport=GRPC: the gateway serves HTTP only. Use an HTTP "
+            "transport (JSONRPC / HTTP+JSON) or disable proxying."
+        )
+    pin = await validate_and_pin_proxy_target(
+        "a2a_agent",
+        {
+            "is_proxied": agent_card.is_proxied,
+            "proxy_target_url": agent_card.proxy_target_url,
+            "proxy_disabled_reason": agent_card.proxy_disabled_reason,
+            "url": agent_card.url,
+        },
+    )
+    if pin:
+        agent_card.proxy_resolved_ips = pin["proxy_resolved_ips"]
+        agent_card.proxy_target_host = pin["proxy_target_host"]
+
+
+class AgentService:
+    """Service for managing A2A agent registration and state."""
+
+    def __init__(self):
+        """Initialize agent service with repository."""
+        self._repo: AgentRepositoryBase = get_agent_repository()
+        self._search_repo: SearchRepositoryBase = get_search_repository()
+
+    async def load_agents_and_state(self) -> None:
+        """Load agent cards from the repository."""
+        logger.info("Loading agent cards from repository...")
+        await self._repo.load_all()
+        count = await self._repo.count()
+        logger.info(f"Repository reports {count} agents loaded")
+
+    async def register_agent(
+        self,
+        agent_card: AgentCard,
+    ) -> AgentCard:
+        """
+        Register a new agent.
+
+        Args:
+            agent_card: Agent card to register
+
+        Returns:
+            Registered agent card
+
+        Raises:
+            ValueError: If agent path already exists
+            UrlValidationError: If the agent url fails SSRF/scheme validation
+        """
+        path = agent_card.path
+
+        # Fail-closed URL validation on every agent registration path
+        # (dashboard/API, internal register, federation import) before the
+        # agent card is persisted. Rejects non-http(s) schemes and
+        # private/metadata targets unless the operator allowlisted them.
+        if getattr(agent_card, "url", None):
+            validate_agent_url(str(agent_card.url))
+
+        if await self._repo.get(path) is not None:
+            logger.error(f"Agent registration failed: path '{path}' already exists")
+            raise ValueError(f"Agent path '{path}' already exists")
+
+        # Gateway-proxy SSRF layer 2 + transport guard (no-op unless is_proxied).
+        await _validate_and_pin_agent_proxy(agent_card)
+
+        # Id uniqueness pre-check (#1276): a caller-supplied id must not
+        # collide with an existing agent. Raise -> route maps to 409.
+        if agent_card.id and await self._repo.find_by_id(agent_card.id):
+            logger.warning(f"Agent registration rejected: id '{agent_card.id}' already exists")
+            ASSET_ID_CONFLICT_TOTAL.labels(asset_type="agent").inc()
+            raise AssetIdConflictError(asset_type="agent", asset_id=agent_card.id)
+
+        agent_card = await self._repo.create(agent_card)
+        await self._repo.set_state(path, False)
+
+        try:
+            is_enabled = await self.is_agent_enabled(path)
+            await self._search_repo.index_agent(path, agent_card, is_enabled)
+        except Exception as e:
+            logger.error(f"Failed to index agent {path}: {e}")
+
+        logger.info(
+            f"New agent registered: '{agent_card.name}' at path '{path}' (disabled by default)"
+        )
+
+        return agent_card
+
+    async def get_agent(
+        self,
+        path: str,
+    ) -> AgentCard:
+        """
+        Get agent card by path.
+
+        Args:
+            path: Agent path
+
+        Returns:
+            Agent card
+
+        Raises:
+            ValueError: If agent not found
+        """
+        agent = await self._repo.get(path)
+
+        if not agent:
+            if path.endswith("/"):
+                alternate_path = path.rstrip("/")
+            else:
+                alternate_path = path + "/"
+            agent = await self._repo.get(alternate_path)
+
+        if not agent:
+            raise ValueError(f"Agent not found at path: {path}")
+
+        return agent
+
+    async def list_agents(self) -> list[AgentCard]:
+        """
+        List all registered agents.
+
+        Returns:
+            List of all agent cards
+        """
+        return await self._repo.list_all()
+
+    async def update_rating(
+        self,
+        path: str,
+        username: str,
+        rating: int,
+    ) -> float:
+        """
+        Log a user rating for an agent. If the user has already rated, update their rating.
+
+        Args:
+            path: Agent path
+            username: The user who submitted rating
+            rating: integer between 1-5
+
+        Return:
+            Updated average rating
+
+        Raises:
+            ValueError: If agent not found or invalid rating
+        """
+        from . import rating_service
+
+        existing_agent = await self._repo.get(path)
+        if not existing_agent:
+            logger.error(f"Cannot update agent at path '{path}': not found")
+            raise ValueError(f"Agent not found at path: {path}")
+
+        rating_service.validate_rating(rating)
+
+        agent_dict = existing_agent.model_dump()
+
+        if "rating_details" not in agent_dict or agent_dict["rating_details"] is None:
+            agent_dict["rating_details"] = []
+
+        updated_details, is_new_rating = rating_service.update_rating_details(
+            agent_dict["rating_details"], username, rating
+        )
+        agent_dict["rating_details"] = updated_details
+
+        agent_dict["num_stars"] = rating_service.calculate_average_rating(
+            agent_dict["rating_details"]
+        )
+
+        await self._repo.update(path, agent_dict)
+
+        logger.info(
+            f"Updated rating for agent {path}: user {username} rated {rating}, "
+            f"new average: {agent_dict['num_stars']:.2f}"
+        )
+
+        return agent_dict["num_stars"]
+
+    async def update_agent(
+        self,
+        path: str,
+        updates: dict[str, Any],
+    ) -> AgentCard:
+        """
+        Update an existing agent.
+
+        Args:
+            path: Agent path
+            updates: Dictionary of fields to update
+
+        Returns:
+            Updated agent card
+
+        Raises:
+            ValueError: If agent not found
+            UrlValidationError: If the update sets a url that fails validation
+        """
+        # Fail-closed URL validation on edit paths that change the agent url.
+        # Only runs when the update actually carries a url, so health-status
+        # updates are unaffected.
+        if updates.get("url"):
+            validate_agent_url(str(updates["url"]))
+
+        existing_agent = await self._repo.get(path)
+        if existing_agent is None:
+            logger.error(f"Cannot update agent at path '{path}': not found")
+            raise ValueError(f"Agent not found at path: {path}")
+
+        agent_dict = existing_agent.model_dump()
+        agent_dict.update(updates)
+        agent_dict["path"] = path
+        agent_dict["updated_at"] = datetime.now(UTC)
+
+        try:
+            merged_card = AgentCard(**agent_dict)
+        except Exception as e:
+            logger.error(f"Failed to validate updated agent: {e}")
+            raise ValueError(f"Invalid agent update: {e}")
+
+        # Gateway-proxy SSRF layer 2 + transport guard on the MERGED card when this
+        # update touches the proxy opt-in or target. Re-validates + re-pins (or
+        # clears the pin) on the merged state, before persist. Re-enabling clears a
+        # prior auto-disable. "url" is included: for an A2A agent the effective
+        # backend falls back to url when proxy_target_url is unset, so changing url
+        # repoints the backend and must re-validate + trigger the header clear.
+        if "is_proxied" in updates or "proxy_target_url" in updates or "url" in updates:
+            merged_card.proxy_disabled_reason = None
+            await _validate_and_pin_agent_proxy(merged_card)
+            agent_dict["proxy_resolved_ips"] = merged_card.proxy_resolved_ips
+            agent_dict["proxy_target_host"] = merged_card.proxy_target_host
+            agent_dict["proxy_disabled_reason"] = None
+            # Credential-misdirection guard (symmetric with skill/custom/server):
+            # if the effective backend host changed, clear any create-time upstream
+            # headers so the old host's secret is never injected at the new host.
+            # Agents cannot carry headers through the API today, but wiring the
+            # guard here keeps the invariant safe if that ever changes, rather than
+            # relying on "agents never get headers".
+            clear_upstream_headers_on_repoint(
+                agent_dict,
+                existing_target=effective_proxy_target("a2a_agent", existing_agent.model_dump()),
+                new_target=effective_proxy_target("a2a_agent", merged_card.model_dump()),
+            )
+
+        updated_agent = await self._repo.update(path, agent_dict)
+
+        try:
+            is_enabled = await self.is_agent_enabled(path)
+            await self._search_repo.index_agent(path, updated_agent, is_enabled)
+        except Exception as e:
+            logger.error(f"Failed to re-index agent {path}: {e}")
+
+        logger.info(f"Agent '{updated_agent.name}' ({path}) updated")
+
+        # Regenerate nginx config if the agent is enabled, since its backend
+        # url may have changed.
+        if await self.is_agent_enabled(path):
+            from ..core.nginx_service import nginx_reload_scheduler
+
+            nginx_reload_scheduler.mark_dirty()
+
+        return updated_agent
+
+    async def delete_agent(
+        self,
+        path: str,
+    ) -> bool:
+        """
+        Delete an agent from registry.
+
+        Args:
+            path: Agent path
+
+        Returns:
+            True if deleted successfully
+
+        Raises:
+            ValueError: If agent not found
+        """
+        existing_agent = await self._repo.get(path)
+        if existing_agent is None:
+            logger.error(f"Cannot delete agent at path '{path}': not found")
+            raise ValueError(f"Agent not found at path: {path}")
+
+        try:
+            agent_name = existing_agent.name
+            # Capture enabled state before deletion removes the state record, so
+            # we only regenerate nginx config when a proxied block actually existed.
+            was_enabled = await self.is_agent_enabled(path)
+
+            from .search_index_cleanup import remove_from_search_index_with_retry
+
+            if not await remove_from_search_index_with_retry(
+                self._search_repo,
+                path,
+                entity_type="a2a_agent",
+            ):
+                raise ValueError(
+                    f"Failed to remove agent '{path}' from search index; delete aborted"
+                )
+
+            await self._repo.delete(path)
+
+            logger.info(f"Successfully deleted agent '{agent_name}' from path '{path}'")
+
+            # Regenerate nginx config so the agent's reverse-proxy block is
+            # removed, but only if it was enabled.
+            if was_enabled:
+                from ..core.nginx_service import nginx_reload_scheduler
+
+                nginx_reload_scheduler.mark_dirty()
+            return True
+
+        except ValueError:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to delete agent at path '{path}': {e}", exc_info=True)
+            raise ValueError(f"Failed to delete agent: {e}")
+
+    async def enable_agent(
+        self,
+        path: str,
+    ) -> None:
+        """
+        Enable an agent.
+
+        Args:
+            path: Agent path
+
+        Raises:
+            ValueError: If agent not found
+        """
+        agent = await self._repo.get(path)
+        if agent is None:
+            raise ValueError(f"Agent not found at path: {path}")
+
+        if await self._repo.get_state(path):
+            logger.info(f"Agent '{path}' is already enabled")
+            return
+
+        await self._repo.set_state(path, True)
+        logger.info(f"Enabled agent '{agent.name}' ({path})")
+
+        # Regenerate nginx config so the agent's reverse-proxy block is added.
+        from ..core.nginx_service import nginx_reload_scheduler
+
+        nginx_reload_scheduler.mark_dirty()
+
+    async def disable_agent(
+        self,
+        path: str,
+    ) -> None:
+        """
+        Disable an agent.
+
+        Args:
+            path: Agent path
+
+        Raises:
+            ValueError: If agent not found
+        """
+        agent = await self._repo.get(path)
+        if agent is None:
+            raise ValueError(f"Agent not found at path: {path}")
+
+        if not await self._repo.get_state(path):
+            logger.info(f"Agent '{path}' is already disabled")
+            return
+
+        await self._repo.set_state(path, False)
+        logger.info(f"Disabled agent '{agent.name}' ({path})")
+
+        # Regenerate nginx config so the agent's reverse-proxy block is removed.
+        from ..core.nginx_service import nginx_reload_scheduler
+
+        nginx_reload_scheduler.mark_dirty()
+
+    async def is_agent_enabled(
+        self,
+        path: str,
+    ) -> bool:
+        """
+        Check if agent is enabled.
+
+        Args:
+            path: Agent path
+
+        Returns:
+            True if enabled, False otherwise
+        """
+        if await self._repo.get_state(path):
+            return True
+
+        if path.endswith("/"):
+            alternate_path = path.rstrip("/")
+        else:
+            alternate_path = path + "/"
+
+        return await self._repo.get_state(alternate_path)
+
+    async def get_enabled_agents(self) -> list[str]:
+        """
+        Get list of enabled agent paths.
+
+        Returns:
+            List of enabled agent paths
+        """
+        all_states = await self._repo.get_all_states()
+        return [path for path, enabled in all_states.items() if enabled]
+
+    async def get_disabled_agents(self) -> list[str]:
+        """
+        Get list of disabled agent paths.
+
+        Returns:
+            List of disabled agent paths
+        """
+        all_states = await self._repo.get_all_states()
+        return [path for path, enabled in all_states.items() if not enabled]
+
+    async def get_all_agent_states(self) -> dict[str, bool]:
+        """
+        Get enabled/disabled state for all agents in a single query.
+
+        Returns:
+            Dict mapping agent path to enabled (True) or disabled (False).
+        """
+        return await self._repo.get_all_states()
+
+    async def index_agent(
+        self,
+        agent_card: AgentCard,
+    ) -> None:
+        """
+        Add agent to search index.
+
+        Args:
+            agent_card: Agent card to index
+        """
+        try:
+            agent_data = agent_card.model_dump(mode="json")
+            is_enabled = await self.is_agent_enabled(agent_card.path)
+            # NOTE: `index_entity` is not defined on any SearchRepository backend;
+            # this unused method's body is a latent bug (the call raises
+            # AttributeError at runtime, swallowed by the surrounding except).
+            # Preserving existing behavior; ignore the attr-defined error here.
+            await self._search_repo.index_entity(  # type: ignore[attr-defined]
+                entity_path=agent_card.path,
+                entity_data=agent_data,
+                entity_type="a2a_agent",
+                is_enabled=is_enabled,
+            )
+            logger.info(f"Indexed agent '{agent_card.name}' in search")
+        except Exception as e:
+            logger.error(f"Failed to index agent: {e}", exc_info=True)
+
+    async def get_agent_info(
+        self,
+        path: str,
+    ) -> AgentCard | None:
+        """
+        Get agent by path - queries repository directly (returns None if not found).
+
+        Args:
+            path: Agent path
+
+        Returns:
+            Agent card or None if not found
+        """
+        return await self._repo.get(path)
+
+    async def get_all_agents(self) -> list[AgentCard]:
+        """
+        Get all registered agents - queries repository directly.
+
+        Returns:
+            List of all agent cards
+        """
+        return await self._repo.list_all()
+
+    async def get_agents_paginated(
+        self,
+        skip: int = 0,
+        limit: int = 100,
+    ) -> tuple[list[AgentCard], int]:
+        """
+        Get a page of agents with total count.
+
+        Used for unrestricted users (admins) where DB-level pagination
+        is correct because no agents are filtered out by access control.
+
+        Note: list_paginated and count are separate DB calls, so total_count
+        may be slightly inconsistent if agents are added/removed between calls.
+        This is standard for offset-based pagination.
+
+        Args:
+            skip: Number of agents to skip.
+            limit: Maximum number of agents to return.
+
+        Returns:
+            Tuple of (page of agents, total count of all agents).
+        """
+        agents = await self._repo.list_paginated(skip=skip, limit=limit)
+        total = await self._repo.count()
+        return agents, total
+
+    async def remove_agent(
+        self,
+        path: str,
+    ) -> bool:
+        """
+        Remove an agent from registry.
+
+        Args:
+            path: Agent path
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            await self.delete_agent(path)
+            return True
+        except ValueError:
+            return False
+
+    async def toggle_agent(
+        self,
+        path: str,
+        enabled: bool,
+    ) -> bool:
+        """
+        Toggle agent enabled/disabled state.
+
+        Args:
+            path: Agent path
+            enabled: New enabled state
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            if enabled:
+                await self.enable_agent(path)
+            else:
+                await self.disable_agent(path)
+            return True
+        except ValueError:
+            return False
+
+
+# Global service instance
+agent_service = AgentService()

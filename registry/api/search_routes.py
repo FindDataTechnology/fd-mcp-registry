@@ -1,0 +1,1294 @@
+import logging
+import re
+from typing import (
+    Annotated,
+    Literal,
+)
+
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from pydantic import BaseModel, Field
+
+from ..audit import set_audit_action
+from ..auth.asset_permissions import user_has_asset_permission
+from ..auth.dependencies import nginx_proxied_auth
+from ..auth.tool_filter import filter_tools_for_user, tool_allowed_for_user
+from ..constants import DeploymentType
+from ..core.config import DeploymentMode, RegistryMode, settings
+from ..repositories.factory import get_search_repository, get_skill_repository
+from ..repositories.interfaces import SearchRepositoryBase
+from ..services.agent_service import agent_service
+from ..services.custom_entity_scopes import entity_scope as _entity_scope
+from ..services.custom_entity_scopes import resolve_list_grant as _resolve_list_grant
+from ..services.server_service import server_service
+from ..services.tool_blocks import blocked_names_for, hide_blocked_tools
+from ..services.virtual_server_service import get_virtual_server_service
+from ..utils.metadata import parse_and_validate_metadata_fields, project_metadata
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter()
+
+
+def get_search_repo() -> SearchRepositoryBase:
+    """Dependency injection function for search repository."""
+    return get_search_repository()
+
+
+class MatchingToolResult(BaseModel):
+    """Tool matching result with optional schema for display."""
+
+    tool_name: str
+    description: str | None = None
+    # Required on purpose. Every search path grades its tools, so a missing score
+    # means a path stopped grading and should fail loudly rather than report 0.0
+    # for a tool that matched (issue #1752).
+    relevance_score: float = Field(..., ge=0.0, le=1.0)
+    match_context: str | None = None
+    inputSchema: dict | None = Field(
+        default=None, description="JSON Schema for tool input parameters"
+    )
+
+
+class SyncMetadata(BaseModel):
+    """Metadata for items synced from peer registries."""
+
+    is_federated: bool = False
+    source_peer_id: str | None = None
+    synced_at: str | None = None
+    original_path: str | None = None
+    is_orphaned: bool = False
+    orphaned_at: str | None = None
+    is_read_only: bool = True
+
+
+def _virtual_server_field(
+    entry: dict,
+    key: str,
+    default,
+):
+    """Read a virtual server field that the search repository flattens.
+
+    The repository's three virtual_server branches copy num_tools,
+    backend_count and backend_paths onto the result entry and emit no
+    "metadata" key at all. Reading them only out of ``entry["metadata"]``
+    reported 0 tools and 0 backends for every virtual server in semantic
+    search, however many it really had.
+
+    Prefers the flattened value and falls back to metadata so a producer that
+    does nest them keeps working. A genuine 0 or [] on the entry wins over a
+    metadata value, so an empty virtual server is not misreported.
+
+    Args:
+        entry: One virtual_server result entry from the search repository.
+        key: Field name to read.
+        default: Value to return when the field is absent or None on both.
+
+    Returns:
+        The field value, or default when neither source supplies one.
+    """
+    if entry.get(key) is not None:
+        return entry[key]
+
+    metadata = entry.get("metadata") or {}
+    value = metadata.get(key)
+    return default if value is None else value
+
+
+def _compute_endpoint_url(
+    path: str,
+    proxy_pass_url: str | None,
+    mcp_endpoint: str | None,
+    base_url: str | None,
+    redact_backend_urls: bool = False,
+) -> str | None:
+    """Compute the endpoint URL for an MCP server.
+
+    URL determination with fallback chain:
+    1. mcp_endpoint (custom override) - always takes precedence
+    2. proxy_pass_url (in registry-only mode)
+    3. Constructed gateway URL (default/fallback in with-gateway mode)
+
+    Args:
+        path: Server path (e.g., /context7)
+        proxy_pass_url: Internal backend URL
+        mcp_endpoint: Custom endpoint override
+        base_url: Base URL from request (e.g., https://mcpgateway.ddns.net)
+        redact_backend_urls: When True the caller must not learn an internal
+            backend address, so the raw ``mcp_endpoint`` override and
+            ``proxy_pass_url`` are never returned; only the constructed public
+            gateway URL is (or None if it cannot be built). Callers pass
+            ``should_redact_backend_urls(user_context)`` here. This is only True
+            in with-gateway mode (registry-only never redacts), so skipping the
+            override and the proxy fallback loses nothing the caller may see.
+
+    Returns:
+        The computed endpoint URL, or None if not determinable.
+    """
+    if redact_backend_urls:
+        # Non-admin in with-gateway mode: only the public gateway URL is
+        # allowed. The mcp_endpoint override and proxy_pass_url are internal
+        # addresses and must not leak via the derived endpoint_url. Fail closed
+        # to None if the gateway base URL is unavailable.
+        if base_url:
+            clean_path = path.rstrip("/")
+            if not clean_path.startswith("/"):
+                clean_path = f"/{clean_path}"
+            return f"{base_url}{clean_path}/mcp"
+        return None
+
+    # Priority 1: Explicit mcp_endpoint override
+    if mcp_endpoint:
+        return mcp_endpoint
+
+    # Priority 2: In registry-only mode, use proxy_pass_url directly
+    if settings.deployment_mode == DeploymentMode.REGISTRY_ONLY:
+        return proxy_pass_url
+
+    # Priority 3: Construct gateway URL
+    if base_url:
+        clean_path = path.rstrip("/")
+        if not clean_path.startswith("/"):
+            clean_path = f"/{clean_path}"
+        return f"{base_url}{clean_path}/mcp"
+
+    # Fallback: return proxy_pass_url if nothing else works
+    return proxy_pass_url
+
+
+class ServerSearchResult(BaseModel):
+    path: str
+    server_name: str
+    description: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    num_tools: int = 0
+    is_enabled: bool = False
+    relevance_score: float = Field(..., ge=0.0, le=1.0)
+    # Absolute cosine similarity to the query, computed by
+    # _attach_similarity_scores(). Unlike relevance_score, which is rank-relative
+    # after normalization, this is comparable across queries (issue #1752).
+    similarity_score: float | None = Field(
+        default=None,
+        ge=-1.0,
+        le=1.0,
+        description=(
+            "Raw cosine similarity to the query, in [-1.0, 1.0]. Negative means less "
+            "alike than two random vectors. Unlike relevance_score this is not a "
+            "0-to-1 confidence, so do not render it as a percentage. Null when the "
+            "query was not embedded, and on tools lifted out of a parent server "
+            "(they carry server_path, and similarity is attached per document path)."
+        ),
+    )
+    match_context: str | None = None
+    matching_tools: list[MatchingToolResult] = Field(default_factory=list)
+    sync_metadata: SyncMetadata | None = None
+    # ARD discovery imports (#1296): origin marker + the source registry's
+    # descriptor URL (the "view at source" / resolve link) so search-result
+    # consumers can route an ARD-discovered server back to the source.
+    record_kind: str | None = Field(default=None)
+    ard_source_url: str | None = Field(default=None)
+    # Endpoint URL for agent connectivity (computed based on deployment mode)
+    endpoint_url: str | None = Field(
+        default=None, description="URL for agents to connect to this MCP server"
+    )
+    # Raw endpoint fields (for advanced use cases)
+    proxy_pass_url: str | None = Field(
+        default=None, description="Base URL for the MCP server backend (internal)"
+    )
+    mcp_endpoint: str | None = Field(
+        default=None, description="Explicit streamable-http endpoint URL (if set)"
+    )
+    sse_endpoint: str | None = Field(default=None, description="Explicit SSE endpoint URL (if set)")
+    supported_transports: list[str] = Field(
+        default_factory=list, description="Supported transport types (e.g., streamable-http, sse)"
+    )
+    trust_verified: str = Field(
+        default="none",
+        description="Trust verification status: none, verified, expired, revoked, not_found, pending",
+    )
+    # Local-server fields. For deployment='local', endpoint_url is
+    # not meaningful — clients should use local_runtime to construct a stdio
+    # launch recipe instead.
+    deployment: Literal["remote", "local"] = Field(
+        default="remote",
+        description="Deployment model: 'remote' (HTTP) or 'local' (stdio launch recipe).",
+    )
+    local_runtime: dict | None = Field(
+        default=None,
+        description=(
+            "Stdio launch recipe for local servers (type, package, args, env, "
+            "required_env, version, image_digest). Null for remote."
+        ),
+    )
+    metadata: dict | None = Field(
+        default=None,
+        description="Projected metadata fields. Only populated when metadata_fields is requested.",
+    )
+
+
+class ToolSearchResult(BaseModel):
+    server_path: str
+    server_name: str
+    tool_name: str
+    description: str | None = None
+    inputSchema: dict | None = Field(default=None, description="JSON Schema for tool input")
+    relevance_score: float = Field(..., ge=0.0, le=1.0)
+    # Absolute cosine similarity to the query, computed by
+    # _attach_similarity_scores(). Unlike relevance_score, which is rank-relative
+    # after normalization, this is comparable across queries (issue #1752).
+    similarity_score: float | None = Field(
+        default=None,
+        ge=-1.0,
+        le=1.0,
+        description=(
+            "Raw cosine similarity to the query, in [-1.0, 1.0]. Negative means less "
+            "alike than two random vectors. Unlike relevance_score this is not a "
+            "0-to-1 confidence, so do not render it as a percentage. Null when the "
+            "query was not embedded, and on tools lifted out of a parent server "
+            "(they carry server_path, and similarity is attached per document path)."
+        ),
+    )
+    match_context: str | None = None
+    # Endpoint URL for the parent MCP server
+    endpoint_url: str | None = Field(
+        default=None, description="URL for agents to connect to the parent MCP server"
+    )
+
+
+class AgentSearchResult(BaseModel):
+    """Agent search result with minimal top-level fields to avoid duplication.
+
+    Only search-specific fields are at the top level. All agent details
+    (name, description, url, skills, etc.) are in the agent_card.
+    """
+
+    path: str = Field(..., description="Agent path for identification")
+    relevance_score: float = Field(..., ge=0.0, le=1.0)
+    # Absolute cosine similarity to the query, computed by
+    # _attach_similarity_scores(). Unlike relevance_score, which is rank-relative
+    # after normalization, this is comparable across queries (issue #1752).
+    similarity_score: float | None = Field(
+        default=None,
+        ge=-1.0,
+        le=1.0,
+        description=(
+            "Raw cosine similarity to the query, in [-1.0, 1.0]. Negative means less "
+            "alike than two random vectors. Unlike relevance_score this is not a "
+            "0-to-1 confidence, so do not render it as a percentage. Null when the "
+            "query was not embedded, and on tools lifted out of a parent server "
+            "(they carry server_path, and similarity is attached per document path)."
+        ),
+    )
+    match_context: str | None = None
+    agent_card: dict = Field(..., description="Full agent card with all details")
+    trust_verified: str = Field(
+        default="none",
+        description="Trust verification status: none, verified, expired, revoked, not_found, pending",
+    )
+
+
+class SkillSearchResult(BaseModel):
+    path: str
+    skill_name: str
+    description: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    skill_md_url: str | None = None
+    skill_md_raw_url: str | None = None
+    version: str | None = None
+    author: str | None = None
+    visibility: str | None = None
+    owner: str | None = None
+    is_enabled: bool = False
+    health_status: Literal["healthy", "unhealthy", "unknown"] = "unknown"
+    last_checked_time: str | None = None
+    status: str = Field(default="active", description="Lifecycle status")
+    relevance_score: float = Field(..., ge=0.0, le=1.0)
+    # Absolute cosine similarity to the query, computed by
+    # _attach_similarity_scores(). Unlike relevance_score, which is rank-relative
+    # after normalization, this is comparable across queries (issue #1752).
+    similarity_score: float | None = Field(
+        default=None,
+        ge=-1.0,
+        le=1.0,
+        description=(
+            "Raw cosine similarity to the query, in [-1.0, 1.0]. Negative means less "
+            "alike than two random vectors. Unlike relevance_score this is not a "
+            "0-to-1 confidence, so do not render it as a percentage. Null when the "
+            "query was not embedded, and on tools lifted out of a parent server "
+            "(they carry server_path, and similarity is attached per document path)."
+        ),
+    )
+    match_context: str | None = None
+    metadata: dict | None = Field(
+        default=None,
+        description="Projected metadata fields. Only populated when metadata_fields is requested.",
+    )
+
+
+class VirtualServerSearchResult(BaseModel):
+    path: str
+    server_name: str
+    description: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    num_tools: int = 0
+    backend_count: int = 0
+    backend_paths: list[str] = Field(default_factory=list)
+    is_enabled: bool = False
+    relevance_score: float = Field(..., ge=0.0, le=1.0)
+    # Absolute cosine similarity to the query, computed by
+    # _attach_similarity_scores(). Unlike relevance_score, which is rank-relative
+    # after normalization, this is comparable across queries (issue #1752).
+    similarity_score: float | None = Field(
+        default=None,
+        ge=-1.0,
+        le=1.0,
+        description=(
+            "Raw cosine similarity to the query, in [-1.0, 1.0]. Negative means less "
+            "alike than two random vectors. Unlike relevance_score this is not a "
+            "0-to-1 confidence, so do not render it as a percentage. Null when the "
+            "query was not embedded, and on tools lifted out of a parent server "
+            "(they carry server_path, and similarity is attached per document path)."
+        ),
+    )
+    match_context: str | None = None
+    matching_tools: list[MatchingToolResult] = Field(default_factory=list)
+    # Endpoint URL for agent connectivity (computed based on deployment mode)
+    endpoint_url: str | None = Field(
+        default=None, description="URL for agents to connect to this virtual MCP server"
+    )
+
+
+class CustomEntitySearchResult(BaseModel):
+    """Search result for a custom entity record.
+
+    Custom types have no fixed schema, so this carries the entity_type
+    discriminator and the common envelope only; the schema-driven UI renders
+    per-type attributes from the type descriptor.
+    """
+
+    entity_type: str
+    path: str
+    name: str
+    description: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    visibility: str | None = None
+    owner: str | None = None
+    is_enabled: bool = False
+    relevance_score: float = Field(..., ge=0.0, le=1.0)
+    # Absolute cosine similarity to the query, computed by
+    # _attach_similarity_scores(). Unlike relevance_score, which is rank-relative
+    # after normalization, this is comparable across queries (issue #1752).
+    similarity_score: float | None = Field(
+        default=None,
+        ge=-1.0,
+        le=1.0,
+        description=(
+            "Raw cosine similarity to the query, in [-1.0, 1.0]. Negative means less "
+            "alike than two random vectors. Unlike relevance_score this is not a "
+            "0-to-1 confidence, so do not render it as a percentage. Null when the "
+            "query was not embedded, and on tools lifted out of a parent server "
+            "(they carry server_path, and similarity is attached per document path)."
+        ),
+    )
+    match_context: str | None = None
+
+
+class SemanticSearchRequest(BaseModel):
+    query: str = Field(
+        default="",
+        max_length=512,
+        description="Natural language query. Can be empty when filtering by tags only.",
+    )
+    entity_types: list[str] | None = Field(
+        default=None,
+        description=(
+            "Optional entity filters. The built-in types are "
+            "mcp_server, tool, a2a_agent, skill, virtual_server; "
+            "custom entity type names (e.g. prompt_template) are also accepted."
+        ),
+    )
+    tags: list[str] | None = Field(
+        default=None,
+        description="Exact tag filters. Only return entities that have ALL specified tags.",
+    )
+    max_results: int = Field(
+        default=10, ge=1, le=50, description="Maximum results per entity collection"
+    )
+    include_draft: bool = Field(
+        default=False,
+        description="Include draft assets in search results",
+    )
+    include_deprecated: bool = Field(
+        default=False,
+        description="Include deprecated assets in search results",
+    )
+    include_disabled: bool = Field(
+        default=False,
+        description="Include disabled assets (is_enabled=False) in search results",
+    )
+    metadata_fields: str | None = Field(
+        default=None,
+        description=(
+            "Comma-separated list of metadata field paths to include in results. "
+            "Uses dot-notation for nested paths (e.g. 'owner,config.region'). "
+            "When supplied, ServerSearchResult and SkillSearchResult gain a 'metadata' "
+            "field containing only the listed paths; AgentSearchResult.agent_card.metadata "
+            "is pruned to the listed paths. When omitted, existing behavior is preserved."
+        ),
+    )
+
+
+class SemanticSearchResponse(BaseModel):
+    query: str
+    search_mode: str = Field(
+        default="hybrid", description="Search mode: 'hybrid' (semantic+lexical) or 'lexical-only'"
+    )
+    servers: list[ServerSearchResult] = Field(default_factory=list)
+    tools: list[ToolSearchResult] = Field(default_factory=list)
+    agents: list[AgentSearchResult] = Field(default_factory=list)
+    skills: list[SkillSearchResult] = Field(default_factory=list)
+    virtual_servers: list[VirtualServerSearchResult] = Field(default_factory=list)
+    custom: list[CustomEntitySearchResult] = Field(default_factory=list)
+    total_servers: int = 0
+    total_tools: int = 0
+    total_agents: int = 0
+    total_skills: int = 0
+    total_virtual_servers: int = 0
+    total_custom: int = 0
+
+
+async def _hide_blocked_virtual_tools(
+    vs_path: str,
+    tools: list[dict],
+    blocked_cache: dict[str, set[str]],
+) -> list[dict]:
+    """Drop virtual-server tools whose BACKEND tool is security-blocked.
+
+    Blocks are written on the real server a scan ran against, so a virtual server
+    path never carries overrides of its own. Each tool is resolved back to its
+    backend through the virtual server's tool mappings, honouring aliases, and
+    checked against that backend's blocked set.
+
+    Fails open only when the mapping cannot be read at all, which is logged; the
+    tools/call block still refuses the invocation in that case.
+
+    Args:
+        vs_path: Virtual server path.
+        tools: Tool entries already pruned by the per-caller scope filter.
+        blocked_cache: Per-request memo shared with the other search sections.
+
+    Returns:
+        The tools whose backend counterpart is not blocked.
+    """
+    if not tools:
+        return []
+
+    try:
+        vs_config = await get_virtual_server_service().get_virtual_server(vs_path)
+    except Exception as exc:
+        logger.error(f"virtual-server block lookup failed for {vs_path}: {exc}")
+        return list(tools)
+    if not vs_config:
+        return list(tools)
+
+    # Both the original name and the alias map to the same backend tool.
+    backend_of: dict[str, tuple[str, str]] = {}
+    for tm in vs_config.tool_mappings:
+        target = (tm.backend_server_path, tm.tool_name)
+        backend_of[tm.tool_name] = target
+        if tm.alias:
+            backend_of[tm.alias] = target
+
+    kept = []
+    for tool in tools:
+        name = tool.get("tool_name") or tool.get("name", "")
+        mapped = backend_of.get(name)
+        if mapped is None:
+            kept.append(tool)
+            continue
+        backend_path, backend_tool = mapped
+        if backend_tool in await blocked_names_for(backend_path, blocked_cache):
+            logger.info(
+                f"virtual server {vs_path} hides {name!r}: backend {backend_path} "
+                f"blocks {backend_tool!r}"
+            )
+            continue
+        kept.append(tool)
+    return kept
+
+
+async def _get_tool_schema_for_virtual_server(
+    vs_path: str,
+    tool_name: str,
+) -> dict | None:
+    """Look up tool schema from backend server for a virtual server's tool.
+
+    Args:
+        vs_path: Virtual server path
+        tool_name: Name of the tool to look up (can be the original name or alias)
+
+    Returns:
+        Tool inputSchema dict if found, None otherwise
+    """
+    try:
+        vs_service = get_virtual_server_service()
+        vs_config = await vs_service.get_virtual_server(vs_path)
+
+        if not vs_config:
+            return None
+
+        # Find the tool mapping for this tool (check both tool_name and alias)
+        tool_mapping = None
+        for tm in vs_config.tool_mappings:
+            if tm.tool_name == tool_name or tm.alias == tool_name:
+                tool_mapping = tm
+                break
+
+        if not tool_mapping:
+            return None
+
+        # Get the backend server info
+        backend_path = tool_mapping.backend_server_path
+        if tool_mapping.backend_version:
+            backend_path = f"{backend_path}:{tool_mapping.backend_version}"
+
+        server_info = await server_service.get_server_info(backend_path)
+        if not server_info:
+            return None
+
+        # Find the tool in the backend's tool list using the original tool name
+        tool_list = server_info.get("tool_list", [])
+        for tool in tool_list:
+            if tool.get("name") == tool_mapping.tool_name:
+                return tool.get("schema") or tool.get("inputSchema")
+
+        return None
+    except Exception as e:
+        logger.warning(f"Failed to get tool schema for {vs_path}/{tool_name}: {e}")
+        return None
+
+
+# The visibility helpers live in ``registry.services.visibility`` so
+# the duplicate-check service can import them without creating a
+# circular dependency on the API layer. We re-export them under their
+# original underscore-prefixed names so existing callers in this module
+# don't have to change.
+from ..services.visibility import (
+    redact_agent_backend_fields,
+    should_redact_backend_urls,
+)
+from ..services.visibility import (
+    user_can_access_agent as _user_can_access_agent,
+)
+from ..services.visibility import (
+    user_can_access_custom_entity as _user_can_access_custom_entity,
+)
+from ..services.visibility import (
+    user_can_access_server as _user_can_access_server,
+)
+from ..services.visibility import (
+    user_can_access_skill as _user_can_access_skill,
+)
+
+
+def _compute_trust_verified(
+    ans_metadata: dict | None,
+) -> str:
+    """Derive the trust_verified label from ANS metadata.
+
+    Args:
+        ans_metadata: ANS metadata dict from the agent card, or None.
+
+    Returns:
+        "none" when there is no ANS metadata, otherwise the ANS status
+        value (verified, expired, revoked, not_found, pending).
+    """
+    if not ans_metadata:
+        return "none"
+
+    return ans_metadata.get("status", "none")
+
+
+_HASHTAG_PATTERN = re.compile(r"#([\w-]+)")
+
+
+def _parse_hashtags(
+    query: str,
+) -> tuple[str, list[str]]:
+    """Extract #tag tokens from the query string.
+
+    Returns:
+        Tuple of (remaining_query, extracted_tags).
+        Tags are lowercased for case-insensitive matching.
+    """
+    tags = [m.group(1).lower() for m in _HASHTAG_PATTERN.finditer(query)]
+    remaining = _HASHTAG_PATTERN.sub("", query).strip()
+    # Collapse multiple spaces left after removal
+    remaining = re.sub(r"\s+", " ", remaining).strip()
+    return remaining, tags
+
+
+def _entity_has_all_tags(
+    entity_tags: list[str],
+    required_tags: list[str],
+) -> bool:
+    """Check if an entity has ALL required tags (case-insensitive)."""
+    entity_tags_lower = {t.lower() for t in entity_tags}
+    return all(tag in entity_tags_lower for tag in required_tags)
+
+
+@router.post(
+    "/semantic",
+    response_model=SemanticSearchResponse,
+    summary="Unified semantic search for MCP servers and tools",
+)
+async def semantic_search(
+    http_request: Request,
+    request: SemanticSearchRequest,
+    user_context: Annotated[dict, Depends(nginx_proxied_auth)],
+    search_repo: SearchRepositoryBase = Depends(get_search_repo),
+) -> SemanticSearchResponse:
+    """
+    Run a semantic search against MCP servers (and their tools) using DocumentDB vector search.
+    """
+    # Parse and validate metadata_fields projection (Issue #1277)
+    _metadata_paths = parse_and_validate_metadata_fields(request.metadata_fields)
+
+    # Parse #tag tokens from query for exact tag matching
+    search_query, hashtag_tags = _parse_hashtags(request.query)
+
+    # Merge hashtag-extracted tags with explicitly provided tags
+    required_tags: list[str] = list({t.lower() for t in (request.tags or []) + hashtag_tags})
+
+    # Set audit action for search
+    set_audit_action(
+        http_request, "search", "search", description=f"Semantic search: {request.query[:50]}..."
+    )
+
+    logger.info(
+        "Semantic search requested by %s (entities=%s, max=%s, tags=%s)",
+        user_context.get("username"),
+        request.entity_types or ["mcp_server", "tool"],
+        request.max_results,
+        required_tags or None,
+    )
+
+    # Determine the effective text query after removing #tag tokens
+    effective_query = search_query.strip()
+
+    # Validate: must have either a text query or tags
+    if not effective_query and not required_tags:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Provide a search query, tags, or both.",
+        )
+
+    try:
+        if not effective_query and required_tags:
+            # Tag-only search: query DB directly by tags
+            raw_results = await search_repo.search_by_tags(
+                tags=required_tags,
+                entity_types=request.entity_types,
+                max_results=request.max_results,
+                include_draft=request.include_draft,
+                include_deprecated=request.include_deprecated,
+                include_disabled=request.include_disabled,
+            )
+        else:
+            # Text search (possibly combined with tags filtered after)
+            raw_results = await search_repo.search(
+                query=effective_query,
+                entity_types=request.entity_types,
+                max_results=request.max_results,
+                include_draft=request.include_draft,
+                include_deprecated=request.include_deprecated,
+                include_disabled=request.include_disabled,
+            )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        logger.error("Search service unavailable: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Semantic search is temporarily unavailable. Please try again later.",
+        ) from exc
+
+    # Extract base URL from request for endpoint URL computation
+    # Use X-Forwarded-Proto and X-Forwarded-Host if behind proxy, otherwise use request URL
+    forwarded_proto = http_request.headers.get("x-forwarded-proto", "https")
+    forwarded_host = http_request.headers.get("x-forwarded-host") or http_request.headers.get(
+        "host"
+    )
+    if forwarded_host:
+        base_url = f"{forwarded_proto}://{forwarded_host}"
+    else:
+        base_url = str(http_request.base_url).rstrip("/")
+
+    # One redaction decision for the whole response: non-admins in with-gateway
+    # mode must never receive an internal backend address, including via the
+    # derived endpoint_url (which otherwise echoes an mcp_endpoint override).
+    redact_backend = should_redact_backend_urls(user_context)
+
+    filtered_servers: list[ServerSearchResult] = []
+    for server in raw_results.get("servers", []):
+        if not await _user_can_access_server(
+            server.get("path", ""),
+            server.get("server_name", ""),
+            user_context,
+        ):
+            continue
+
+        # Issue #1026: prune matching_tools for this user before shaping
+        # the response. _tool_identity in the filter accepts both
+        # `tool_name` (search result shape) and `name`.
+        server_name_for_filter = server.get("server_name", "")
+        server_path_for_filter = server.get("path", "")
+        raw_matching_tools = server.get("matching_tools", [])
+        allowed_matching = await hide_blocked_tools(
+            server_path_for_filter,
+            filter_tools_for_user(
+                server_name_for_filter,
+                raw_matching_tools,
+                user_context,
+                endpoint="semantic_search",
+                server_path=server_path_for_filter,
+            ),
+        )
+        matching_tools = [
+            MatchingToolResult(
+                tool_name=tool.get("tool_name") or tool.get("name", ""),
+                description=tool.get("description"),
+                relevance_score=tool["relevance_score"],
+                match_context=tool.get("match_context"),
+            )
+            for tool in allowed_matching
+        ]
+
+        # Parse sync_metadata if present
+        raw_sync = server.get("sync_metadata")
+        sync_meta = SyncMetadata(**raw_sync) if raw_sync else None
+
+        # Compute endpoint URL based on deployment mode
+        server_path = server.get("path", "")
+        server_proxy_url = server.get("proxy_pass_url")
+        server_mcp_endpoint = server.get("mcp_endpoint")
+        endpoint_url = _compute_endpoint_url(
+            path=server_path,
+            proxy_pass_url=server_proxy_url,
+            mcp_endpoint=server_mcp_endpoint,
+            base_url=base_url,
+            redact_backend_urls=redact_backend,
+        )
+
+        # Look up ANS metadata from server info for trust verification
+        server_full_info = await server_service.get_server_info(server_path)
+        server_ans_meta = server_full_info.get("ans_metadata") if server_full_info else None
+        server_trust = _compute_trust_verified(server_ans_meta)
+
+        # For local servers, endpoint_url is meaningless (no nginx route). The
+        # search service surfaces deployment + local_runtime in its result dict;
+        # propagate them so consumers can construct a stdio launch recipe
+        # rather than try to GET a gateway URL that returns 503.
+        server_deployment = server.get("deployment", "remote")
+        server_local_runtime = server.get("local_runtime")
+        if server_deployment == DeploymentType.LOCAL:
+            endpoint_url = None
+
+        # Blocker 3 / Issue #1026: recompute num_tools against the full
+        # (filtered) tool_list so the UI badge matches the visible list
+        # rather than the pre-filter count.
+        full_tool_list = (server_full_info or {}).get("tool_list") or []
+        allowed_full = await hide_blocked_tools(
+            server_path_for_filter,
+            filter_tools_for_user(
+                server_name_for_filter,
+                full_tool_list,
+                user_context,
+                endpoint="semantic_search",
+                server_path=server_path_for_filter,
+            ),
+        )
+        filtered_num_tools = len(allowed_full)
+
+        # Strip the raw internal backend URLs for non-admins in with-gateway
+        # mode, mirroring the redaction GET /servers/{path} enforces. The
+        # endpoint_url computed above already honored redact_backend, so it is
+        # the public gateway URL here (never the mcp_endpoint override), and
+        # clients can still connect.
+        if redact_backend:
+            result_proxy_url = None
+            result_mcp_endpoint = None
+            result_sse_endpoint = None
+        else:
+            result_proxy_url = server_proxy_url
+            result_mcp_endpoint = server_mcp_endpoint
+            result_sse_endpoint = server.get("sse_endpoint")
+
+        filtered_servers.append(
+            ServerSearchResult(
+                path=server_path,
+                server_name=server.get("server_name", ""),
+                description=server.get("description"),
+                tags=server.get("tags", []),
+                num_tools=filtered_num_tools,
+                is_enabled=server.get("is_enabled", False),
+                relevance_score=server.get("relevance_score", 0.0),
+                similarity_score=server.get("similarity_score"),
+                match_context=server.get("match_context"),
+                matching_tools=matching_tools,
+                sync_metadata=sync_meta,
+                endpoint_url=endpoint_url,
+                proxy_pass_url=result_proxy_url,
+                mcp_endpoint=result_mcp_endpoint,
+                sse_endpoint=result_sse_endpoint,
+                supported_transports=server.get("supported_transports", []),
+                trust_verified=server_trust,
+                deployment=server_deployment,
+                local_runtime=server_local_runtime,
+                record_kind=(server_full_info or {}).get("record_kind"),
+                ard_source_url=(server_full_info or {}).get("ard_source_url"),
+                metadata=(
+                    project_metadata((server_full_info or {}).get("metadata"), _metadata_paths)
+                    if _metadata_paths is not None
+                    else None
+                ),
+            )
+        )
+
+    # Build a map of server_path -> endpoint_url for tool results
+    server_endpoint_map: dict[str, str | None] = {
+        server.path: server.endpoint_url for server in filtered_servers
+    }
+
+    filtered_tools: list[ToolSearchResult] = []
+    # One entry per server path, so a flat result set spanning many servers does
+    # not issue a block lookup per row.
+    blocked_cache: dict[str, set[str]] = {}
+    for tool in raw_results.get("tools", []):
+        server_path = tool.get("server_path", "")
+        server_name = tool.get("server_name", "")
+        if not await _user_can_access_server(server_path, server_name, user_context):
+            continue
+
+        # A security-blocked tool must not appear in search. intelligent_tool_finder
+        # is built on this endpoint, and a tool is blocked for HIGH:PROMPT INJECTION
+        # because its description carries the injection, so returning it here would
+        # hand the payload to the model that the tools/call block refuses.
+        if tool.get("tool_name", "") in await blocked_names_for(server_path, blocked_cache):
+            continue
+
+        # Issue #1026: tool-level prune after server access check
+        if not tool_allowed_for_user(
+            server_name,
+            tool.get("tool_name", ""),
+            user_context,
+            server_path=server_path,
+        ):
+            continue
+
+        # Get endpoint_url from filtered servers, or compute it if not available
+        tool_endpoint_url = server_endpoint_map.get(server_path)
+        if tool_endpoint_url is None:
+            # Server not in filtered results, compute endpoint_url
+            tool_endpoint_url = _compute_endpoint_url(
+                path=server_path,
+                proxy_pass_url=None,  # We don't have this info for tools
+                mcp_endpoint=None,
+                base_url=base_url,
+                redact_backend_urls=redact_backend,
+            )
+
+        filtered_tools.append(
+            ToolSearchResult(
+                server_path=server_path,
+                server_name=server_name,
+                tool_name=tool.get("tool_name", ""),
+                description=tool.get("description"),
+                inputSchema=tool.get("inputSchema"),
+                relevance_score=tool.get("relevance_score", 0.0),
+                similarity_score=tool.get("similarity_score"),
+                match_context=tool.get("match_context"),
+                endpoint_url=tool_endpoint_url,
+            )
+        )
+
+    filtered_agents: list[AgentSearchResult] = []
+    for agent in raw_results.get("agents", []):
+        agent_path = agent.get("path", "")
+        if not agent_path:
+            continue
+
+        if not await _user_can_access_agent(agent_path, user_context):
+            continue
+
+        agent_card_obj = await agent_service.get_agent_info(agent_path)
+        agent_card_dict = (
+            agent_card_obj.model_dump() if agent_card_obj else agent.get("agent_card", {})
+        )
+
+        # Non-admins in with-gateway mode must never receive the internal backend
+        # (proxy_pass_url); strip it so search returns only the gateway-facing url.
+        # Mirrors the server-branch redaction above and the /api/agents/discover/
+        # semantic fix. Uses the same redact_backend decision computed once above.
+        if redact_backend and agent_card_dict:
+            redact_agent_backend_fields(agent_card_dict)
+
+        # Ensure agent_card has the path for consistency
+        if agent_card_dict and "path" not in agent_card_dict:
+            agent_card_dict["path"] = agent_path
+
+        # Compute trust verification status from ANS metadata
+        ans_meta = agent_card_dict.get("ans_metadata") if agent_card_dict else None
+        trust_verified = _compute_trust_verified(ans_meta)
+
+        # Apply metadata projection to the agent_card if requested (Issue #1277)
+        if _metadata_paths is not None and agent_card_dict:
+            agent_card_dict["metadata"] = project_metadata(
+                agent_card_dict.get("metadata"), _metadata_paths
+            )
+
+        filtered_agents.append(
+            AgentSearchResult(
+                path=agent_path,
+                relevance_score=agent.get("relevance_score", 0.0),
+                similarity_score=agent.get("similarity_score"),
+                match_context=agent.get("match_context") or agent_card_dict.get("description"),
+                agent_card=agent_card_dict or {},
+                trust_verified=trust_verified,
+            )
+        )
+
+    filtered_skills: list[SkillSearchResult] = []
+    for skill in raw_results.get("skills", []):
+        skill_path = skill.get("path", "")
+        if not skill_path:
+            continue
+
+        skill_name = skill.get("skill_name", skill_path.strip("/"))
+
+        # Discovery gate FIRST (list_skills, parity with list_service and the
+        # custom-entity type gate): a caller with no list_skills grant sees no
+        # skills -- not even public ones -- before the per-record visibility check.
+        if not user_has_asset_permission("skill", "list", skill_name, user_context):
+            continue
+
+        visibility = skill.get("visibility", "public")
+        owner = skill.get("owner", "")
+        allowed_groups = skill.get("allowed_groups", [])
+
+        if not await _user_can_access_skill(
+            skill_path, visibility, owner, allowed_groups, user_context
+        ):
+            continue
+
+        # Build projected metadata for skills if requested (Issue #1277).
+        # The actual projection is applied after the loop via a batch fetch
+        # from the skills collection (avoids N+1 and gives access to full
+        # metadata including extra.*).
+        _skill_metadata_for_projection: dict | None = None
+
+        filtered_skills.append(
+            SkillSearchResult(
+                path=skill_path,
+                skill_name=skill.get("skill_name", skill_path.strip("/")),
+                description=skill.get("description"),
+                tags=skill.get("tags", []),
+                skill_md_url=skill.get("skill_md_url"),
+                skill_md_raw_url=skill.get("skill_md_raw_url"),
+                version=skill.get("version"),
+                author=skill.get("author"),
+                visibility=visibility,
+                owner=owner,
+                is_enabled=skill.get("is_enabled", False),
+                health_status=skill.get("health_status", "unknown"),
+                last_checked_time=skill.get("last_checked_time"),
+                status=skill.get("status", "active"),
+                relevance_score=skill.get("relevance_score", 0.0),
+                similarity_score=skill.get("similarity_score"),
+                match_context=skill.get("match_context"),
+                metadata=_skill_metadata_for_projection,
+            )
+        )
+
+    # Batch-fetch full skill metadata and apply projection (Issue #1277).
+    # Only fires when metadata_fields is supplied AND skills were found.
+    if _metadata_paths is not None and filtered_skills:
+        skill_repo = get_skill_repository()
+        skill_paths = [s.path for s in filtered_skills]
+        full_skill_docs = await skill_repo.list_by_paths(skill_paths)
+        for skill_result in filtered_skills:
+            full_doc = full_skill_docs.get(skill_result.path)
+            if full_doc:
+                raw_meta = full_doc.get("metadata", {})
+                # SkillMetadata is stored as {"author":..,"version":..,"extra":{..}}
+                if isinstance(raw_meta, dict):
+                    skill_result.metadata = project_metadata(raw_meta, _metadata_paths)
+                else:
+                    skill_result.metadata = project_metadata({}, _metadata_paths)
+            else:
+                skill_result.metadata = project_metadata({}, _metadata_paths)
+
+    # Process virtual servers
+    filtered_virtual_servers: list[VirtualServerSearchResult] = []
+    for vs in raw_results.get("virtual_servers", []):
+        vs_path = vs.get("path", "")
+        if not vs_path:
+            continue
+
+        # Virtual servers use the same access control as regular servers
+        if not await _user_can_access_server(
+            vs_path,
+            vs.get("server_name", ""),
+            user_context,
+        ):
+            continue
+
+        # Issue #1026: prune matching_tools before shaping the response.
+        vs_name_for_filter = vs.get("server_name", "")
+        allowed_vs_matching = filter_tools_for_user(
+            vs_name_for_filter,
+            vs.get("matching_tools", []),
+            user_context,
+            endpoint="semantic_search",
+            server_path=vs_path,
+        )
+        # A block lives on the BACKEND server, never on the virtual path, so the
+        # virtual path is resolved per tool through its mapping. Looking blocks up
+        # on vs_path alone would always miss and let a virtual server re-expose a
+        # tool the gateway refuses on tools/call.
+        allowed_vs_matching = await _hide_blocked_virtual_tools(
+            vs_path,
+            allowed_vs_matching,
+            blocked_cache,
+        )
+        # Build matching tools with schema lookup from backend servers
+        # Only include tools that matched the search query
+        matching_tools = []
+        for tool in allowed_vs_matching:
+            tool_name = tool.get("tool_name") or tool.get("name", "")
+            # Look up the tool schema from the backend server
+            input_schema = await _get_tool_schema_for_virtual_server(vs_path, tool_name)
+            matching_tools.append(
+                MatchingToolResult(
+                    tool_name=tool_name,
+                    description=tool.get("description"),
+                    relevance_score=tool["relevance_score"],
+                    match_context=tool.get("match_context"),
+                    inputSchema=input_schema,
+                )
+            )
+
+        # Compute endpoint URL for virtual server
+        vs_endpoint_url = _compute_endpoint_url(
+            path=vs_path,
+            proxy_pass_url=None,  # Virtual servers don't have proxy_pass_url
+            mcp_endpoint=None,
+            base_url=base_url,
+            redact_backend_urls=redact_backend,
+        )
+
+        # Blocker 3 / Issue #1026: recompute num_tools for the virtual
+        # server against the filtered tool_list (if present) so the badge
+        # matches what this caller is allowed to see. Falls back to the stored
+        # count when the virtual server has no enumerable tool_list.
+        vs_tool_list = _virtual_server_field(vs, "tool_list", []) or []
+        if vs_tool_list:
+            allowed_vs_full = await _hide_blocked_virtual_tools(
+                vs_path,
+                filter_tools_for_user(
+                    vs_name_for_filter,
+                    vs_tool_list,
+                    user_context,
+                    endpoint="semantic_search",
+                    server_path=vs_path,
+                ),
+                blocked_cache,
+            )
+            vs_num_tools = len(allowed_vs_full)
+        else:
+            vs_num_tools = _virtual_server_field(vs, "num_tools", 0)
+
+        filtered_virtual_servers.append(
+            VirtualServerSearchResult(
+                path=vs_path,
+                server_name=vs.get("server_name", ""),
+                description=vs.get("description"),
+                tags=vs.get("tags", []),
+                num_tools=vs_num_tools,
+                backend_count=_virtual_server_field(vs, "backend_count", 0),
+                backend_paths=_virtual_server_field(vs, "backend_paths", []),
+                is_enabled=vs.get("is_enabled", False),
+                relevance_score=vs.get("relevance_score", 0.0),
+                similarity_score=vs.get("similarity_score"),
+                match_context=vs.get("match_context"),
+                matching_tools=matching_tools,
+                endpoint_url=vs_endpoint_url,
+            )
+        )
+
+    # Process custom entity records. The embedding docs are NOT visibility-scoped
+    # at query time, so every hit MUST pass the same public / private-owner /
+    # group-restricted check used by the list/single-record paths
+    # (see custom_entity_visibility._user_can_view) before being surfaced.
+    #
+    # Feature-flag symmetry: when CUSTOM_ENTITY_TYPES_ENABLED is off the feature
+    # is invisible (routers unregistered, tabs hidden, types excluded from the
+    # search scope). Gate this result loop too so a custom hit is never surfaced
+    # even if one reaches here (e.g. a stale scope cache), keeping all paths in
+    # agreement: off = feature invisible, existing records dormant.
+    custom_results = raw_results.get("custom", []) if settings.custom_entity_types_enabled else []
+    filtered_custom: list[CustomEntitySearchResult] = []
+    # Discovery check first (per-record aware): the list_<type>_entity grant may
+    # open the whole type ("all"/type name) or only specific record paths. Resolve
+    # the grant ONCE per type into (whole, paths) — the grant is constant per type,
+    # so this avoids re-reading ui_permissions and re-extracting paths on every
+    # hit. Each hit then passes discovery iff the type is whole-open OR its own
+    # path is in the granted set (so granting one record surfaces only that
+    # record, never every public record of the type). Runs before the per-record
+    # visibility check.
+    is_admin = bool(user_context.get("is_admin", False))
+    ui_permissions = user_context.get("ui_permissions") or {}
+    # entity_type -> (whole_type_open, granted_record_paths). resolve_list_grant
+    # is the shared tier resolver used by user_can_list_custom_entity_type too, so
+    # the two enforcement sites can never disagree; admin bypass is applied here.
+    discovery_cache: dict[str, tuple[bool, set[str]]] = {}
+    for record in custom_results:
+        record_path = record.get("path", "")
+        if not record_path:
+            continue
+
+        entity_type = record.get("entity_type", "")
+        decision = discovery_cache.get(entity_type)
+        if decision is None:
+            granted = ui_permissions.get(_entity_scope("list", entity_type)) or []
+            whole, paths = _resolve_list_grant(entity_type, granted)
+            decision = (is_admin or whole, paths)
+            discovery_cache[entity_type] = decision
+        whole_open, granted_paths = decision
+        if not whole_open and record_path not in granted_paths:
+            continue
+
+        visibility = record.get("visibility", "private")
+        owner = record.get("owner") or ""
+        allowed_groups = record.get("allowed_groups", []) or []
+
+        if not await _user_can_access_custom_entity(
+            visibility, owner, allowed_groups, user_context
+        ):
+            continue
+
+        filtered_custom.append(
+            CustomEntitySearchResult(
+                entity_type=record.get("entity_type", ""),
+                path=record_path,
+                name=record.get("name", ""),
+                description=record.get("description"),
+                tags=record.get("tags", []),
+                visibility=visibility,
+                owner=record.get("owner"),
+                # Default True to match the CustomEntityRecord model default; a
+                # record whose embedding doc predates the field shouldn't be
+                # mislabeled disabled (which would hide it from default search).
+                is_enabled=record.get("is_enabled", True),
+                relevance_score=record.get("relevance_score", 0.0),
+                similarity_score=record.get("similarity_score"),
+                match_context=record.get("match_context"),
+            )
+        )
+
+    # Filter results by required tags (from #tag syntax or explicit tags param)
+    if required_tags:
+        filtered_servers = [
+            s for s in filtered_servers if _entity_has_all_tags(s.tags, required_tags)
+        ]
+        filtered_tools = [
+            t
+            for t in filtered_tools
+            if _entity_has_all_tags(
+                # Tools don't have tags directly; filter by parent server tags
+                next(
+                    (s.tags for s in filtered_servers if s.path == t.server_path),
+                    [],
+                ),
+                required_tags,
+            )
+        ]
+        filtered_agents = [
+            a
+            for a in filtered_agents
+            if _entity_has_all_tags(
+                a.agent_card.get("tags", []),
+                required_tags,
+            )
+        ]
+        filtered_skills = [
+            s for s in filtered_skills if _entity_has_all_tags(s.tags, required_tags)
+        ]
+        filtered_virtual_servers = [
+            vs for vs in filtered_virtual_servers if _entity_has_all_tags(vs.tags, required_tags)
+        ]
+        filtered_custom = [
+            c for c in filtered_custom if _entity_has_all_tags(c.tags, required_tags)
+        ]
+
+    # Filter results based on registry mode
+    # In skills-only mode, only return skills; in servers-only mode, only return servers, etc.
+    mode = settings.registry_mode
+
+    if mode == RegistryMode.SKILLS_ONLY:
+        # Only skills are enabled
+        filtered_servers = []
+        filtered_tools = []
+        filtered_agents = []
+        filtered_virtual_servers = []
+    elif mode == RegistryMode.MCP_SERVERS_ONLY:
+        # Only servers, tools, and virtual servers are enabled
+        filtered_agents = []
+        filtered_skills = []
+    elif mode == RegistryMode.AGENTS_ONLY:
+        # Only agents are enabled
+        filtered_servers = []
+        filtered_tools = []
+        filtered_skills = []
+        filtered_virtual_servers = []
+    # In FULL mode, return all results (no filtering needed).
+    # Custom entities are gated by CUSTOM_ENTITY_TYPES_ENABLED, not registry_mode,
+    # so they are deliberately not cleared by the core-type mode filter above —
+    # nothing is indexed unless the feature is on.
+
+    # Increment semantic search counter (fail-silent)
+    from ..repositories.stats_repository import increment_search_counter
+
+    await increment_search_counter()
+
+    return SemanticSearchResponse(
+        query=request.query.strip(),
+        servers=filtered_servers,
+        tools=filtered_tools,
+        agents=filtered_agents,
+        skills=filtered_skills,
+        virtual_servers=filtered_virtual_servers,
+        custom=filtered_custom,
+        total_servers=len(filtered_servers),
+        total_tools=len(filtered_tools),
+        total_agents=len(filtered_agents),
+        total_skills=len(filtered_skills),
+        total_virtual_servers=len(filtered_virtual_servers),
+        total_custom=len(filtered_custom),
+    )
+
+
+@router.get(
+    "/tags",
+    summary="Get all unique tags across all indexed entities",
+)
+async def get_all_tags(
+    user_context: Annotated[dict, Depends(nginx_proxied_auth)],
+    search_repo: SearchRepositoryBase = Depends(get_search_repo),
+) -> dict[str, list[str]]:
+    """Return a sorted list of all unique tags across servers, agents, skills, and virtual servers."""
+    try:
+        tags = await search_repo.get_all_tags()
+        return {"tags": tags}
+    except Exception as e:
+        logger.error("Failed to retrieve tags: %s", e, exc_info=True)
+        return {"tags": []}

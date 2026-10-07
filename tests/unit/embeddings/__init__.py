@@ -1,0 +1,1 @@
+"""Embeddings service unit tests."""

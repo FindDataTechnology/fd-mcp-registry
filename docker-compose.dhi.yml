@@ -1,0 +1,36 @@
+# Docker Hardened Images (DHI) Override
+#
+# This file overrides the default docker-compose.yml to use Docker Hardened
+# Images from dhi.io for improved security posture. DHI images are hardened
+# versions of standard Docker Hub images with reduced attack surface.
+#
+# Prerequisites:
+#   - Access to dhi.io registry
+#   - Authenticated via: docker login dhi.io
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.dhi.yml up -d
+#
+# Note: The default docker-compose.yml uses standard public Docker Hub images
+# and works without any registry authentication.
+
+services:
+  mongodb:
+    image: dhi.io/mongodb:8-debian13-dev
+    command: ["--replSet", "rs0", "--bind_ip", "127.0.0.1,mongodb"]
+
+  prometheus:
+    image: dhi.io/prometheus:3.9
+    user: "nobody"
+
+  grafana:
+    image: dhi.io/grafana:12
+    user: "472"
+
+  # Note: Keycloak DHI image (dhi.io/keycloak:26) has a read-only filesystem
+  # and only supports 'start --optimized'. It is not compatible with the
+  # start-dev mode or dynamic KC_ environment variables used in this compose
+  # setup. Use the standard quay.io/keycloak image for local development.
+
+  keycloak-db:
+    image: dhi.io/postgres:16-alpine3.22

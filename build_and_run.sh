@@ -1,0 +1,761 @@
+#!/bin/bash
+
+# Enable error handling
+set -e
+
+# Function for logging with timestamp
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"
+}
+
+# Function for error handling
+handle_error() {
+    log "ERROR: $1"
+    exit 1
+}
+
+# Parse command line arguments
+USE_PREBUILT=false
+USE_PODMAN=false
+USE_DHI=false
+DOCKER_COMPOSE_FILE="docker-compose.yml"
+DHI_COMPOSE_FILE="docker-compose.dhi.yml"
+PODMAN_COMPOSE_FILE="docker-compose.podman.yml"
+
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --prebuilt)
+      USE_PREBUILT=true
+      DOCKER_COMPOSE_FILE="docker-compose.prebuilt.yml"
+      shift
+      ;;
+    --podman)
+      USE_PODMAN=true
+      shift
+      ;;
+    --dhi)
+      USE_DHI=true
+      shift
+      ;;
+    --help)
+      echo "Usage: $0 [--prebuilt] [--podman] [--dhi] [--help]"
+      echo ""
+      echo "Options:"
+      echo "  --prebuilt    Use pre-built container images (faster startup)"
+      echo "  --podman      Use Podman instead of Docker (rootless-friendly)"
+      echo "  --dhi         Use Docker Hardened Images (DHI) from dhi.io"
+      echo "  --help        Show this help message"
+      echo ""
+      echo "Examples:"
+      echo "  $0                     # Build containers locally with Docker (default)"
+      echo "  $0 --prebuilt          # Use pre-built images from registry with Docker"
+      echo "  $0 --podman            # Build containers locally with Podman"
+      echo "  $0 --prebuilt --podman # Use pre-built images with Podman"
+      echo "  $0 --dhi              # Use Docker Hardened Images for infra containers"
+      echo ""
+      echo "Benefits of --prebuilt:"
+      echo "  - Instant deployment (no build time)"
+      echo "  - Reduced friction (eliminate build environment issues)"
+      echo "  - Consistent experience (all users get the same tested images)"
+      echo "  - Bandwidth efficient (pull optimized, compressed images)"
+      echo ""
+      echo "Benefits of --podman:"
+      echo "  - Rootless container execution (no privileged ports)"
+      echo "  - Compatible with macOS Podman Desktop"
+      echo "  - Uses non-privileged ports (8080 for HTTP, 8443 for HTTPS)"
+      echo "  - No Docker daemon required"
+      echo ""
+      echo "Benefits of --dhi:"
+      echo "  - Security-hardened container images from dhi.io"
+      echo "  - Reduced attack surface for infrastructure containers"
+      echo "  - Non-root execution enforced (MongoDB, Prometheus, Grafana, PostgreSQL)"
+      echo "  - Requires: docker login dhi.io (before first use)"
+      exit 0
+      ;;
+    *)
+      echo "Unknown option $1"
+      echo "Use --help for usage information"
+      exit 1
+      ;;
+  esac
+done
+
+echo "MCP Gateway Registry Deployment"
+echo "==============================="
+
+# Detect and configure container engine
+COMPOSE_CMD=""
+COMPOSE_FILES=""
+
+if [ "$USE_PODMAN" = true ]; then
+    # User explicitly requested Podman
+    if command -v podman &> /dev/null; then
+        COMPOSE_CMD="podman compose"
+        # Use standalone Podman compose file to avoid port merge issues
+        COMPOSE_FILES="-f $PODMAN_COMPOSE_FILE"
+        log "Using Podman (rootless mode)"
+        log "Services will be available at:"
+        log "   - HTTP:  http://localhost:8080"
+        log "   - HTTPS: https://localhost:8443"
+    else
+        log "ERROR: --podman flag specified but podman command not found"
+        log "Please install Podman: https://podman.io/getting-started/installation"
+        exit 1
+    fi
+else
+    # Auto-detect: prefer Docker, fallback to Podman
+    if command -v docker &> /dev/null && docker compose version &> /dev/null; then
+        COMPOSE_CMD="docker compose"
+        COMPOSE_FILES="-f $DOCKER_COMPOSE_FILE"
+        log "Using Docker"
+        log "Services will be available at:"
+        log "   - HTTP:  http://localhost"
+        log "   - HTTPS: https://localhost"
+    elif command -v podman &> /dev/null; then
+        log "WARNING: Docker not found, automatically using Podman (rootless mode)"
+        log "To suppress this message, use --podman flag explicitly"
+        COMPOSE_CMD="podman compose"
+        # Use standalone Podman compose file to avoid port merge issues
+        COMPOSE_FILES="-f $PODMAN_COMPOSE_FILE"
+        log "Services will be available at:"
+        log "   - HTTP:  http://localhost:8080"
+        log "   - HTTPS: https://localhost:8443"
+    else
+        log "ERROR: Neither 'docker compose' nor 'podman compose' is available"
+        log "Please install one of:"
+        log "  - Docker: https://docs.docker.com/compose/install/"
+        log "  - Podman: https://podman.io/getting-started/installation"
+        exit 1
+    fi
+fi
+
+# Append DHI override file if --dhi flag is set
+if [ "$USE_DHI" = true ]; then
+    if [ ! -f "$DHI_COMPOSE_FILE" ]; then
+        log "ERROR: DHI compose file not found: $DHI_COMPOSE_FILE"
+        exit 1
+    fi
+    COMPOSE_FILES="$COMPOSE_FILES -f $DHI_COMPOSE_FILE"
+    log "Using Docker Hardened Images (DHI) from dhi.io"
+    log "Ensure you have authenticated: docker login dhi.io"
+fi
+
+OVERRIDE_FILE="docker-compose.override.yml"
+if [ -f "$OVERRIDE_FILE" ]; then
+    COMPOSE_FILES="$COMPOSE_FILES -f $OVERRIDE_FILE"
+    log "Applying local overrides from $OVERRIDE_FILE"
+fi
+
+if [ "$USE_PREBUILT" = true ]; then
+    log "Using pre-built container images for fast deployment"
+    log "Will pull latest images from container registry during startup..."
+
+    # Warn about ARM64 compatibility with Podman
+    if [[ "$COMPOSE_CMD" == "podman compose" ]] && [[ $(uname -m) == "arm64" ]]; then
+        log "WARNING: Pre-built images are amd64. On Apple Silicon, consider:"
+        log "   - Building locally: ./build_and_run.sh --podman"
+        log "   - Or using Docker Desktop: ./build_and_run.sh --prebuilt"
+        log "   Continuing in 5 seconds... (Ctrl+C to cancel)"
+        sleep 5
+    fi
+else
+    log "Building containers locally (this may take several minutes)"
+fi
+
+log "Using compose files: $COMPOSE_FILES"
+log "Starting MCP Gateway deployment script"
+
+# Only check Node.js and build frontend when building locally
+if [ "$USE_PREBUILT" = false ]; then
+    # Check if Node.js and npm are installed
+    if ! command -v node &> /dev/null; then
+        log "ERROR: Node.js is not installed"
+        log "Please install Node.js (version 16 or higher): https://nodejs.org/"
+        exit 1
+    fi
+
+    if ! command -v npm &> /dev/null; then
+        log "ERROR: npm is not installed"
+        log "Please install npm (usually comes with Node.js): https://nodejs.org/"
+        exit 1
+    fi
+
+    # Check Node.js version
+    NODE_VERSION=$(node -v | cut -d'v' -f2 | cut -d'.' -f1)
+    if [ "$NODE_VERSION" -lt 16 ]; then
+        log "ERROR: Node.js version $NODE_VERSION is too old. Please install Node.js 16 or higher."
+        exit 1
+    fi
+
+    log "Node.js $(node -v) and npm $(npm -v) are available"
+
+    # Build the React frontend
+    log "Building React frontend..."
+    if [ ! -d "frontend" ]; then
+        handle_error "Frontend directory not found"
+    fi
+
+    cd frontend
+
+    # Install frontend dependencies
+    log "Installing frontend dependencies..."
+    npm install || handle_error "Failed to install frontend dependencies"
+
+    # Build the React application
+    log "Building React application for production..."
+    npm run build || handle_error "Failed to build React application"
+
+    log "Frontend build completed successfully"
+    cd ..
+else
+    log "Skipping frontend build (using pre-built images)"
+fi
+
+# Check if .env file exists
+if [ ! -f .env ]; then
+    log "ERROR: .env file not found"
+    log "Please create a .env file with your configuration values:"
+    log "Example .env file:"
+    log "SECRET_KEY=your_secret_key_here"
+    log "# SECRET_KEY is auto-generated if not set. It is used to sign JWT session tokens."
+    exit 1
+fi
+
+log "Found .env file"
+
+# Load environment variables from .env file early so we can check STORAGE_BACKEND
+source .env
+
+# Check if docker compose is installed
+if ! docker compose version &> /dev/null; then
+    log "ERROR: docker compose is not available"
+    log "Please install Docker Compose v2: https://docs.docker.com/compose/install/"
+    exit 1
+fi
+
+# Stop and remove existing services if they exist
+log "Stopping existing services (if any)..."
+$COMPOSE_CMD $COMPOSE_FILES down --remove-orphans || log "No existing services to stop"
+log "Existing services stopped"
+
+# Clean up any root-owned directories from previous Docker runs
+log "Checking for root-owned directories from previous Docker runs..."
+
+MCPGATEWAY_SERVERS_DIR="${HOME}/mcp-gateway/servers"
+
+# Check and remove root-owned directories
+for dir in "$MCPGATEWAY_SERVERS_DIR" "${HOME}/mcp-gateway/agents" "${HOME}/mcp-gateway/auth_server" "${HOME}/mcp-gateway/security_scans" "${HOME}/mcp-gateway/federation.json"; do
+    if [ -e "$dir" ] && [ "$(stat -c '%U' "$dir" 2>/dev/null)" = "root" ]; then
+        log "Removing root-owned: $dir"
+        sudo rm -rf "$dir"
+    fi
+done
+
+# Copy JSON files from registry/servers to ${HOME}/mcp-gateway/servers with environment variable substitution
+log "Copying JSON files from registry/servers to $MCPGATEWAY_SERVERS_DIR..."
+if [ -d "registry/servers" ]; then
+    # Create the target directory if it doesn't exist
+    mkdir -p "$MCPGATEWAY_SERVERS_DIR"
+
+    # Copy all JSON files with environment variable substitution
+    if ls registry/servers/*.json 1> /dev/null 2>&1; then
+        # Export all environment variables from .env file for envsubst
+        set -a  # Automatically export all variables
+        source .env
+        set +a  # Turn off automatic export
+
+        for json_file in registry/servers/*.json; do
+            filename=$(basename "$json_file")
+            log "Processing $filename with environment variable substitution..."
+
+            # Use envsubst to substitute environment variables, then copy to target
+            envsubst < "$json_file" > "$MCPGATEWAY_SERVERS_DIR/$filename"
+        done
+        log "JSON files copied successfully with environment variable substitution"
+
+        # Verify atlassian.json was copied
+        if [ -f "$MCPGATEWAY_SERVERS_DIR/atlassian.json" ]; then
+            log "atlassian.json copied successfully"
+        else
+            log "WARNING: atlassian.json not found in copied files"
+        fi
+    else
+        log "No JSON files found in registry/servers"
+    fi
+else
+    log "WARNING: registry/servers directory not found"
+fi
+
+# Copy seed agent JSON files from cli/examples to ${HOME}/mcp-gateway/agents
+AGENTS_DIR="${HOME}/mcp-gateway/agents"
+log "Copying seed agent files from cli/examples to $AGENTS_DIR..."
+if [ -d "cli/examples" ]; then
+    # Create the target directory if it doesn't exist
+    mkdir -p "$AGENTS_DIR"
+
+    # Copy all agent JSON files from cli/examples
+    if ls cli/examples/*agent*.json 1> /dev/null 2>&1; then
+        for json_file in cli/examples/*agent*.json; do
+            filename=$(basename "$json_file")
+            log "Copying seed agent $filename..."
+
+            # Copy agent file to target directory
+            cp "$json_file" "$AGENTS_DIR/$filename"
+        done
+        log "Seed agent files copied successfully"
+    else
+        log "No seed agent files found in cli/examples"
+    fi
+else
+    log "WARNING: cli/examples directory not found - seed agents will not be copied"
+fi
+
+# Create empty security_scans directory for Docker mount
+SECURITY_SCANS_DIR="${HOME}/mcp-gateway/security_scans"
+log "Creating empty security_scans directory for Docker mount"
+mkdir -p "$SECURITY_SCANS_DIR"
+
+# Create empty federation.json file for Docker mount
+FEDERATION_JSON_FILE="${HOME}/mcp-gateway/federation.json"
+log "Creating empty federation.json for Docker mount"
+touch "$FEDERATION_JSON_FILE"
+
+# Setup SSL certificate directory structure
+SSL_DIR="${HOME}/mcp-gateway/ssl"
+log "Setting up SSL certificate directory structure..."
+mkdir -p "$SSL_DIR/certs"
+mkdir -p "$SSL_DIR/private"
+
+# Check if SSL certificates exist and are properly located
+if [ -f "$SSL_DIR/certs/fullchain.pem" ] && [ -f "$SSL_DIR/private/privkey.pem" ]; then
+    log "SSL certificates found - HTTPS will be enabled"
+    chmod 644 "$SSL_DIR/certs/fullchain.pem"
+    chmod 600 "$SSL_DIR/private/privkey.pem"
+else
+    log "No SSL certificates found - HTTP-only mode will be used"
+    log "To enable HTTPS, place certificates at:"
+    log "  - $SSL_DIR/certs/fullchain.pem"
+    log "  - $SSL_DIR/private/privkey.pem"
+fi
+
+# Ensure a required secret is present in .env, generating a strong value when it
+# is missing or set to an empty (optionally quoted) placeholder. An
+# operator-provided value is always left untouched.
+#
+# This replaces five near-identical blocks that used `sed -i '/re/d'` to strip an
+# empty line before appending. That is NOT portable: BSD/macOS sed treats the
+# argument after -i as a mandatory backup suffix, so `sed -i '/re/d' file`
+# consumes the script as the suffix and fails with "unescaped newline". The old
+# code hid that failure behind `2>/dev/null || true`, so on macOS the empty line
+# survived, the freshly generated value was appended *below* it, and the first
+# (empty) assignment won -- e.g. the auth_server then crashed on a
+# required-but-empty AUTH_SERVER_NGINX_MARKER_SECRET. grep-based rewrite behaves
+# identically on GNU and BSD userlands.
+#
+# Usage: ensure_secret VAR_NAME <hex-bytes>
+ensure_secret() {
+    local var_name="$1"
+    local hex_bytes="$2"
+
+    if grep -qE "^${var_name}=.+" .env && ! grep -qE "^${var_name}=\"\"$" .env; then
+        log "${var_name} already exists in .env"
+        return 0
+    fi
+
+    log "Generating ${var_name}..."
+    local value
+    value=$(python3 -c "import secrets; print(secrets.token_hex(${hex_bytes}))") \
+        || handle_error "Failed to generate ${var_name}"
+
+    # Drop any existing empty/quoted-empty assignment, then append the real one.
+    grep -vE "^${var_name}=(\"\")?$" .env > .env.tmp && mv .env.tmp .env
+    echo "${var_name}=${value}" >> .env
+    log "${var_name} added to .env"
+}
+
+# SECRET_KEY: registry/auth-server session signing secret.
+ensure_secret SECRET_KEY 32
+
+# AUTH_SERVER_NGINX_MARKER_SECRET: required by both auth_server and registry, it
+# guards all mcp-proxy token minting (a direct :8888 /validate with a forged
+# X-Resolved-Upstream cannot obtain a token without it). Must be identical across
+# both services.
+ensure_secret AUTH_SERVER_NGINX_MARKER_SECRET 32
+
+# DOCUMENTDB_PASSWORD: the local MongoDB container runs with --auth and creates
+# its root user from this value on first boot, so it must never be a weak default
+# like "admin". NOTE: this only helps a first-time install. If MongoDB was
+# already initialized with a different password (existing data volume), set
+# DOCUMENTDB_PASSWORD to that value or recreate the mongodb-data volume.
+ensure_secret DOCUMENTDB_PASSWORD 24
+
+# METRICS_KEY_PEPPER: the metrics-service peppers stored API-key hashes with this
+# value and refuses to start unless it is present and high-entropy. NOTE:
+# rotating this value invalidates all existing API-key hashes -- re-issue metrics
+# API keys after changing it.
+ensure_secret METRICS_KEY_PEPPER 32
+
+# OPENBAO_TOKEN: the dev OpenBao container is auto-unsealed with this root token
+# and the registry authenticates to it with the same value, so the compose stack
+# requires it (${OPENBAO_TOKEN:?}) and refuses to start without one -- reaching
+# :8200 with a known token grants root access to every stored egress credential.
+ensure_secret OPENBAO_TOKEN 32
+
+# Validate required environment variables
+log "Validating required environment variables..."
+source .env
+
+# Determine BUILD_VERSION from git
+log "Determining version from git..."
+if command -v git &> /dev/null && [ -d .git ]; then
+    # Get the current git tag
+    GIT_TAG=$(git describe --tags --exact-match 2>/dev/null || echo "")
+
+    if [ -n "$GIT_TAG" ]; then
+        # We're on a tagged commit - use just the tag (remove 'v' prefix)
+        export BUILD_VERSION="${GIT_TAG#v}"
+        log "Building release version: $BUILD_VERSION"
+    else
+        # Not on a tag - include branch name and commit info
+        GIT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+        GIT_DESCRIBE=$(git describe --tags --always 2>/dev/null || echo "dev")
+
+        # Format: version-branch or describe-branch
+        if [[ "$GIT_DESCRIBE" =~ ^[0-9] ]]; then
+            # Starts with version number from describe
+            export BUILD_VERSION="${GIT_DESCRIBE#v}-${GIT_BRANCH}"
+        else
+            # No version tags found, use commit hash
+            export BUILD_VERSION="${GIT_DESCRIBE}-${GIT_BRANCH}"
+        fi
+
+        log "Building development version: $BUILD_VERSION"
+    fi
+else
+    export BUILD_VERSION="1.0.0-dev"
+    log "Git not available, using default version: $BUILD_VERSION"
+fi
+
+# Build or pull container images
+if [ "$USE_PREBUILT" = true ]; then
+    log "Pulling pre-built container images..."
+    $COMPOSE_CMD $COMPOSE_FILES pull || handle_error "Compose pull failed"
+    log "Pre-built container images pulled successfully"
+else
+    log "Building container images with optimization..."
+    # Enable BuildKit for better caching and parallel builds (Docker only)
+    if [[ "$COMPOSE_CMD" == "docker compose" ]]; then
+        export DOCKER_BUILDKIT=1
+        export COMPOSE_DOCKER_CLI_BUILD=1
+    fi
+
+    # Build with parallel jobs and build cache
+    $COMPOSE_CMD $COMPOSE_FILES build --parallel --progress=auto --build-arg BUILD_VERSION="$BUILD_VERSION" || handle_error "Compose build failed"
+    log "Container images built successfully with optimization"
+fi
+
+# Prepare host log directory used by registry, auth-server, and mcpgw
+# containers. See scripts/prepare-log-dirs.sh for details (Issue #987).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -x "${SCRIPT_DIR}/scripts/prepare-log-dirs.sh" ]; then
+    log "Preparing host log directory (/var/log/containers/ai-registry)..."
+    "${SCRIPT_DIR}/scripts/prepare-log-dirs.sh" || handle_error "Failed to prepare host log directory"
+else
+    log "WARNING: scripts/prepare-log-dirs.sh not found or not executable; skipping log-directory prep"
+fi
+
+# Shared weak-credential denylist, also sourced by
+# pingfederate/setup/init-pingfederate.sh so preflight and the post-deploy gate
+# cannot drift apart.
+# shellcheck source=scripts/weak-credentials.sh
+. "${SCRIPT_DIR}/scripts/weak-credentials.sh"
+
+# Return the lowercased value of the named variable (indirect expansion) so the
+# weak-value comparisons below are case-insensitive -- a placeholder mutated only
+# by case (e.g. "Change-Password-...") must not slip past the denylist. LC_ALL=C
+# pins the ASCII fold: tr's [:upper:]/[:lower:] classes are locale-sensitive.
+_lc_var() {
+    local name="$1"
+    printf '%s' "${!name:-}" | LC_ALL=C tr 'A-Z' 'a-z'
+}
+
+# Reject known-weak default values for secrets that could reach a deployment.
+# Compose fails fast on unset required secrets via ${VAR:?...}, but a value
+# explicitly set to a historical default (e.g. DOCUMENTDB_PASSWORD=admin,
+# OPENBAO_TOKEN=dev-root-token) or to a shipped .env.example placeholder would
+# pass that presence check while still being a guessable credential. Fail closed
+# here before starting anything. Comparisons are case-insensitive.
+_validate_secret_defaults() {
+    local failed=0
+
+    if [ "$(_lc_var DOCUMENTDB_PASSWORD)" = "admin" ]; then
+        log "ERROR: DOCUMENTDB_PASSWORD is set to the known-weak default 'admin'."
+        log "       Set a strong random value in .env (e.g. openssl rand -hex 24)."
+        failed=1
+    fi
+
+    if [ "$(_lc_var OPENBAO_TOKEN)" = "dev-root-token" ]; then
+        log "ERROR: OPENBAO_TOKEN is set to the known-weak default 'dev-root-token'."
+        log "       Reaching the vault with this token grants root over every stored"
+        log "       egress credential. Set a strong random value in .env (openssl rand -hex 32)."
+        failed=1
+    fi
+
+    case "$(_lc_var KEYCLOAK_DB_PASSWORD)" in
+        keycloak|your-secure-db-password)
+            log "ERROR: KEYCLOAK_DB_PASSWORD is set to a known-weak/placeholder value."
+            log "       Set a strong random value in .env (it backs the Keycloak realm DB)."
+            failed=1
+            ;;
+    esac
+
+    case "$(_lc_var KEYCLOAK_ADMIN_PASSWORD)" in
+        your-secure-keycloak-admin-password|admin)
+            log "ERROR: KEYCLOAK_ADMIN_PASSWORD is set to a known-weak/placeholder value."
+            log "       This bootstraps the Keycloak master-realm admin (full IdP takeover"
+            log "       if guessed); set a strong value in .env."
+            failed=1
+            ;;
+    esac
+
+    case "$(_lc_var GRAFANA_ADMIN_PASSWORD)" in
+        change-me-set-strong-password|admin)
+            log "ERROR: GRAFANA_ADMIN_PASSWORD is set to a known-weak/placeholder value."
+            log "       Set a strong value in .env (Grafana admin console credential)."
+            failed=1
+            ;;
+    esac
+
+    # ---- PingFederate credentials -----------------------------------------
+    # Gated on PINGFEDERATE_ENABLED. These variables are only read when the
+    # pingfederate profile runs, and `changeme` was the shipped .env.example value
+    # for PINGFEDERATE_CLIENT_SECRET until recently -- so validating them
+    # unconditionally would block startup for every operator on Keycloak, Cognito,
+    # Okta, Entra or Auth0 over a credential their deployment never touches.
+    case "$(_lc_var PINGFEDERATE_ENABLED)" in
+        1|true|yes|on)
+            # Compose passes PF_ADMIN_PASS to the bundled container as
+            # PING_IDENTITY_PASSWORD, and the Ping server profile resolves
+            # ${PING_IDENTITY_PASSWORD:=2FederateM0re}. `:=` substitutes on null as
+            # well as unset, so an EMPTY value silently reinstates the vendor
+            # default on the admin console. Emptiness must fail here, because
+            # compose cannot use ${VAR:?} (it interpolates every service at
+            # file-load time, before profile filtering) and the bootstrap script
+            # only runs after the console is already live.
+            if [ -z "${PF_ADMIN_PASS:-}" ]; then
+                log "ERROR: PF_ADMIN_PASS is required when PINGFEDERATE_ENABLED is true."
+                log "       The bundled container bootstraps its console administrator"
+                log "       from this value; leaving it empty boots PingFederate on the"
+                log "       vendor default password. Set a strong value in .env."
+                failed=1
+            fi
+
+            # Weak-value checks share one denylist with the bootstrap script, so
+            # preflight and the post-deploy gate cannot disagree.
+            local pf_var
+            for pf_var in PF_ADMIN_PASS PINGFEDERATE_CLIENT_SECRET PF_REGISTRY_ADMIN_PASSWORD; do
+                local pf_val="${!pf_var:-}"
+                [ -n "$pf_val" ] || continue
+                if is_weak_credential "$pf_val"; then
+                    log "ERROR: ${pf_var} is set to a known-weak/placeholder value."
+                    log "       init-pingfederate.sh rejects it and will refuse to run;"
+                    log "       set a strong value in .env (openssl rand -hex 24)."
+                    failed=1
+                elif [ "${#pf_val}" -lt "$WEAK_CREDENTIAL_MIN_LEN" ]; then
+                    log "ERROR: ${pf_var} must be at least ${WEAK_CREDENTIAL_MIN_LEN} characters."
+                    log "       init-pingfederate.sh enforces the same floor and would"
+                    log "       abort after the stack is already up."
+                    failed=1
+                fi
+            done
+            ;;
+    esac
+
+    return $failed
+}
+
+# Preflight validation for extra_env files (Issue #1000).
+# Source scripts/validate-extra-env.sh so the same collision logic is shared
+# with CI and pre-commit hooks.
+validate_predeployment() {
+    log "Running predeployment validations..."
+
+    local script_dir
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    # shellcheck source=scripts/validate-extra-env.sh
+    source "$script_dir/scripts/validate-extra-env.sh"
+
+    validate_extra_env_all || exit 1
+    _validate_secret_defaults || exit 1
+
+    log "Predeployment validations passed."
+}
+
+validate_predeployment
+
+# Start metrics service first to generate API keys.
+# Gated: --prebuilt compose no longer ships metrics-service (OTel-native
+# metrics replaced the legacy HTTP POST path). Skip the start, the health
+# wait, and the per-service token generation entirely when the service
+# isn't declared, instead of failing the whole deployment.
+if $COMPOSE_CMD $COMPOSE_FILES config --services 2>/dev/null | grep -q "^metrics-service$"; then
+    log "Starting metrics service first..."
+    $COMPOSE_CMD $COMPOSE_FILES up -d metrics-service || handle_error "Failed to start metrics service"
+
+    # Wait for metrics service to be ready
+    log "Waiting for metrics service to be ready..."
+    max_retries=30
+    retry_count=0
+    while [ $retry_count -lt $max_retries ]; do
+        if curl -f http://localhost:8890/health &>/dev/null; then
+            log "Metrics service is ready"
+            break
+        fi
+        sleep 2
+        retry_count=$((retry_count + 1))
+        log "Waiting for metrics service... ($retry_count/$max_retries)"
+    done
+
+    if [ $retry_count -eq $max_retries ]; then
+        handle_error "Metrics service did not become ready within expected time"
+    fi
+
+    # Generate dynamic pre-shared tokens for metrics authentication
+    log "Setting up dynamic pre-shared tokens for services..."
+
+    # Get all services from compose file that might need metrics (exclude monitoring services)
+    METRICS_SERVICES=$($COMPOSE_CMD $COMPOSE_FILES config --services 2>/dev/null | grep -v -E "(prometheus|grafana|metrics-db)" | sort | uniq)
+
+    if [ -z "$METRICS_SERVICES" ]; then
+        log "WARNING: No services found for metrics configuration"
+    else
+        log "Found services for metrics: $(echo $METRICS_SERVICES | tr '\n' ' ')"
+    fi
+
+    # Check if tokens already exist in .env
+    source .env 2>/dev/null || true
+
+    # Generate tokens for each service dynamically
+    for service in $METRICS_SERVICES; do
+        # Convert service name to environment variable format
+        # auth-server -> METRICS_API_KEY_AUTH_SERVER
+        # metrics-service -> METRICS_API_KEY_METRICS_SERVICE (will be skipped as it's the metrics service itself)
+        ENV_VAR_NAME="METRICS_API_KEY_$(echo "$service" | tr '[:lower:]-' '[:upper:]_')"
+
+        # Skip the metrics service itself and non-metrics services
+        if [ "$service" = "metrics-service" ] || [ "$service" = "prometheus" ] || [ "$service" = "grafana" ]; then
+            continue
+        fi
+
+        # Get current value
+        CURRENT_VALUE=$(eval echo "\${$ENV_VAR_NAME:-}")
+
+        # Generate token only if it doesn't exist or is empty
+        if [ -z "$CURRENT_VALUE" ] || [ "$CURRENT_VALUE" = "" ]; then
+            NEW_TOKEN="mcp_metrics_$(openssl rand -hex 16)"
+
+            # Remove any existing line for this variable
+            sed -i "/^$ENV_VAR_NAME=/d" .env 2>/dev/null || true
+
+            # Add new token
+            echo "$ENV_VAR_NAME=$NEW_TOKEN" >> .env
+            log "Generated new $service token: ${NEW_TOKEN:0:20}..."
+        else
+            log "Using existing $service token: ${CURRENT_VALUE:0:20}..."
+        fi
+    done
+
+    log "Dynamic metrics API tokens configured successfully"
+else
+    log "metrics-service not declared in compose file (e.g. --prebuilt). Skipping legacy metrics-service start and per-service token generation. Core services emit metrics natively via OpenTelemetry at :9464."
+fi
+
+# Now start all other services with the API keys in environment
+log "Starting remaining services..."
+$COMPOSE_CMD $COMPOSE_FILES up -d || handle_error "Failed to start remaining services"
+
+# Wait a moment for services to initialize
+log "Waiting for services to initialize..."
+sleep 10
+
+# Check service status
+log "Checking service status..."
+$COMPOSE_CMD $COMPOSE_FILES ps
+
+# Verify key services are running
+log "Verifying services are healthy..."
+
+# Check registry service
+if curl -f http://localhost:7860/health &>/dev/null; then
+    log "Registry service is healthy"
+else
+    log "WARNING: Registry service may still be starting up..."
+fi
+
+# Check auth service
+if curl -f http://localhost:8888/health &>/dev/null; then
+    log "Auth service is healthy"
+else
+    log "WARNING: Auth service may still be starting up..."
+fi
+
+# Check nginx is responding
+if curl -f http://localhost:80 &>/dev/null || curl -k -f https://localhost:443 &>/dev/null; then
+    log "Nginx is responding"
+else
+    log "WARNING: Nginx may still be starting up..."
+fi
+
+# Verify server list includes Atlassian
+log "Verifying server list..."
+if [ -f "$MCPGATEWAY_SERVERS_DIR/atlassian.json" ]; then
+    log "Atlassian server configuration present"
+fi
+
+# List all available server JSON files
+log "Available server configurations in $MCPGATEWAY_SERVERS_DIR:"
+if ls "$MCPGATEWAY_SERVERS_DIR"/*.json 2>/dev/null | head -n 10; then
+    TOTAL_SERVERS=$(ls "$MCPGATEWAY_SERVERS_DIR"/*.json 2>/dev/null | wc -l)
+    log "Total server configurations: $TOTAL_SERVERS"
+else
+    log "WARNING: No server configurations found in $MCPGATEWAY_SERVERS_DIR"
+fi
+
+
+log "Deployment completed successfully"
+log ""
+
+# Display correct URLs based on container engine
+if [[ "$COMPOSE_CMD" == "podman compose" ]]; then
+    log "Services are available at:"
+    log "  - Main interface: http://localhost:8080 or https://localhost:8443"
+    log "  - Registry API: http://localhost:7860"
+    log "  - Auth service: http://localhost:8888"
+    log "  - Current Time MCP: http://localhost:8000"
+    log "  - Real Server Fake Tools MCP: http://localhost:8002"
+    log "  - MCP Gateway MCP: http://localhost:8003"
+else
+    log "Services are available at:"
+    log "  - Main interface: http://localhost or https://localhost"
+    log "  - Registry API: http://localhost:7860"
+    log "  - Auth service: http://localhost:8888"
+    log "  - Current Time MCP: http://localhost:8000"
+    log "  - Real Server Fake Tools MCP: http://localhost:8002"
+    log "  - MCP Gateway MCP: http://localhost:8003"
+fi
+log ""
+log "To view logs for all services: $COMPOSE_CMD $COMPOSE_FILES logs -f"
+log "To view logs for a specific service: $COMPOSE_CMD $COMPOSE_FILES logs -f <service-name>"
+log "To stop services: $COMPOSE_CMD $COMPOSE_FILES down"
+log ""
+
+# Ask if user wants to follow logs
+read -p "Do you want to follow the logs? (y/n): " -n 1 -r
+echo
+if [[ $REPLY =~ ^[Yy]$ ]]; then
+    log "Following container logs (press Ctrl+C to stop following logs without stopping the services):"
+    echo "---------- CONTAINER LOGS ----------"
+    $COMPOSE_CMD $COMPOSE_FILES logs -f
+else
+    log "Services are running in the background. Use '$COMPOSE_CMD $COMPOSE_FILES logs -f' to view logs."
+fi

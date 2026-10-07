@@ -1,0 +1,30 @@
+{
+  "findings": [
+    {
+      "file_path": "SKILL.md",
+      "line_number": 15,
+      "severity": "CRITICAL",
+      "threat_names": ["prompt-injection"],
+      "threat_summary": "Detected prompt injection pattern in skill instructions",
+      "analyzer": "static",
+      "is_safe": false
+    },
+    {
+      "file_path": "SKILL.md",
+      "line_number": 42,
+      "severity": "HIGH",
+      "threat_names": ["data-exfiltration"],
+      "threat_summary": "Detected data exfiltration pattern sending data to external endpoint",
+      "analyzer": "behavioral",
+      "is_safe": false
+    }
+  ],
+  "summary": {
+    "total_findings": 2,
+    "critical": 1,
+    "high": 1,
+    "medium": 0,
+    "low": 0
+  },
+  "scan_status": "completed"
+}

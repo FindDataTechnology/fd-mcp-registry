@@ -1,0 +1,199 @@
+# Pre-commit hooks for MCP Gateway Registry
+# Install with: pre-commit install
+# Run manually: pre-commit run --all-files
+
+repos:
+  # Ruff - Fast Python linter and formatter
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.11.13
+    hooks:
+      # Run the linter with auto-fixes
+      - id: ruff
+        args: [--fix]
+        name: Ruff linter
+        description: Run ruff linter with auto-fixes
+
+      # Run the formatter
+      - id: ruff-format
+        name: Ruff formatter
+        description: Run ruff formatter
+
+  # Pre-commit hooks for file quality
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      # Remove trailing whitespace
+      - id: trailing-whitespace
+        name: Trim trailing whitespace
+        description: Remove trailing whitespace
+
+      # Ensure files end with newline
+      - id: end-of-file-fixer
+        name: Fix end of files
+        description: Ensure files end with a newline
+
+      # Check YAML syntax
+      - id: check-yaml
+        name: Check YAML
+        description: Validate YAML file syntax
+        # charts/ holds Helm templates (Go templating is not valid YAML).
+        exclude: ^(docker/|\.github/|charts/)
+
+      # Check JSON syntax
+      - id: check-json
+        name: Check JSON
+        description: Validate JSON file syntax
+        # Vendored LiteLLM cost map; upstream ships duplicate keys.
+        exclude: ^cli/src/utils/cost\.json$
+
+      # Prevent large files from being committed
+      - id: check-added-large-files
+        name: Check for large files
+        description: Prevent files larger than 500KB
+        args: ['--maxkb=500']
+
+      # Check for merge conflict markers
+      - id: check-merge-conflict
+        name: Check for merge conflicts
+        description: Check for merge conflict markers
+
+      # Detect private keys
+      - id: detect-private-key
+        name: Detect private keys
+        description: Check for private SSH keys
+        # Example/docs files contain PEM placeholders (BEGIN...\n...\nEND), not real keys.
+        exclude: ^(\.env\.example|docs/configuration\.md|terraform/aws-ecs/terraform\.tfvars\.example)$
+
+      # Check for case conflicts in filenames
+      - id: check-case-conflict
+        name: Check filename case conflicts
+        description: Check for case conflicts in filenames
+
+      # Check Python docstrings
+      - id: check-docstring-first
+        name: Check docstring is first
+        description: Ensure docstring comes first in Python files
+
+      # Check for debugger imports
+      - id: debug-statements
+        name: Check for debugger statements
+        description: Check for pdb and ipdb debugger statements
+
+  # Detect-secrets - Prevent secrets from being committed
+  #
+  # NOTE: .secrets.baseline is a SLIM baseline (no line numbers, no
+  # generated_at timestamp). This is deliberate: a non-slim baseline pins each
+  # allowlisted secret to a line number, so any edit that adds or removes a
+  # line above a secret shifts those numbers and makes the hook rewrite the
+  # baseline, failing CI on PRs that never touched a secret. A slim baseline
+  # is immune to line shifts while still blocking genuinely new secrets.
+  # When regenerating, always keep it slim:
+  #   detect-secrets scan --slim --exclude-files '^(tests/|docs/|cli/examples/)' > .secrets.baseline
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        name: Detect secrets
+        description: Prevent hardcoded secrets from being committed
+        args: ['--baseline', '.secrets.baseline']
+        exclude: ^(tests/|docs/|cli/examples/)
+
+  # Bandit - Security vulnerability scanner
+  - repo: https://github.com/PyCQA/bandit
+    rev: '1.8.3'
+    hooks:
+      - id: bandit
+        name: Bandit security scan
+        description: Scan for security vulnerabilities
+        args: ['-c', 'pyproject.toml']
+        additional_dependencies: ['bandit[toml]']
+        # Skip test code: the tests/ tree plus test_*/*_test files that live
+        # outside it (asserts are expected in tests, B101 would fire on all).
+        exclude: '^tests/|(^|/)(test_[^/]+|[^/]+_test)\.py$'
+
+  # MyPy - Static type checker
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.15.0
+    hooks:
+      - id: mypy
+        name: MyPy type checking
+        description: Static type checking
+        additional_dependencies:
+          - types-requests
+          - types-PyYAML
+          - pydantic
+        args: [--ignore-missing-imports, --no-strict-optional]
+        # Scope type checking to the importable application packages. Script
+        # trees (api/, cli/, servers/, credentials-provider/, terraform/,
+        # infra/ lambdas, sample agents) reuse module basenames without
+        # __init__.py, which collide under a single mypy invocation.
+        files: ^(registry|auth_server|metrics-service)/
+        exclude: ^(tests/|scripts/)
+
+  # Local hooks for project-specific checks
+  - repo: local
+    hooks:
+      # Run fast unit tests. Only triggers when Python files are staged
+      # (types: [python]); pass_filenames: false so it still runs the whole
+      # suite rather than just the changed files. Dropping always_run lets the
+      # file-type filter apply, so a docs- or chart-only commit skips it.
+      - id: pytest-fast
+        name: Run fast tests
+        entry: uv run --frozen pytest -m "not slow" --tb=short
+        language: system
+        pass_filenames: false
+        types: [python]
+        stages: [pre-commit]
+
+      # Python syntax check
+      - id: python-syntax
+        name: Check Python syntax
+        entry: python -m py_compile
+        language: system
+        types: [python]
+
+      # Shell script syntax check
+      - id: shell-syntax
+        name: Check shell script syntax
+        entry: bash -n
+        language: system
+        types: [shell]
+        exclude: ^(docker/|scripts/setup/)
+
+      # Flag the phrase-level LLM tells the writing skill bans
+      # (.claude/skills/writing/SKILL.md). ADVISORY ON PURPOSE: the script is
+      # not run with --strict, so it prints hits and exits 0 rather than
+      # blocking the commit. The markdown this hook scans carries 1715 hits
+      # across 117 of 321 files, with 389 in
+      # docs/unified-parameter-reference.md alone, so a blocking hook would
+      # wedge every docs change for prose nobody is touching. Read what it
+      # prints for the lines you wrote and ignore the rest.
+      # Generated prose IS held to --strict, at the point of generation: see
+      # the prose gate in .claude/skills/explainer/SKILL.md.
+      # To make this blocking later, clean the worst offenders first
+      # (docs/unified-parameter-reference.md, docs/SECURITY_GUIDELINES.md) and
+      # then add --strict here.
+      # Runs under the system python, not `uv run`: uv is not on PATH in the
+      # pre-commit CI runner, and this script imports only argparse, re and sys,
+      # so it needs no project environment. Matches the python-syntax hook below.
+      - id: prose-scan
+        name: Scan prose for LLM tells (advisory)
+        entry: python scripts/prose-scan.py
+        language: system
+        types: [markdown]
+        # The writing skill is excluded because it quotes every phrase it bans,
+        # so it reports a hit per ban-list entry by construction.
+        exclude: ^(CHANGELOG|\.github/|\.claude/skills/writing/SKILL\.md$)
+
+# Default stages
+default_stages: [pre-commit]
+
+# Default language version
+default_language_version:
+  python: python3.14
+
+# Fail fast - stop on first error
+fail_fast: false
+
+# Minimum pre-commit version
+minimum_pre_commit_version: '2.20.0'

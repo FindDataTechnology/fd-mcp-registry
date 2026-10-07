@@ -1,0 +1,878 @@
+import React, { useState, useCallback, useEffect } from 'react';
+import axios from 'axios';
+import {
+  StarIcon,
+  ArrowPathIcon,
+  CloudArrowDownIcon,
+  PencilIcon,
+  ClockIcon,
+  CheckCircleIcon,
+  XCircleIcon,
+  QuestionMarkCircleIcon,
+  ShieldCheckIcon,
+  ShieldExclamationIcon,
+  GlobeAltIcon,
+  LockClosedIcon,
+  InformationCircleIcon,
+  TrashIcon,
+} from '@heroicons/react/24/outline';
+import AgentDetailsModal from './AgentDetailsModal';
+import SecurityScanModal from './SecurityScanModal';
+import PullCardPreviewModal from './PullCardPreviewModal';
+import StarRatingWidget from './StarRatingWidget';
+import DeleteConfirmation from './DeleteConfirmation';
+import StatusBadge from './StatusBadge';
+import { ANSBadge } from './ANSBadge';
+import { formatRelativeTime } from '../utils/dateUtils';
+import { toScanSummary } from '../utils/securityScan';
+import { useI18n } from '../contexts/I18nContext';
+import type { TranslateFn } from '../i18n/t';
+import { SafeLink } from './SafeLink';
+import { localizeError } from '../utils/apiError';
+
+interface SyncMetadata {
+  is_federated?: boolean;
+  source_peer_id?: string;
+  upstream_path?: string;
+  last_synced_at?: string;
+  is_read_only?: boolean;
+  is_orphaned?: boolean;
+  orphaned_at?: string;
+}
+
+/**
+ * Agent interface representing an A2A agent.
+ */
+export interface Agent {
+  name: string;
+  path: string;
+  url?: string;
+  description?: string;
+  version?: string;
+  visibility?: 'public' | 'private' | 'group-restricted';
+  trust_level?: 'community' | 'verified' | 'trusted' | 'unverified';
+  enabled: boolean;
+  tags?: string[];
+  last_checked_time?: string;
+  usersCount?: number;
+  rating?: number;
+  rating_details?: Array<{ user: string; rating: number }>;
+  // Lightweight scan summary from the list payload, used to colour the shield
+  // icon without a per-card /security-scan fetch. Undefined if not yet scanned.
+  security_scan?: {
+    scan_failed?: boolean;
+    critical_issues?: number;
+    high_severity?: number;
+    medium_severity?: number;
+    low_severity?: number;
+  } | null;
+  status?: 'healthy' | 'healthy-auth-expired' | 'unhealthy' | 'unknown';
+  // Federation sync metadata
+  sync_metadata?: SyncMetadata;
+  // ARD discovery-only import: URL to the original server.json on the source registry
+  ard_source_url?: string;
+  // ANS verification metadata
+  ans_metadata?: {
+    ans_agent_id: string;
+    status: 'verified' | 'expired' | 'revoked' | 'not_found' | 'pending';
+    domain?: string;
+    organization?: string;
+    certificate?: {
+      not_after?: string;
+      subject_dn?: string;
+      issuer_dn?: string;
+    };
+    last_verified?: string;
+  };
+  // Lifecycle status
+  lifecycle_status?: 'active' | 'deprecated' | 'draft' | 'beta';
+  source_created_at?: string;
+  source_updated_at?: string;
+  // Supported protocol (e.g., 'a2a', 'mcp')
+  supported_protocol?: string | null;
+  // Gateway-proxy opt-in (registry extension): served through the generic hop.
+  is_proxied?: boolean;
+  proxy_target_url?: string;
+  // Read-only, auto-derived client path ({prefix}/{type}/{name}).
+  proxy_client_url?: string;
+}
+
+/**
+ * Props for the AgentCard component.
+ */
+interface AgentCardProps {
+  agent: Agent & { [key: string]: any };  // Allow additional fields from full agent JSON
+  onToggle: (path: string, enabled: boolean) => void;
+  onEdit?: (agent: Agent) => void;
+  canModify?: boolean;
+  canHealthCheck?: boolean;  // Whether user can run health check on this agent
+  canToggle?: boolean;       // Whether user can enable/disable this agent
+  canDelete?: boolean;       // Whether user can delete this agent
+  onDelete?: (path: string) => Promise<void>;  // Callback to delete the agent
+  onRefreshSuccess?: () => void;
+  onShowToast?: (message: string, type: 'success' | 'error') => void;
+  onAgentUpdate?: (path: string, updates: Partial<Agent>) => void;
+  authToken?: string | null;
+}
+
+/**
+ * Helper function to format time since last checked.
+ */
+const formatTimeSince = (
+  timestamp: string | null | undefined,
+  t: TranslateFn,
+): string | null => {
+  if (!timestamp) {
+    return null;
+  }
+
+  try {
+    const now = new Date();
+    const lastChecked = new Date(timestamp);
+
+    // Check if the date is valid
+    if (isNaN(lastChecked.getTime())) {
+      return null;
+    }
+
+    const diffMs = now.getTime() - lastChecked.getTime();
+
+    const diffSeconds = Math.floor(diffMs / 1000);
+    const diffMinutes = Math.floor(diffSeconds / 60);
+    const diffHours = Math.floor(diffMinutes / 60);
+    const diffDays = Math.floor(diffHours / 24);
+
+    let result;
+    if (diffSeconds < 0) {
+      result = t('just now');
+    } else if (diffDays > 0) {
+      result = t('{count}d ago', { count: diffDays });
+    } else if (diffHours > 0) {
+      result = t('{count}h ago', { count: diffHours });
+    } else if (diffMinutes > 0) {
+      result = t('{count}m ago', { count: diffMinutes });
+    } else {
+      result = t('{count}s ago', { count: diffSeconds });
+    }
+
+    return result;
+  } catch (error) {
+    console.error('formatTimeSince error:', error, 'for timestamp:', timestamp);
+    return null;
+  }
+};
+
+const normalizeHealthStatus = (status?: string | null): Agent['status'] => {
+  if (status === 'healthy' || status === 'healthy-auth-expired') {
+    return status;
+  }
+  if (status === 'unhealthy') {
+    return 'unhealthy';
+  }
+  return 'unknown';
+};
+
+/**
+ * AgentCard component for displaying A2A agents.
+ *
+ * Displays agent information with a distinct visual style from MCP servers,
+ * using blue/cyan tones and robot-themed icons.
+ */
+const AgentCard: React.FC<AgentCardProps> = React.memo(({
+  agent,
+  onToggle,
+  onEdit,
+  canModify,
+  canHealthCheck = true,
+  canToggle = true,
+  canDelete,
+  onDelete,
+  onRefreshSuccess,
+  onShowToast,
+  onAgentUpdate,
+  authToken
+}) => {
+  const { t, locale } = useI18n();
+  const [showDetails, setShowDetails] = useState(false);
+  const [loadingRefresh, setLoadingRefresh] = useState(false);
+  const [fullAgentDetails, setFullAgentDetails] = useState<any>(null);
+  const [loadingDetails, setLoadingDetails] = useState(false);
+  const [showSecurityScan, setShowSecurityScan] = useState(false);
+  // Seed from the list payload's lightweight scan summary so the shield icon
+  // colours correctly with no per-card fetch. The on-click handler upgrades this
+  // to the full scan document for the modal.
+  const [securityScanResult, setSecurityScanResult] = useState<any>(agent.security_scan ?? null);
+  const [loadingSecurityScan, setLoadingSecurityScan] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [loadingPullCard, setLoadingPullCard] = useState(false);
+  const [showPullCardModal, setShowPullCardModal] = useState(false);
+  const [pullCardResult, setPullCardResult] = useState<any>(null);
+
+  // Check if this is a federated agent from a peer registry using sync_metadata
+  const isFederatedAgent = agent.sync_metadata?.is_federated === true;
+  const peerRegistryId = isFederatedAgent && agent.sync_metadata?.source_peer_id
+    ? agent.sync_metadata.source_peer_id
+    : null;
+
+  // Check if this agent is orphaned (no longer exists on peer registry)
+  const isOrphanedAgent = agent.sync_metadata?.is_orphaned === true;
+
+  // Check if this is an ARD discovery-only import. The public ai-catalog.json
+  // gives metadata only, so these are read-only and non-connectable. Detected
+  // via the 'ard' tag or the read-only sync flag.
+  const isArdDiscovery =
+    (agent.tags || []).includes('ard') || agent.sync_metadata?.is_read_only === true;
+  // Link back to the original server.json on the source registry, if published.
+  const ardSourceUrl = agent.ard_source_url || agent.sync_metadata?.upstream_path;
+
+  // Keep the icon in sync with the list payload's scan summary. No fetch: the
+  // summary (scan_failed + severity counts) arrives inline on /api/agents, so a
+  // page of cards costs zero extra requests instead of one /security-scan each.
+  // Skip when the user has already opened the full detail (a richer object).
+  //
+  // Invariant: handleRescan MUST update the parent (onAgentUpdate) synchronously
+  // so agent.security_scan is fresh by the time the modal closes and this effect
+  // re-syncs. React 18 batches the rescan's state updates, so the prop is current
+  // on the next render; wrapping the modal close in setTimeout would break this.
+  useEffect(() => {
+    if (!showSecurityScan) {
+      setSecurityScanResult(agent.security_scan ?? null);
+    }
+  }, [agent.security_scan, showSecurityScan]);
+
+  const getStatusIcon = () => {
+    switch (agent.status) {
+      case 'healthy':
+        return <CheckCircleIcon className="h-4 w-4 text-green-500" />;
+      case 'healthy-auth-expired':
+        return <CheckCircleIcon className="h-4 w-4 text-orange-500" />;
+      case 'unhealthy':
+        return <XCircleIcon className="h-4 w-4 text-red-500" />;
+      default:
+        return <QuestionMarkCircleIcon className="h-4 w-4 text-gray-400" />;
+    }
+  };
+
+  const getTrustLevelColor = () => {
+    switch (agent.trust_level) {
+      case 'trusted':
+        return 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400 border border-green-200 dark:border-green-700';
+      case 'verified':
+        return 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400 border border-blue-200 dark:border-blue-700';
+      case 'community':
+      default:
+        return 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300 border border-gray-200 dark:border-gray-600';
+    }
+  };
+
+  const getTrustLevelIcon = () => {
+    switch (agent.trust_level) {
+      case 'trusted':
+        return <ShieldCheckIcon className="h-3 w-3" />;
+      case 'verified':
+        return <CheckCircleIcon className="h-3 w-3" />;
+      default:
+        return null;
+    }
+  };
+
+  const getVisibilityIcon = () => {
+    return agent.visibility === 'public' ? (
+      <GlobeAltIcon className="h-3 w-3" />
+    ) : (
+      <LockClosedIcon className="h-3 w-3" />
+    );
+  };
+
+  const handleRefreshHealth = useCallback(async () => {
+    if (loadingRefresh) return;
+
+    setLoadingRefresh(true);
+    try {
+      const headers = authToken ? { Authorization: `Bearer ${authToken}` } : undefined;
+      const response = await axios.post(
+        `/api/agents${agent.path}/health`,
+        undefined,
+        headers ? { headers } : undefined
+      );
+
+      // Update just this agent instead of triggering global refresh
+      if (onAgentUpdate && response.data) {
+        const updates: Partial<Agent> = {
+          status: normalizeHealthStatus(response.data.status),
+          last_checked_time: response.data.last_checked_iso
+        };
+
+        onAgentUpdate(agent.path, updates);
+      } else if (onRefreshSuccess) {
+        // Fallback to global refresh if onAgentUpdate is not provided
+        onRefreshSuccess();
+      }
+
+      if (onShowToast) {
+        onShowToast(t('Agent health status refreshed successfully'), 'success');
+      }
+    } catch (error: any) {
+      console.error('Failed to refresh agent health:', error);
+      if (onShowToast) {
+        onShowToast(localizeError(error, t, 'Failed to refresh agent health status'), 'error');
+      }
+    } finally {
+      setLoadingRefresh(false);
+    }
+  }, [agent.path, authToken, loadingRefresh, onRefreshSuccess, onShowToast, onAgentUpdate, t]);
+
+  const handleCopyDetails = useCallback(
+    async (data: any) => {
+      try {
+        await navigator.clipboard.writeText(JSON.stringify(data, null, 2));
+        onShowToast?.(t('Full agent JSON copied to clipboard!'), 'success');
+      } catch (error) {
+        console.error('Failed to copy JSON:', error);
+        onShowToast?.(t('Failed to copy JSON'), 'error');
+      }
+    },
+    [onShowToast, t]
+  );
+
+  const handleViewSecurityScan = useCallback(async () => {
+    if (loadingSecurityScan) return;
+
+    setShowSecurityScan(true);
+    setLoadingSecurityScan(true);
+    try {
+      const headers = authToken ? { Authorization: `Bearer ${authToken}` } : undefined;
+      const response = await axios.get(
+        `/api/agents${agent.path}/security-scan`,
+        headers ? { headers } : undefined
+      );
+      setSecurityScanResult(response.data);
+    } catch (error: any) {
+      if (error.response?.status !== 404) {
+        console.error('Failed to fetch security scan:', error);
+        if (onShowToast) {
+          onShowToast(t('Failed to load security scan results'), 'error');
+        }
+      }
+      setSecurityScanResult(null);
+    } finally {
+      setLoadingSecurityScan(false);
+    }
+  }, [agent.path, authToken, loadingSecurityScan, onShowToast, t]);
+
+  const handleRescan = useCallback(async () => {
+    const headers = authToken ? { Authorization: `Bearer ${authToken}` } : undefined;
+    const response = await axios.post(
+      `/api/agents${agent.path}/rescan`,
+      undefined,
+      headers ? { headers } : undefined
+    );
+    // Show the full result in the open modal, and push the lightweight summary
+    // up so agent.security_scan (the list entry) reflects the new scan. Without
+    // this the prop-sync effect would revert the badge to the stale list value
+    // when the modal closes.
+    setSecurityScanResult(response.data);
+    onAgentUpdate?.(agent.path, { security_scan: toScanSummary(response.data) });
+  }, [agent.path, authToken, onAgentUpdate]);
+
+  const getSecurityIconState = () => {
+    // Gray: no scan result yet
+    if (!securityScanResult) {
+      return { Icon: ShieldCheckIcon, color: 'text-gray-400 dark:text-gray-500', title: t('View security scan results') };
+    }
+    // Red: scan failed or any vulnerabilities found
+    if (securityScanResult.scan_failed) {
+      return { Icon: ShieldExclamationIcon, color: 'text-red-500 dark:text-red-400', title: t('Security scan failed') };
+    }
+    const hasVulnerabilities = securityScanResult.critical_issues > 0 ||
+      securityScanResult.high_severity > 0 ||
+      securityScanResult.medium_severity > 0 ||
+      securityScanResult.low_severity > 0;
+    if (hasVulnerabilities) {
+      return { Icon: ShieldExclamationIcon, color: 'text-red-500 dark:text-red-400', title: t('Security issues found') };
+    }
+    // Green: scan passed with no vulnerabilities
+    return { Icon: ShieldCheckIcon, color: 'text-green-500 dark:text-green-400', title: t('Security scan passed') };
+  };
+
+  const handlePullCard = useCallback(async () => {
+    if (loadingPullCard) return;
+
+    setLoadingPullCard(true);
+    setShowPullCardModal(true);
+    setPullCardResult(null);
+
+    try {
+      const headers = authToken ? { Authorization: `Bearer ${authToken}` } : undefined;
+      const response = await axios.post(
+        `/api/agents${agent.path}/pull-card?dry_run=true`,
+        undefined,
+        headers ? { headers } : undefined
+      );
+      setPullCardResult(response.data);
+    } catch (error: any) {
+      console.error('Failed to pull agent card:', error);
+      if (onShowToast) {
+        onShowToast(
+          localizeError(error, t, 'Failed to fetch remote agent card'),
+          'error'
+        );
+      }
+      setShowPullCardModal(false);
+    } finally {
+      setLoadingPullCard(false);
+    }
+  }, [agent.path, authToken, loadingPullCard, onShowToast, t]);
+
+  const handleApplyPullCard = useCallback(async () => {
+    try {
+      const headers = authToken ? { Authorization: `Bearer ${authToken}` } : undefined;
+      const response = await axios.post(
+        `/api/agents${agent.path}/pull-card?dry_run=false`,
+        undefined,
+        headers ? { headers } : undefined
+      );
+
+      if (response.data.applied) {
+        if (onShowToast) {
+          onShowToast(
+            t('Applied {count} field changes from remote card', {
+              count: response.data.changes.length,
+            }),
+            'success'
+          );
+        }
+        if (onRefreshSuccess) {
+          onRefreshSuccess();
+        }
+      } else {
+        if (onShowToast) {
+          onShowToast(t('No changes to apply'), 'success');
+        }
+      }
+      setShowPullCardModal(false);
+      setPullCardResult(null);
+    } catch (error: any) {
+      console.error('Failed to apply card changes:', error);
+      if (onShowToast) {
+        onShowToast(
+          localizeError(error, t, 'Failed to apply card changes'),
+          'error'
+        );
+      }
+    }
+  }, [agent.path, authToken, onShowToast, onRefreshSuccess, t]);
+
+  return (
+    <>
+      <div className="group rounded-2xl shadow-sm hover:shadow-xl transition-all duration-300 h-full flex flex-col bg-gradient-to-br from-cyan-50 to-blue-50 dark:from-cyan-900/20 dark:to-blue-900/20 border-2 border-cyan-200 dark:border-cyan-700 hover:border-cyan-300 dark:hover:border-cyan-600">
+        {showDeleteConfirm ? (
+          /* Delete Confirmation - replaces card content when active */
+          <div className="p-5 h-full flex flex-col justify-center">
+            <DeleteConfirmation
+              entityType="agent"
+              entityName={agent.name || agent.path.replace(/^\//, '')}
+              entityPath={agent.path}
+              onConfirm={onDelete!}
+              onCancel={() => setShowDeleteConfirm(false)}
+            />
+          </div>
+        ) : (
+          /* Normal card content */
+          <>
+            {/* Header */}
+            <div className="p-5 pb-4">
+              <div className="flex items-start justify-between mb-4">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center flex-wrap gap-2 mb-3">
+                    <h3 className="text-lg font-bold text-gray-900 dark:text-white truncate">
+                      {agent.name}
+                    </h3>
+                    {agent.lifecycle_status && agent.lifecycle_status !== 'active' && (
+                      <StatusBadge status={agent.lifecycle_status} />
+                    )}
+                    {/* Check if this is an ASOR agent */}
+                    {(agent.tags?.includes('asor') || (agent as any).provider === 'ASOR') && (
+                      <span className="px-2 py-0.5 text-xs font-semibold bg-gradient-to-r from-orange-100 to-red-100 text-orange-700 dark:from-orange-900/30 dark:to-red-900/30 dark:text-orange-300 rounded-full flex-shrink-0 border border-orange-200 dark:border-orange-600">
+                        ASOR
+                      </span>
+                    )}
+                    {/* Proxied badge - served through the gateway generic hop */}
+                    {agent.is_proxied && (
+                      <span
+                        className="px-2 py-0.5 text-xs font-semibold bg-cyan-100 text-cyan-700 dark:bg-cyan-900/30 dark:text-cyan-300 rounded-full flex-shrink-0 border border-cyan-200 dark:border-cyan-600"
+                        title={
+                          agent.proxy_client_url
+                            ? t('Clients connect at {url}', { url: agent.proxy_client_url }) +
+                              (agent.proxy_target_url
+                                ? t('(forwards to {url})', { url: agent.proxy_target_url })
+                                : '')
+                            : t('Served through the gateway proxy')
+                        }
+                      >
+                        {t('Proxied')}
+                      </span>
+                    )}
+                    {/* A2A tag badge (for AgentCore imported agents) */}
+                    {agent.tags?.includes('a2a') && (
+                      <span className="px-2 py-0.5 text-xs font-semibold bg-gradient-to-r from-emerald-100 to-teal-100 text-emerald-700 dark:from-emerald-900/30 dark:to-teal-900/30 dark:text-emerald-300 rounded-full flex-shrink-0 border border-emerald-200 dark:border-emerald-600">
+                        A2A
+                      </span>
+                    )}
+                    {/* Supported Protocol Badge */}
+                    {agent.supported_protocol === 'a2a' && !agent.tags?.includes('a2a') && (
+                      <span className="inline-flex items-center px-2 py-0.5 text-xs font-medium bg-cyan-50 dark:bg-cyan-900/30 text-cyan-700 dark:text-cyan-300 rounded border border-cyan-200 dark:border-cyan-700">
+                        {t('A2A Protocol')}
+                      </span>
+                    )}
+                    {agent.trust_level && (
+                      <span className={`px-2 py-0.5 text-xs font-semibold rounded-full flex-shrink-0 flex items-center gap-1 ${getTrustLevelColor()}`}>
+                        {getTrustLevelIcon()}
+                        {agent.trust_level.toUpperCase()}
+                      </span>
+                    )}
+                    {agent.visibility && (
+                      <span className={`px-2 py-0.5 text-xs font-semibold rounded-full flex-shrink-0 flex items-center gap-1 ${
+                        agent.visibility === 'public'
+                          ? 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400 border border-blue-200 dark:border-blue-700'
+                          : 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300 border border-gray-200 dark:border-gray-600'
+                      }`}>
+                        {getVisibilityIcon()}
+                        {agent.visibility.toUpperCase()}
+                      </span>
+                    )}
+                    {/* Registry source badge - only show for federated (peer registry) items */}
+                    {isFederatedAgent && (
+                      <span className="px-2 py-0.5 text-xs font-semibold bg-gradient-to-r from-violet-100 to-purple-100 text-violet-700 dark:from-violet-900/30 dark:to-purple-900/30 dark:text-violet-300 rounded-full flex-shrink-0 border border-violet-200 dark:border-violet-600" title={t('Synced from {peer}', { peer: peerRegistryId ?? '' })}>
+                        {peerRegistryId?.toUpperCase().replace('PEER-REGISTRY-', '').replace('PEER-', '')}
+                        {/* ARD marker — this peer is an ai-catalog (ARD) registry. */}
+                        {isArdDiscovery && (
+                          <span className="ml-1 text-[10px] font-bold text-violet-500 dark:text-violet-400" title={t('ARD (ai-catalog.json) registry')}>
+                            ARD
+                          </span>
+                        )}
+                      </span>
+                    )}
+                    {/* Orphaned badge - agent no longer exists on peer registry */}
+                    {isOrphanedAgent && (
+                      <span className="px-2 py-0.5 text-xs font-semibold bg-gradient-to-r from-red-100 to-rose-100 text-red-700 dark:from-red-900/30 dark:to-rose-900/30 dark:text-red-300 rounded-full flex-shrink-0 border border-red-200 dark:border-red-600" title={t('No longer exists on peer registry')}>
+                        {t('ORPHANED')}
+                      </span>
+                    )}
+                    {/* Discovery badge - ARD discovery-only import (metadata only) */}
+                    {isArdDiscovery && (
+                      <span className="px-2 py-0.5 text-xs font-semibold bg-gradient-to-r from-slate-100 to-gray-100 text-slate-700 dark:from-slate-900/30 dark:to-gray-900/30 dark:text-slate-300 rounded-full flex-shrink-0 border border-slate-200 dark:border-slate-600" title={t('Discovery-only import — resolve and connect at the source registry')}>
+                        {t('Discovery')}
+                      </span>
+                    )}
+                  </div>
+                  {/* ANS Verified badge on its own row to avoid overlap */}
+                  {agent.ans_metadata && (
+                    <div className="mt-1">
+                      <ANSBadge ansMetadata={agent.ans_metadata} compact />
+                    </div>
+                  )}
+
+                  <code className="text-xs text-gray-600 dark:text-gray-300 bg-gray-50 dark:bg-gray-800/50 px-2 py-1 rounded font-mono">
+                    {agent.path}
+                  </code>
+                  {agent.version && (
+                    <span className="ml-2 text-xs text-gray-500 dark:text-gray-400">
+                      v{agent.version}
+                    </span>
+                  )}
+                  {agent.url && (
+                    <SafeLink
+                      href={agent.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="mt-2 inline-flex items-center gap-1 text-xs text-cyan-700 dark:text-cyan-300 break-all hover:underline"
+                    >
+                      <span className="font-mono">{agent.url}</span>
+                    </SafeLink>
+                  )}
+                </div>
+
+                {canModify && !isArdDiscovery && (
+                  <button
+                    className="p-2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50 rounded-lg transition-all duration-200 flex-shrink-0"
+                    onClick={() => onEdit?.(agent)}
+                    title={t('Edit agent')}
+                  >
+                    <PencilIcon className="h-4 w-4" />
+                  </button>
+                )}
+
+                {/* Security Scan + Full Details — interactive actions, hidden for
+                    ARD discovery-only imports so the card is fully read-only. */}
+                {!isArdDiscovery && (
+                  <>
+                  {/* Security Scan Button */}
+                  <button
+                    onClick={handleViewSecurityScan}
+                    className={`p-2 hover:bg-gray-50 dark:hover:bg-gray-700/50 rounded-lg transition-all duration-200 flex-shrink-0 ${getSecurityIconState().color}`}
+                    title={getSecurityIconState().title}
+                    aria-label={t('View security scan results')}
+                  >
+                    {React.createElement(getSecurityIconState().Icon, { className: "h-4 w-4" })}
+                  </button>
+
+                  {/* Full Details Button */}
+                  <button
+                    onClick={async () => {
+                      setShowDetails(true);
+                      setLoadingDetails(true);
+                      try {
+                        const response = await axios.get(`/api/agents${agent.path}`);
+                        setFullAgentDetails(response.data);
+                      } catch (error) {
+                        console.error('Failed to fetch agent details:', error);
+                        if (onShowToast) {
+                          onShowToast(t('Failed to load full agent details'), 'error');
+                        }
+                      } finally {
+                        setLoadingDetails(false);
+                      }
+                    }}
+                    className="p-2 text-gray-400 hover:text-blue-600 dark:hover:text-blue-300 hover:bg-blue-50 dark:hover:bg-blue-700/50 rounded-lg transition-all duration-200 flex-shrink-0"
+                    title={t('View full agent details (JSON)')}
+                  >
+                    <InformationCircleIcon className="h-4 w-4" />
+                  </button>
+                  </>
+                )}
+
+                {/* Delete Button */}
+                {canDelete && !isArdDiscovery && (
+                  <button
+                    onClick={() => setShowDeleteConfirm(true)}
+                    className="p-2 text-gray-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-700/50 rounded-lg transition-all duration-200 flex-shrink-0"
+                    title={t('Delete agent')}
+                    aria-label={t('Delete {name}', { name: agent.name })}
+                  >
+                    <TrashIcon className="h-4 w-4" />
+                  </button>
+                )}
+              </div>
+
+              {/* Description */}
+              <p className="text-gray-600 dark:text-gray-300 text-sm leading-relaxed line-clamp-2 mb-4">
+                {agent.description || t('No description available')}
+              </p>
+
+              {/* ARD discovery-only: link back to the source registry's server.json,
+                  if the source published it (ard_source_url / upstream_path). */}
+              {isArdDiscovery && ardSourceUrl && (
+                <SafeLink
+                  href={ardSourceUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="mb-4 inline-flex items-center gap-1 text-xs text-blue-600 dark:text-blue-400 hover:underline"
+                >
+                  {t('View at source ↗')}
+                </SafeLink>
+              )}
+
+              {/* Tags */}
+              {agent.tags && agent.tags.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 mb-4">
+                  {agent.tags.slice(0, 3).map((tag) => (
+                    <span
+                      key={tag}
+                      className="px-2 py-1 text-xs font-medium bg-cyan-50 dark:bg-cyan-900/30 text-cyan-700 dark:text-cyan-300 rounded"
+                    >
+                      #{tag}
+                    </span>
+                  ))}
+                  {agent.tags.length > 3 && (
+                    <span className="px-2 py-1 text-xs font-medium bg-gray-50 dark:bg-gray-800 text-gray-600 dark:text-gray-300 rounded">
+                      +{agent.tags.length - 3}
+                    </span>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Stats — rating block hidden for ARD discovery-only imports (read-only). */}
+            {!isArdDiscovery && (
+              <div className="px-5 pb-4">
+                <StarRatingWidget
+                  resourceType="agents"
+                  path={agent.path}
+                  initialRating={agent.rating || 0}
+                  initialCount={agent.rating_details?.length || 0}
+                  ratingDetails={agent.rating_details}
+                  authToken={authToken}
+                  onShowToast={onShowToast}
+                  onRatingUpdate={(newRating) => {
+                    // Update local agent rating when user submits rating
+                    if (onAgentUpdate) {
+                      onAgentUpdate(agent.path, { rating: newRating });
+                    }
+                  }}
+                />
+              </div>
+            )}
+
+            {/* Footer */}
+            <div className="mt-auto px-5 py-4 border-t border-cyan-100 dark:border-cyan-700 bg-cyan-50/50 dark:bg-cyan-900/30 rounded-b-2xl">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-4">
+                  {/* Status Indicators — entirely hidden for ARD discovery-only
+                      imports: they are always enabled and read-only (so the green
+                      "Enabled" dot is pointless), and have no health check. */}
+                  {!isArdDiscovery && (
+                    <>
+                      <div className="flex items-center gap-2">
+                        <div className={`w-3 h-3 rounded-full ${
+                          agent.enabled
+                            ? 'bg-green-400 shadow-lg shadow-green-400/30'
+                            : 'bg-gray-300 dark:bg-gray-600'
+                        }`} />
+                        <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                          {agent.enabled ? t('Enabled') : t('Disabled')}
+                        </span>
+                      </div>
+
+                      <div className="w-px h-4 bg-cyan-200 dark:bg-cyan-600" />
+
+                      <div className="flex items-center gap-2">
+                        <div className={`w-3 h-3 rounded-full ${
+                          agent.status === 'healthy'
+                            ? 'bg-emerald-400 shadow-lg shadow-emerald-400/30'
+                            : agent.status === 'healthy-auth-expired'
+                            ? 'bg-orange-400 shadow-lg shadow-orange-400/30'
+                            : agent.status === 'unhealthy'
+                            ? 'bg-red-400 shadow-lg shadow-red-400/30'
+                            : 'bg-amber-400 shadow-lg shadow-amber-400/30'
+                        }`} />
+                        <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                          {agent.status === 'healthy' ? t('Healthy') :
+                           agent.status === 'healthy-auth-expired' ? t('Healthy (Auth Expired)') :
+                           agent.status === 'unhealthy' ? t('Unhealthy') : t('Unknown')}
+                        </span>
+                      </div>
+                    </>
+                  )}
+                </div>
+
+                {/* Controls */}
+                <div className="flex items-center gap-3">
+                  {/* Last Updated (source timestamp) */}
+                  {agent.source_updated_at && (
+                    <div className="text-xs text-gray-500 dark:text-gray-300 flex items-center gap-1.5">
+                      <ClockIcon className="h-3.5 w-3.5" />
+                      <span title={new Date(agent.source_updated_at).toLocaleString()}>
+                        {formatRelativeTime(agent.source_updated_at, locale)}
+                      </span>
+                    </div>
+                  )}
+
+                  {/* Last Checked */}
+                  {(() => {
+                    const timeText = formatTimeSince(agent.last_checked_time, t);
+                    return agent.last_checked_time && timeText && !agent.source_updated_at ? (
+                      <div className="text-xs text-gray-500 dark:text-gray-300 flex items-center gap-1.5">
+                        <ClockIcon className="h-3.5 w-3.5" />
+                        <span>{timeText}</span>
+                      </div>
+                    ) : null;
+                  })()}
+
+                  {/* Refresh Button - only show if user has health_check_agent permission.
+                      Hidden for ARD discovery-only imports (no health check). */}
+                  {canHealthCheck && !isArdDiscovery && (
+                    <button
+                      onClick={handleRefreshHealth}
+                      disabled={loadingRefresh}
+                      className="p-2.5 text-gray-500 hover:text-cyan-600 dark:hover:text-cyan-400 hover:bg-cyan-50 dark:hover:bg-cyan-900/20 rounded-lg transition-all duration-200 disabled:opacity-50"
+                      title={t('Refresh agent health status')}
+                    >
+                      <ArrowPathIcon className={`h-4 w-4 ${loadingRefresh ? 'animate-spin' : ''}`} />
+                    </button>
+                  )}
+
+                  {/* Pull Card - only for A2A agents the user can modify and that aren't federated */}
+                  {canModify && agent.supported_protocol === 'a2a' && !isFederatedAgent && !isArdDiscovery && (
+                    <button
+                      onClick={handlePullCard}
+                      disabled={loadingPullCard}
+                      className="p-2.5 text-gray-500 hover:text-cyan-600 dark:hover:text-cyan-400 hover:bg-cyan-50 dark:hover:bg-cyan-900/20 rounded-lg transition-all duration-200 disabled:opacity-50"
+                      title={t('Pull latest agent card from remote')}
+                      aria-label={t('Pull latest agent card')}
+                    >
+                      <CloudArrowDownIcon className={`h-4 w-4 ${loadingPullCard ? 'animate-pulse' : ''}`} />
+                    </button>
+                  )}
+
+                  {/* Toggle Switch - only show if user has toggle_agent permission.
+                      Hidden for ARD discovery-only imports (read-only record). */}
+                  {canToggle && !isArdDiscovery && (
+                    <label className="relative inline-flex items-center cursor-pointer" onClick={(e) => e.stopPropagation()}>
+                      <input
+                        type="checkbox"
+                        checked={agent.enabled}
+                        onChange={(e) => {
+                          e.stopPropagation();
+                          onToggle(agent.path, e.target.checked);
+                        }}
+                        className="sr-only peer"
+                      />
+                      <div className={`relative w-12 h-6 rounded-full transition-colors duration-200 ease-in-out ${
+                        agent.enabled
+                          ? 'bg-cyan-600'
+                          : 'bg-gray-300 dark:bg-gray-600'
+                      }`}>
+                        <div className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full transition-transform duration-200 ease-in-out ${
+                          agent.enabled ? 'translate-x-6' : 'translate-x-0'
+                        }`} />
+                      </div>
+                    </label>
+                  )}
+                </div>
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+
+      <AgentDetailsModal
+        agent={agent}
+        isOpen={showDetails}
+        onClose={() => setShowDetails(false)}
+        loading={loadingDetails}
+        fullDetails={fullAgentDetails}
+        onCopy={handleCopyDetails}
+      />
+
+      <SecurityScanModal
+        resourceName={agent.name}
+        resourceType="agent"
+        isOpen={showSecurityScan}
+        onClose={() => setShowSecurityScan(false)}
+        loading={loadingSecurityScan}
+        scanResult={securityScanResult}
+        onRescan={canModify ? handleRescan : undefined}
+        canRescan={canModify}
+        onShowToast={onShowToast}
+      />
+
+      <PullCardPreviewModal
+        isOpen={showPullCardModal}
+        onClose={() => {
+          setShowPullCardModal(false);
+          setPullCardResult(null);
+        }}
+        onApply={handleApplyPullCard}
+        loading={loadingPullCard}
+        result={pullCardResult}
+        agentName={agent.name}
+      />
+
+    </>
+  );
+});
+
+AgentCard.displayName = 'AgentCard';
+
+export default AgentCard;

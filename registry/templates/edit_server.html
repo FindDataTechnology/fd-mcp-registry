@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Edit Server - {{ server.server_name }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='/style.css') }}">
+    <style>
+        /* Add some specific styles for the edit form */
+        .edit-form-container {
+            max-width: 600px;
+            margin: 20px auto;
+            padding: 20px;
+            background-color: #fff;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .edit-form-container h1 {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        .form-group input[type="text"],
+        .form-group input[type="url"],
+        .form-group input[type="number"],
+        .form-group textarea {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            box-sizing: border-box; /* Important for padding */
+        }
+        .form-group textarea {
+            min-height: 80px;
+            resize: vertical;
+        }
+        .form-group input[type="checkbox"] {
+             margin-right: 5px;
+        }
+        .form-actions {
+            text-align: right;
+            margin-top: 20px;
+        }
+        .form-actions button,
+        .form-actions a {
+            padding: 10px 15px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            text-decoration: none;
+            margin-left: 10px;
+        }
+        .form-actions button[type="submit"] {
+            background-color: #007bff;
+            color: white;
+        }
+        .form-actions a {
+            background-color: #ccc;
+            color: #333;
+        }
+        .path-display {
+            background-color: #eee;
+            padding: 8px;
+            border-radius: 4px;
+            font-family: monospace;
+        }
+    </style>
+</head>
+<body>
+    <div class="edit-form-container">
+        <h1>Edit Server: {{ server.server_name }}</h1>
+        {% if user_context and not user_context.can_modify_servers %}
+            <div style="background-color: #fff3cd; border: 1px solid #ffeaa7; padding: 10px; border-radius: 4px; margin-bottom: 15px;">
+                <strong>⚠️ Warning:</strong> You do not have sufficient permissions to edit servers.
+            </div>
+        {% endif %}
+        <form action="/edit{{ server.path }}" method="post">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <div class="form-group">
+                <label for="path">Path (Read-only)</label>
+                <div class="path-display">{{ server.path }}</div>
+                <!-- Path is not editable to avoid filename/state issues -->
+            </div>
+            <div class="form-group">
+                <label for="name">Server Name</label>
+                <input type="text" id="name" name="name" value="{{ server.server_name }}" required>
+            </div>
+            <div class="form-group">
+                <label for="description">Description</label>
+                <textarea id="description" name="description">{{ server.description | default('') }}</textarea>
+            </div>
+            <div class="form-group">
+                <label for="proxy_pass_url">Proxy Pass URL</label>
+                <input type="url" id="proxy_pass_url" name="proxy_pass_url" value="{{ server.proxy_pass_url | default('') }}" required>
+            </div>
+            <div class="form-group">
+                <label for="tags">Tags (comma-separated)</label>
+                <input type="text" id="tags" name="tags" value="{{ server.tags | join(', ') }}">
+            </div>
+            <div class="form-group">
+                <label for="num_tools">Number of Tools</label>
+                <input type="number" id="num_tools" name="num_tools" value="{{ server.num_tools | default(0) }}" min="0">
+            </div>
+            <div class="form-group">
+                <label for="license">License</label>
+                <input type="text" id="license" name="license" value="{{ server.license | default('N/A') }}">
+            </div>
+            <div class="form-group">
+                <label for="visibility">Federation Visibility</label>
+                <select id="visibility" name="visibility" onchange="toggleAllowedGroups()">
+                    <option value="public" {% if server.visibility == 'public' or not server.visibility %}selected{% endif %}>Public (shared with all peers)</option>
+                    <option value="group-restricted" {% if server.visibility == 'group-restricted' %}selected{% endif %}>Group Restricted (shared with specific groups)</option>
+                    <option value="internal" {% if server.visibility == 'internal' %}selected{% endif %}>Internal (never shared)</option>
+                </select>
+            </div>
+            <div class="form-group" id="allowed-groups-container" style="{% if server.visibility != 'group-restricted' %}display: none;{% endif %}">
+                <label for="allowed_groups">Allowed Groups (comma-separated)</label>
+                <input type="text" id="allowed_groups" name="allowed_groups" value="{{ server.allowed_groups | default([]) | join(', ') }}" placeholder="e.g., engineering, devops">
+                <small style="color: #666;">Groups that can access this server when visibility is group-restricted</small>
+            </div>
+            <script>
+                function toggleAllowedGroups() {
+                    var visibility = document.getElementById('visibility').value;
+                    var container = document.getElementById('allowed-groups-container');
+                    container.style.display = visibility === 'group-restricted' ? 'block' : 'none';
+                }
+                function toggleEditAuthFields() {
+                    var scheme = document.getElementById('auth_scheme').value;
+                    var credContainer = document.getElementById('auth-credential-container');
+                    var headerContainer = document.getElementById('auth-header-container');
+                    var credLabel = document.getElementById('auth-credential-label');
+                    var credInput = document.getElementById('auth_credential');
+
+                    if (scheme === 'none') {
+                        credContainer.style.display = 'none';
+                        headerContainer.style.display = 'none';
+                        credInput.value = '';
+                    } else if (scheme === 'bearer') {
+                        credContainer.style.display = 'block';
+                        headerContainer.style.display = 'none';
+                        credLabel.textContent = 'Bearer Token';
+                        credInput.placeholder = 'Enter new bearer token (leave blank to keep existing)';
+                    } else if (scheme === 'api_key') {
+                        credContainer.style.display = 'block';
+                        headerContainer.style.display = 'block';
+                        credLabel.textContent = 'API Key';
+                        credInput.placeholder = 'Enter new API key (leave blank to keep existing)';
+                    }
+                }
+            </script>
+            <hr style="margin: 16px 0;">
+            <h3 style="margin-bottom: 8px;">Backend Authentication</h3>
+            <small style="color: #666; display: block; margin-bottom: 12px;">Configure credentials the gateway uses when proxying requests to this backend server.</small>
+            <div class="form-group">
+                <label for="auth_scheme">Authentication Scheme</label>
+                <select id="auth_scheme" name="auth_scheme" onchange="toggleEditAuthFields()">
+                    <option value="none" {% if not server.auth_scheme or server.auth_scheme == 'none' %}selected{% endif %}>None</option>
+                    <option value="bearer" {% if server.auth_scheme == 'bearer' %}selected{% endif %}>Bearer Token</option>
+                    <option value="api_key" {% if server.auth_scheme == 'api_key' %}selected{% endif %}>API Key</option>
+                </select>
+            </div>
+            <div class="form-group" id="auth-credential-container" style="{% if not server.auth_scheme or server.auth_scheme == 'none' %}display: none;{% endif %}">
+                <label for="auth_credential" id="auth-credential-label">{% if server.auth_scheme == 'bearer' %}Bearer Token{% elif server.auth_scheme == 'api_key' %}API Key{% else %}Credential{% endif %}</label>
+                <input type="password" id="auth_credential" name="auth_credential" placeholder="Leave blank to keep existing credential">
+                <small style="color: #666;">Only fill in to update the credential. Leave blank to keep the current one.</small>
+            </div>
+            <div class="form-group" id="auth-header-container" style="{% if server.auth_scheme != 'api_key' %}display: none;{% endif %}">
+                <label for="auth_header_name">Header Name</label>
+                <input type="text" id="auth_header_name" name="auth_header_name" value="{{ server.auth_header_name | default('X-API-Key') }}" placeholder="X-API-Key">
+                <small style="color: #666;">The HTTP header name used to send the API key (default: X-API-Key)</small>
+            </div>
+            <h4 style="margin-top: 24px;">Additional Headers</h4>
+            <small style="color: #666; display: block; margin-bottom: 12px;">Fixed HTTP headers your MCP server requires. Values are encrypted at rest.</small>
+            <div id="custom-headers-list">
+                {% for h in server.get('custom_header_names', []) %}
+                <div class="custom-header-row" style="display: flex; gap: 8px; margin-bottom: 8px;">
+                    <input type="text" class="ch-name" value="{{ h }}" placeholder="X-My-Header" style="flex: 1;" />
+                    <input type="password" class="ch-value" placeholder="Value unchanged" style="flex: 1;" />
+                    <button type="button" onclick="removeCustomHeaderRow(this)" style="color: red; border: none; background: none; cursor: pointer;">Remove</button>
+                </div>
+                {% endfor %}
+            </div>
+            <button type="button" onclick="addCustomHeaderRow()" style="margin-bottom: 16px; color: #2563eb; border: none; background: none; cursor: pointer;">+ Add header</button>
+            <input type="hidden" id="custom_headers_json" name="custom_headers" />
+
+            <div class="form-actions">
+                <a href="{{ url_for('read_root') }}">Cancel</a>
+                <button type="submit">Save Changes</button>
+            </div>
+        </form>
+    </div>
+<script>
+function addCustomHeaderRow() {
+    const list = document.getElementById('custom-headers-list');
+    const row = document.createElement('div');
+    row.className = 'custom-header-row';
+    row.style.cssText = 'display: flex; gap: 8px; margin-bottom: 8px;';
+    row.innerHTML = '<input type="text" class="ch-name" placeholder="X-My-Header" style="flex: 1;" />' +
+        '<input type="password" class="ch-value" placeholder="header value" style="flex: 1;" />' +
+        '<button type="button" onclick="removeCustomHeaderRow(this)" style="color: red; border: none; background: none; cursor: pointer;">Remove</button>';
+    list.appendChild(row);
+}
+
+function removeCustomHeaderRow(btn) {
+    btn.parentElement.remove();
+}
+
+document.querySelector('form').addEventListener('submit', function() {
+    const rows = document.querySelectorAll('.custom-header-row');
+    const headers = [];
+    rows.forEach(function(row) {
+        const name = row.querySelector('.ch-name').value.trim();
+        const value = row.querySelector('.ch-value').value;
+        if (name) {
+            headers.push({ name: name, value: value });
+        }
+    });
+    if (headers.length > 0) {
+        document.getElementById('custom_headers_json').value = JSON.stringify(headers);
+    } else {
+        document.getElementById('custom_headers_json').value = '';
+    }
+});
+</script>
+</body>
+</html>

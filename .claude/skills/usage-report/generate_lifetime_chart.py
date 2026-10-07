@@ -1,0 +1,277 @@
+"""Generate a density plot showing registry instance age distribution.
+
+Reads the metrics JSON (which contains instance_lifetime data) and
+produces a PNG with a histogram + KDE overlay of instance ages in days.
+"""
+
+import argparse
+import json
+import logging
+import os
+
+import matplotlib
+
+matplotlib.use("Agg")
+
+import sys as _sys
+
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+_sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from tufte_style import apply_tufte_style, tufte_axes  # noqa: E402
+
+# Configure logging with basicConfig
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s,p%(process)s,{%(filename)s:%(lineno)d},%(levelname)s,%(message)s",
+)
+
+logger = logging.getLogger(__name__)
+
+CHART_TITLE: str = "AI Registry -- Instance Lifetime Distribution"
+FIGURE_WIDTH: int = 16
+FIGURE_HEIGHT: int = 6
+
+
+MAX_X_TICKS: int = 12
+
+
+def _choose_tick_step(
+    max_age: int,
+) -> int:
+    """Pick a round tick step so the x-axis shows at most MAX_X_TICKS labels.
+
+    Labeling every integer day overlaps badly once the age range grows, so
+    snap the step up to the next "nice" value (1, 2, 5, 10, 20, ...).
+    """
+    if max_age <= MAX_X_TICKS:
+        return 1
+
+    raw_step = max_age / MAX_X_TICKS
+    nice_steps = [1, 2, 5, 10, 20, 25, 50, 100]
+    for step in nice_steps:
+        if step >= raw_step:
+            return step
+    return 200
+
+
+def _load_lifetime_data(
+    metrics_path: str,
+) -> list[int]:
+    """Load instance lifetime ages from metrics JSON."""
+    with open(metrics_path) as f:
+        data = json.load(f)
+
+    lifetime_list = data.get("instance_lifetime", [])
+    if not lifetime_list:
+        logger.error("No instance_lifetime data in metrics JSON")
+        return []
+
+    ages = [inst["age_days"] for inst in lifetime_list]
+    logger.info(f"Loaded {len(ages)} instance ages from {metrics_path}")
+    return ages
+
+
+def _generate_chart(
+    ages: list[int],
+    output_path: str,
+) -> None:
+    """Generate and save the lifetime density chart."""
+    apply_tufte_style()
+
+    fig, (ax_hist, ax_box, ax_bar) = plt.subplots(
+        1,
+        3,
+        figsize=(FIGURE_WIDTH, FIGURE_HEIGHT),
+        gridspec_kw={"width_ratios": [3, 1, 2]},
+    )
+
+    fig.suptitle(
+        f"{CHART_TITLE}\n({len(ages)} instances)",
+        fontsize=14,
+        fontweight="bold",
+        y=0.98,
+    )
+
+    # Compute stats
+    avg_age = sum(ages) / len(ages) if ages else 0
+    max_age = max(ages) if ages else 0
+    multi_day = sum(1 for a in ages if a > 0)
+    single_day = sum(1 for a in ages if a == 0)
+
+    # Left panel: histogram with KDE overlay
+    # Use integer bins from 0 to max_age + 1
+    bin_edges = list(range(0, max_age + 2))
+
+    ax_hist.hist(
+        ages,
+        bins=bin_edges,
+        color=sns.color_palette("Blues_d")[2],
+        edgecolor="white",
+        alpha=0.7,
+        align="left",
+        label="Count",
+    )
+
+    # Add KDE curve on secondary y-axis for density
+    ax_kde = ax_hist.twinx()
+    if len(set(ages)) > 1:
+        sns.kdeplot(
+            ages,
+            ax=ax_kde,
+            color=sns.color_palette("deep")[3],
+            linewidth=2,
+            bw_adjust=0.8,
+            label="Density",
+        )
+    ax_kde.set_ylabel("Density", fontsize=10, color="gray")
+    ax_kde.tick_params(axis="y", labelcolor="gray")
+
+    ax_hist.set_xlabel("Instance Age (days)", fontsize=11)
+    ax_hist.set_ylabel("Number of Instances", fontsize=11)
+    ax_hist.set_title("Age Distribution", fontsize=12, fontweight="bold")
+
+    # Set evenly spaced integer x-ticks. Labeling every day overlaps badly
+    # for large age ranges, so pick a round step that yields ~12 ticks.
+    tick_step = _choose_tick_step(max_age)
+    ax_hist.set_xticks(range(0, max_age + 1, tick_step))
+
+    # Add stats annotation
+    stats_text = (
+        f"Mean: {avg_age:.1f} days\n"
+        f"Max: {max_age} days\n"
+        f"Multi-day: {multi_day}\n"
+        f"Single-day: {single_day}"
+    )
+    ax_hist.text(
+        0.97,
+        0.95,
+        stats_text,
+        transform=ax_hist.transAxes,
+        fontsize=10,
+        verticalalignment="top",
+        horizontalalignment="right",
+        bbox={"boxstyle": "round,pad=0.5", "facecolor": "wheat", "alpha": 0.8},
+    )
+
+    # Middle panel: boxplot of instance ages
+    box_color = sns.color_palette("Blues_d")[2]
+    sns.boxplot(
+        y=ages,
+        ax=ax_box,
+        color=box_color,
+        width=0.5,
+        fliersize=4,
+    )
+    # Overlay individual points so the cluster at 0 is visible
+    sns.stripplot(
+        y=ages,
+        ax=ax_box,
+        color=sns.color_palette("deep")[3],
+        size=2.5,
+        alpha=0.4,
+        jitter=0.15,
+    )
+
+    # Quartile annotations
+    if ages:
+        sorted_ages = sorted(ages)
+        n = len(sorted_ages)
+        median = (
+            sorted_ages[n // 2] if n % 2 else (sorted_ages[n // 2 - 1] + sorted_ages[n // 2]) / 2
+        )
+        q1 = sorted_ages[n // 4]
+        q3 = sorted_ages[(3 * n) // 4]
+        box_stats = f"Q1: {q1} d\nMedian: {median:.1f} d\nQ3: {q3} d\nMax: {max_age} d"
+        ax_box.text(
+            0.95,
+            0.97,
+            box_stats,
+            transform=ax_box.transAxes,
+            fontsize=9,
+            verticalalignment="top",
+            horizontalalignment="right",
+            bbox={"boxstyle": "round,pad=0.4", "facecolor": "wheat", "alpha": 0.8},
+        )
+
+    ax_box.set_ylabel("Instance Age (days)", fontsize=11)
+    ax_box.set_title("Age Spread", fontsize=12, fontweight="bold")
+    ax_box.set_xticks([])
+
+    # Right panel: horizontal bar showing age buckets
+    buckets = {
+        "0 days (single session)": single_day,
+        "1-2 days": sum(1 for a in ages if 1 <= a <= 2),
+        "3-5 days": sum(1 for a in ages if 3 <= a <= 5),
+        "6-10 days": sum(1 for a in ages if 6 <= a <= 10),
+        "11+ days": sum(1 for a in ages if a >= 11),
+    }
+
+    # Remove empty buckets
+    buckets = {k: v for k, v in buckets.items() if v > 0}
+
+    labels = list(buckets.keys())[::-1]
+    counts = list(buckets.values())[::-1]
+    total = len(ages)
+
+    colors = sns.color_palette("Blues_d", len(labels))
+    bars = ax_bar.barh(labels, counts, color=colors)
+
+    ax_bar.set_title("Age Buckets", fontsize=12, fontweight="bold")
+    ax_bar.set_xlabel("Number of Instances", fontsize=11)
+
+    for bar, count in zip(bars, counts, strict=False):
+        pct = count / total * 100
+        label_text = f" {count} ({pct:.0f}%)"
+        ax_bar.text(
+            bar.get_width() + 0.2,
+            bar.get_y() + bar.get_height() / 2,
+            label_text,
+            va="center",
+            fontsize=10,
+        )
+
+    max_count = max(counts) if counts else 1
+    ax_bar.set_xlim(0, max_count * 1.4)
+
+    for _ax in fig.axes:
+        tufte_axes(_ax)
+    plt.tight_layout(rect=[0, 0, 1, 0.93])
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info(f"Lifetime chart saved to {output_path}")
+
+
+def main() -> None:
+    """Parse arguments and generate the lifetime density chart."""
+    parser = argparse.ArgumentParser(
+        description="Generate registry instance lifetime density chart",
+    )
+    parser.add_argument(
+        "--metrics",
+        required=True,
+        help="Path to metrics-YYYY-MM-DD.json",
+    )
+    parser.add_argument(
+        "--output",
+        required=True,
+        help="Path to save the output PNG",
+    )
+    args = parser.parse_args()
+
+    if not os.path.exists(args.metrics):
+        logger.error(f"Metrics file not found: {args.metrics}")
+        raise SystemExit(1)
+
+    ages = _load_lifetime_data(args.metrics)
+
+    if not ages:
+        logger.error("No lifetime data available")
+        raise SystemExit(1)
+
+    _generate_chart(ages, args.output)
+
+
+if __name__ == "__main__":
+    main()

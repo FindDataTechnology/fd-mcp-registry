@@ -1,0 +1,34 @@
+{
+  "settings": {
+    "number_of_shards": 1,
+    "number_of_replicas": 1
+  },
+  "mappings": {
+    "properties": {
+      "server_name": {
+        "type": "text",
+        "fields": {"keyword": {"type": "keyword"}}
+      },
+      "description": {"type": "text"},
+      "path": {"type": "keyword"},
+      "proxy_pass_url": {"type": "keyword"},
+      "supported_transports": {"type": "keyword"},
+      "auth_type": {"type": "keyword"},
+      "tags": {"type": "keyword"},
+      "num_tools": {"type": "integer"},
+      "license": {"type": "keyword"},
+      "tool_list": {
+        "type": "nested",
+        "properties": {
+          "name": {"type": "keyword"},
+          "description": {"type": "text"},
+          "parsed_description": {"type": "object", "enabled": false},
+          "schema": {"type": "object", "enabled": false}
+        }
+      },
+      "is_enabled": {"type": "boolean"},
+      "registered_at": {"type": "date"},
+      "updated_at": {"type": "date"}
+    }
+  }
+}

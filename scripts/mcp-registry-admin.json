@@ -1,0 +1,43 @@
+{
+  "_id": "mcp-registry-admin",
+  "group_mappings": ["mcp-registry-admin"],
+  "server_access": [
+    {
+      "server": "*",
+      "methods": ["all"],
+      "tools": ["all"]
+    },
+    {
+      "server": "api",
+      "methods": ["tokens", "GET", "POST"]
+    },
+    {
+      "agent": "*",
+      "actions": ["list_agents", "get_agent", "publish_agent", "modify_agent", "delete_agent", "toggle_agent", "invoke_agent"]
+    }
+  ],
+  "ui_permissions": {
+    "list_agents": ["all"],
+    "get_agent": ["all"],
+    "publish_agent": ["all"],
+    "modify_agent": ["all"],
+    "delete_agent": ["all"],
+    "toggle_agent": ["all"],
+    "list_skills": ["all"],
+    "publish_skill": ["all"],
+    "modify_skill": ["all"],
+    "delete_skill": ["all"],
+    "toggle_skill": ["all"],
+    "list_service": ["all"],
+    "register_service": ["all"],
+    "health_check_service": ["all"],
+    "toggle_service": ["all"],
+    "modify_service": ["all"],
+    "change_lifecycle_status": ["all"],
+    "delete_service": ["all"],
+    "list_virtual_server": ["all"],
+    "create_virtual_server": ["all"],
+    "modify_virtual_server": ["all"],
+    "delete_virtual_server": ["all"]
+  }
+}

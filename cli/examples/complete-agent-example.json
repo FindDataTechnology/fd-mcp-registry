@@ -1,0 +1,29 @@
+{
+  "protocolVersion": "0.3.0",
+  "name": "Complete Agent Example",
+  "description": "Example showing all available agent configuration fields including new lifecycle and federation metadata",
+  "url": "https://agent.example.com:9000/",
+  "path": "/complete-agent-example",
+  "version": "1.0.0",
+  "capabilities": {
+    "streaming": true
+  },
+  "defaultInputModes": ["text/plain", "application/json"],
+  "defaultOutputModes": ["text/plain", "application/json"],
+  "tags": ["example", "documentation", "reference"],
+  "visibility": "public",
+  "status": "active",
+  "provider": {
+    "organization": "ACME AI Labs",
+    "url": "https://ai.acme.com"
+  },
+  "skills": [
+    {
+      "id": "example_skill",
+      "name": "Example Skill",
+      "description": "An example skill demonstrating agent capabilities",
+      "tags": ["example", "demo"]
+    }
+  ],
+  "supportedProtocol": "a2a"
+}

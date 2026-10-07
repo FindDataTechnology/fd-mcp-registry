@@ -1,0 +1,21 @@
+{
+  "server_name": "Complete Server Example",
+  "description": "Example showing all available server configuration fields including new lifecycle and federation metadata",
+  "path": "/complete-example",
+  "proxy_pass_url": "https://example.com:8080",
+  "tags": ["example", "documentation", "reference"],
+  "auth_scheme": "none",
+  "supported_transports": ["streamable-http", "sse"],
+  "mcp_endpoint": "https://example.com:8080/custom-mcp",
+  "sse_endpoint": "https://example.com:8080/custom-sse",
+  "metadata": {
+    "team": "platform-engineering",
+    "owner": "alice@example.com",
+    "cost_center": "CC-1001",
+    "environment": "production"
+  },
+  "status": "active",
+  "provider_organization": "ACME Corporation",
+  "provider_url": "https://www.acme.com",
+  "visibility": "public"
+}

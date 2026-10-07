@@ -1,0 +1,65 @@
+{
+  "settings": {
+    "index": {
+      "knn": true,
+      "knn.algo_param.ef_search": 100
+    }
+  },
+  "mappings": {
+    "properties": {
+      "entity_type": {"type": "keyword"},
+      "path": {"type": "keyword"},
+      "name": {
+        "type": "text",
+        "fields": {"keyword": {"type": "keyword"}}
+      },
+      "description": {"type": "text"},
+      "tags": {"type": "keyword"},
+      "is_enabled": {"type": "boolean"},
+      "text_for_embedding": {"type": "text"},
+      "embedding": {
+        "type": "knn_vector",
+        "dimension": 1536,
+        "method": {
+          "name": "hnsw",
+          "space_type": "cosinesimil",
+          "parameters": {
+            "ef_construction": 128,
+            "m": 16
+          }
+        }
+      },
+      "embedding_metadata": {
+        "type": "object",
+        "properties": {
+          "provider": {"type": "keyword"},
+          "model": {"type": "keyword"},
+          "model_family": {"type": "keyword"},
+          "dimensions": {"type": "integer"},
+          "version": {"type": "keyword"},
+          "created_at": {"type": "date"},
+          "api_version": {"type": "keyword"},
+          "cost_per_1k_tokens": {"type": "float"},
+          "indexing_strategy": {"type": "keyword"}
+        }
+      },
+      "tools": {
+        "type": "nested",
+        "properties": {
+          "name": {"type": "keyword"},
+          "description": {"type": "text"}
+        }
+      },
+      "skills": {
+        "type": "nested",
+        "properties": {
+          "id": {"type": "keyword"},
+          "name": {"type": "text"},
+          "description": {"type": "text"}
+        }
+      },
+      "metadata": {"type": "object", "enabled": false},
+      "indexed_at": {"type": "date"}
+    }
+  }
+}

@@ -1,0 +1,113 @@
+name: Auth Server Test Suite
+
+on:
+  push:
+    branches: [main, develop, 'fd-*']
+    paths:
+      - 'auth_server/**'
+      - 'tests/auth_server/**'
+      - '.github/workflows/auth-server-test.yml'
+  pull_request:
+    branches: [main, develop, 'fd-*']
+    paths:
+      - 'auth_server/**'
+      - 'tests/auth_server/**'
+      - '.github/workflows/auth-server-test.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: "Auth Server Tests (Python ${{ matrix.python-version }})"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      matrix:
+        python-version: ["3.14"]
+      fail-fast: false
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "latest"
+
+      - name: Cache dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/uv
+          key: ${{ runner.os }}-uv-authserver-${{ matrix.python-version }}-${{ hashFiles('pyproject.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-uv-authserver-${{ matrix.python-version }}-
+            ${{ runner.os }}-uv-authserver-
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Run auth server tests
+        run: |
+          uv run pytest tests/auth_server/ -v -o "addopts=" --cov=auth_server --cov-report=xml --cov-report=html --cov-report=term
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          file: ./coverage.xml
+          flags: auth-server
+          name: codecov-auth-server-${{ matrix.python-version }}
+          fail_ci_if_error: false
+
+      - name: Upload coverage HTML report
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: auth-server-coverage-${{ matrix.python-version }}
+          path: htmlcov/
+          retention-days: 14
+
+  lint:
+    name: "Auth Server Code Quality"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "latest"
+
+      - name: Install linting tools
+        run: uv pip install --system ruff
+
+      - name: Run ruff check
+        run: ruff check auth_server/
+        continue-on-error: true
+
+      - name: Run ruff format check
+        run: ruff format --check auth_server/
+        continue-on-error: true

@@ -1,0 +1,905 @@
+import logging
+from typing import Annotated, Any
+
+from fastapi import Cookie, Depends, Header, HTTPException, Request, status
+from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
+
+from ..common.log_redaction import redact_headers, redact_mapping
+from ..core.config import settings
+from .access_resolver import (
+    get_user_accessible_tools,  # noqa: F401 - re-exported for external callers
+    resolve_scope_access,
+)
+from .asset_permissions import accessible_resources_for
+from .privileged_constants import ADMIN_ACTION_PREFIXES, is_admin_conferring_action
+from .proxied_token import (
+    _api_auth_request_enabled,
+    verify_registry_ui_token,
+)
+from .session_store import resolve_session as _store_resolve_session
+
+logger = logging.getLogger(__name__)
+
+# Initialize session signer
+signer = URLSafeTimedSerializer(settings.secret_key)
+
+
+async def resolve_session_from_cookie(
+    cookie_value: str | None,
+) -> dict[str, Any] | None:
+    """Resolve a session cookie to its server-side record.
+
+    Returns None for any non-recoverable failure: missing cookie, bad
+    signature, expired signature, legacy dict-payload (pre-server-side
+    rollout — forces re-login), or store unavailable. Callers must translate
+    None into 401, never into 500.
+    """
+    if not cookie_value:
+        return None
+
+    try:
+        payload = signer.loads(cookie_value, max_age=settings.session_max_age_seconds)
+    except SignatureExpired:
+        logger.debug("Session cookie has expired")
+        return None
+    except BadSignature:
+        logger.debug("Session cookie has invalid signature")
+        return None
+    except Exception as e:
+        logger.warning(f"Unexpected error decoding session cookie: {e}")
+        return None
+
+    # Legacy cookies signed before this rollout carried a dict payload. With
+    # the server-side store, the cookie holds only an opaque session_id
+    # string. Anything else is a stale cookie and the user must re-login.
+    if not isinstance(payload, str):
+        logger.debug("Legacy session cookie format detected; forcing re-login")
+        return None
+
+    return await _store_resolve_session(payload)
+
+
+async def get_current_user(
+    session: Annotated[str | None, Cookie(alias=settings.session_cookie_name)] = None,
+) -> str:
+    """Get the username for the authenticated user.
+
+    Raises 401 for missing, tampered, expired, or legacy-format cookies.
+    """
+    data = await resolve_session_from_cookie(session)
+    if data is None or not data.get("username"):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required"
+        )
+    return data["username"]
+
+
+async def get_user_session_data(
+    session: Annotated[str | None, Cookie(alias=settings.session_cookie_name)] = None,
+) -> dict[str, Any]:
+    """Get the full session record for the authenticated user.
+
+    The record contains username, email, name, groups, provider, auth_method,
+    and id_token (always, when the IdP returned one). Loaded from the
+    server-side session store via the opaque session_id in the signed cookie.
+    """
+    data = await resolve_session_from_cookie(session)
+    if data is None or not data.get("username"):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required"
+        )
+
+    if data.get("auth_method") != "oauth2":
+        logger.warning(
+            f"Rejecting non-OAuth2 session for user {data.get('username')} "
+            f"(auth_method={data.get('auth_method')}). Please re-login via OAuth2."
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Session expired. Please login again via OAuth2.",
+        )
+
+    return data
+
+
+# Global scopes configuration - will be loaded during app startup
+SCOPES_CONFIG: dict[str, Any] = {}
+
+
+async def reload_scopes_from_repository():
+    """
+    Async function to reload scopes from repository during app startup.
+    Uses shared scopes loader from common module.
+    """
+    global SCOPES_CONFIG
+
+    try:
+        from ..common.scopes_loader import reload_scopes_config
+
+        config = await reload_scopes_config()
+
+        SCOPES_CONFIG.clear()
+        SCOPES_CONFIG.update(config)
+
+        group_mappings = config.get("group_mappings", {})
+        ui_scopes = config.get("UI-Scopes", {})
+        scope_defs = len([k for k in config.keys() if k not in ["group_mappings", "UI-Scopes"]])
+
+        logger.info(
+            f"Loaded scopes configuration: {len(group_mappings)} group mappings, "
+            f"{scope_defs} scope definitions, {len(ui_scopes)} UI scopes"
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to reload scopes from repository: {e}", exc_info=True)
+
+
+async def map_cognito_groups_to_scopes(groups: list[str]) -> list[str]:
+    """
+    Map Cognito groups to MCP scopes - queries repository directly.
+
+    Args:
+        groups: List of Cognito group names
+
+    Returns:
+        List of MCP scopes
+    """
+    from ..repositories.factory import get_scope_repository
+
+    scope_repo = get_scope_repository()
+
+    # Single read of all scope->groups mappings, then invert in memory.
+    # Avoids one find() per group on this hot auth path.
+    all_mappings = await scope_repo.get_all_group_mappings()
+    group_to_scopes: dict[str, list[str]] = {}
+    for scope_name, mapped_groups in all_mappings.items():
+        for mapped_group in mapped_groups:
+            group_to_scopes.setdefault(mapped_group, []).append(scope_name)
+
+    # Collect scopes in group order, deduping while preserving order.
+    seen: set[str] = set()
+    unique_scopes: list[str] = []
+    for group in groups:
+        group_scopes = group_to_scopes.get(group, [])
+        if group_scopes:
+            logger.debug(f"Mapped group '{group}' to scopes: {group_scopes}")
+        else:
+            logger.debug(f"No scope mapping found for group: {group}")
+        for scope in group_scopes:
+            if scope not in seen:
+                seen.add(scope)
+                unique_scopes.append(scope)
+
+    logger.info(f"Final mapped scopes: {unique_scopes}")
+    return unique_scopes
+
+
+async def get_ui_permissions_for_user(user_scopes: list[str]) -> dict[str, list[str]]:
+    """
+    Get UI permissions for a user based on their scopes - queries repository directly.
+
+    Args:
+        user_scopes: List of user's scopes (includes UI scope names like 'mcp-registry-admin')
+
+    Returns:
+        Dict mapping UI actions to lists of services they can perform the action on
+        Example: {'list_service': ['mcpgw', 'auth_server'], 'toggle_service': ['mcpgw']}
+    """
+    from ..repositories.factory import get_scope_repository
+
+    ui_permissions: dict[str, set[str]] = {}
+    scope_repo = get_scope_repository()
+
+    # One round-trip for all scopes instead of one find_one per scope — on a
+    # remote cluster the per-scope fan-out dominated /api/auth/me latency for
+    # users with many groups. Iterate user_scopes (not the map) to keep the
+    # merge order deterministic.
+    scope_configs = await scope_repo.get_ui_scopes_bulk(user_scopes)
+
+    for scope in user_scopes:
+        scope_config = scope_configs.get(scope)
+        if scope_config:
+            logger.debug(f"Processing UI scope '{scope}' with config: {scope_config}")
+
+            # Process each permission in the scope
+            for permission, services in scope_config.items():
+                if permission not in ui_permissions:
+                    ui_permissions[permission] = set()
+
+                # Handle "all" case
+                if services == ["all"] or (isinstance(services, list) and "all" in services):
+                    ui_permissions[permission].add("all")
+                    logger.debug(f"UI permission '{permission}' granted for all services")
+                else:
+                    # Add specific services
+                    if isinstance(services, list):
+                        ui_permissions[permission].update(services)
+                        logger.debug(
+                            f"UI permission '{permission}' granted for services: {services}"
+                        )
+
+    # Convert sets back to lists
+    result = {k: list(v) for k, v in ui_permissions.items()}
+    logger.info(f"Final UI permissions for user: {result}")
+    return result
+
+
+def user_has_ui_permission_for_service(
+    permission: str, service_name: str, user_ui_permissions: dict[str, list[str]]
+) -> bool:
+    """
+    Check if user has a specific UI permission for a specific service.
+
+    Args:
+        permission: The UI permission to check (e.g., 'list_service', 'toggle_service')
+        service_name: The service name to check permission for
+        user_ui_permissions: User's UI permissions dict from get_ui_permissions_for_user()
+
+    Returns:
+        True if user has the permission for the service, False otherwise
+    """
+    if permission not in user_ui_permissions:
+        return False
+
+    allowed_services = user_ui_permissions[permission]
+
+    # Check if user has permission for all services or the specific service
+    has_permission = "all" in allowed_services or service_name in allowed_services
+
+    logger.debug(
+        f"Permission check: {permission} for {service_name} = {has_permission} (allowed: {allowed_services})"
+    )
+    return has_permission
+
+
+def get_accessible_services_for_user(user_ui_permissions: dict[str, list[str]]) -> list[str]:
+    """
+    Get list of services the user can see based on their list_service permission.
+
+    Thin wrapper over the canonical ``accessible_resources_for`` so the
+    ``list_service`` discovery projection stays in lockstep with the other
+    families. Kept as a named function for existing callers/tests.
+
+    Args:
+        user_ui_permissions: User's UI permissions dict from get_ui_permissions_for_user()
+
+    Returns:
+        List of service names the user can see, or ['all'] if they can see all services
+    """
+    return accessible_resources_for("server", user_ui_permissions)
+
+
+def get_accessible_agents_for_user(user_ui_permissions: dict[str, list[str]]) -> list[str]:
+    """
+    Get list of agents the user can see based on their list_agents permission.
+
+    Thin wrapper over the canonical ``accessible_resources_for``. Kept as a named
+    function for existing callers/tests.
+
+    Args:
+        user_ui_permissions: User's UI permissions dict from get_ui_permissions_for_user()
+
+    Returns:
+        List of agent paths the user can see, or ['all'] if they can see all agents
+    """
+    return accessible_resources_for("agent", user_ui_permissions)
+
+
+def get_accessible_skills_for_user(user_ui_permissions: dict[str, list[str]]) -> list[str]:
+    """
+    Get list of skills the user can see based on their list_skills permission.
+
+    Discovery gate for skills, bringing them to parity with servers/agents/custom
+    entities via the canonical ``accessible_resources_for``: a caller with no
+    ``list_skills`` grant discovers zero skills — including public ones — and is
+    layered on top of (not a replacement for) the per-record visibility check in
+    ``list_skills_for_user``.
+
+    Args:
+        user_ui_permissions: User's UI permissions dict from get_ui_permissions_for_user()
+
+    Returns:
+        List of skill names the user can see, or ['all'] if they can see all skills
+    """
+    return accessible_resources_for("skill", user_ui_permissions)
+
+
+def user_can_list_custom_entity_type(
+    type_name: str,
+    user_context: dict,
+    record_path: str | None = None,
+) -> bool:
+    """Return True if the caller may see records of a custom type.
+
+    Discovery gate for custom entities, mirroring ``list_agents``: the
+    ``list_<type>_entity`` grant is interpreted in three tiers — ``"all"`` or the
+    bare type name open the WHOLE type; a record path ``/type/uuid`` opens just
+    that record. Admin bypasses. Fails closed on a missing ui_permissions dict.
+
+    Two call shapes:
+
+    - ``record_path=None`` (discovery pre-check for search/collection): True if
+      the caller can see ANY record of the type — the whole type OR at least one
+      specific record. This only decides whether the type is reachable at all;
+      per-record filtering still happens downstream (search checks each hit's
+      path; the collection list intersects the granted paths).
+    - ``record_path`` given (single-record gate): True only if the grant covers
+      that specific record (whole-type, or that exact path).
+
+    This discovery gate is layered ON TOP of the per-record visibility check;
+    both must pass.
+
+    Args:
+        type_name: The custom type name.
+        user_context: The authenticated request context.
+        record_path: Optional specific record path ``/type/uuid`` to check.
+
+    Returns:
+        True if the caller may list/search the type (or the given record).
+    """
+    # Custom-entity list is the one per-record discovery gate (three tiers), so
+    # it keeps its own implementation rather than routing through the binary
+    # user_has_asset_permission (which the type-level mutation gates use). The
+    # tier resolution is shared via resolve_list_grant so the search loop and
+    # this gate can never disagree.
+    from ..services.custom_entity_scopes import entity_scope, resolve_list_grant
+
+    if user_context.get("is_admin", False):
+        return True
+    ui_permissions = user_context.get("ui_permissions") or {}
+    granted = ui_permissions.get(entity_scope("list", type_name)) or []
+
+    whole_open, record_paths = resolve_list_grant(type_name, granted)
+    if whole_open:
+        return True
+    if record_path is not None:
+        return record_path in record_paths
+    # Discovery pre-check: reachable if the caller holds any specific record.
+    return len(record_paths) > 0
+
+
+async def get_servers_for_scope(scope: str) -> list[str]:
+    """
+    Get list of server names that a scope provides access to - queries repository directly.
+
+    Args:
+        scope: The scope to check (e.g., 'mcp-servers-restricted/read')
+
+    Returns:
+        List of server names the scope grants access to
+    """
+    from ..repositories.factory import get_scope_repository
+
+    scope_repo = get_scope_repository()
+    scope_config = await scope_repo.get_server_scopes(scope)
+    server_names = []
+
+    for server_config in scope_config:
+        if isinstance(server_config, dict) and "server" in server_config:
+            server_names.append(server_config["server"])
+
+    return list(set(server_names))  # Remove duplicates
+
+
+async def user_has_wildcard_access(user_scopes: list[str]) -> bool:
+    """
+    Check if user has wildcard access to all servers via their scopes - queries repository directly.
+
+    A user has wildcard access if any of their scopes includes server: '*'.
+    This is determined dynamically from the scopes configuration, not hardcoded group names.
+
+    Note: This function checks server access only. It is NOT used to determine
+    admin status. See _user_is_admin() for admin determination.
+
+    Args:
+        user_scopes: List of user's scopes
+
+    Returns:
+        True if user has wildcard access to all servers, False otherwise
+    """
+    for scope in user_scopes:
+        servers = await get_servers_for_scope(scope)
+        if "*" in servers:
+            logger.debug(f"User scope '{scope}' grants wildcard access to all servers")
+            return True
+
+    return False
+
+
+# Prefixes for mutating (management) UI-Scopes actions; single source of truth
+# in registry/auth/privileged_constants.py so the scope-service / scope-repo
+# privileged-write guard cannot drift out of sync with this admin-derivation
+# rule. Module-level alias kept for backwards compatibility with existing
+# references and tests.
+# Reference: scripts/registry-admins.json for the complete admin permissions set.
+_ADMIN_ACTION_PREFIXES: tuple[str, ...] = ADMIN_ACTION_PREFIXES
+
+
+def _user_is_admin(
+    ui_permissions: dict[str, list[str]],
+) -> bool:
+    """Check if user has admin privileges based on UI-Scopes management actions.
+
+    Admin status is determined by whether the user has any mutating
+    (write/delete) UI-Scopes action with wildcard ("all") access.
+    This decouples admin status from server: '*' wildcard access, allowing
+    consumer roles to access all servers without gaining admin privileges.
+
+    Mutating actions are identified by prefix: register_, modify_, toggle_,
+    delete_, publish_, create_. Read-only actions (list_, get_, health_check_)
+    do not grant admin status. Per-type custom-entity mutation scopes
+    (create_/modify_/delete_<type>_entity) AND skill-management scopes
+    (publish_/modify_/delete_/toggle_skill) are also excluded via
+    is_admin_conferring_action: they gate one custom type's records / skill
+    management, not registry administration, so granting a non-admin group such a
+    scope for "all" resources does not silently promote it to admin.
+
+    See GitHub issue #663 for the motivation behind this design.
+
+    Args:
+        ui_permissions: Dict mapping UI actions to lists of allowed resources.
+            Example: {'list_service': ['all'], 'register_service': ['all']}
+
+    Returns:
+        True if user has admin-level management permissions, False otherwise.
+    """
+    for action, resources in ui_permissions.items():
+        if is_admin_conferring_action(action) and "all" in resources:
+            logger.debug(f"Admin check: action '{action}' with 'all' grants admin status")
+            return True
+
+    return False
+
+
+async def get_user_accessible_servers(user_scopes: list[str]) -> list[str]:
+    """
+    Get list of all servers the user has access to based on their scopes.
+
+    Thin wrapper around `resolve_scope_access` to preserve the historical
+    signature used by `user_can_access_server`, tests, and CLI tooling.
+    The heavy lifting (scope repo walk, wildcard handling, fail-closed
+    semantics) lives in `registry.auth.access_resolver`.
+
+    Args:
+        user_scopes: List of user's scopes
+
+    Returns:
+        List of server names the user can access
+    """
+    access = await resolve_scope_access(user_scopes)
+    logger.debug(
+        "User with scopes %s has access to servers: %s",
+        user_scopes,
+        access.servers,
+    )
+    return access.servers
+
+
+def user_can_modify_servers(user_groups: list[str], user_scopes: list[str]) -> bool:
+    """
+    Check if user can modify servers (toggle, edit).
+
+    Args:
+        user_groups: List of user's groups
+        user_scopes: List of user's scopes
+
+    Returns:
+        True if user can modify servers, False otherwise
+    """
+    # Admin users can always modify (check both groups and scopes)
+    if "mcp-registry-admin" in user_groups or "mcp-registry-admin" in user_scopes:
+        return True
+    if "registry-admins" in user_groups or "registry-admins" in user_scopes:
+        return True
+
+    # Users with unrestricted execute access can modify
+    if "mcp-servers-unrestricted/execute" in user_scopes:
+        return True
+
+    # mcp-registry-user group cannot modify servers (unless they're also admin)
+    is_admin = "mcp-registry-admin" in user_groups or "mcp-registry-admin" in user_scopes
+    if "mcp-registry-user" in user_groups and not is_admin:
+        return False
+
+    # For other cases, check if they have any execute permissions
+    execute_scopes = [scope for scope in user_scopes if "/execute" in scope]
+    return len(execute_scopes) > 0
+
+
+async def user_can_access_server(server_name: str, user_scopes: list[str]) -> bool:
+    """
+    Check if user can access a specific server - queries repository directly.
+
+    Args:
+        server_name: Name of the server to check
+        user_scopes: List of user's scopes
+
+    Returns:
+        True if user can access the server, False otherwise
+    """
+    accessible_servers = await get_user_accessible_servers(user_scopes)
+    return server_name in accessible_servers
+
+
+async def api_auth(
+    session: Annotated[str | None, Cookie(alias=settings.session_cookie_name)] = None,
+) -> str:
+    """API authentication dependency that returns the username."""
+    return await get_current_user(session)
+
+
+async def web_auth(
+    session: Annotated[str | None, Cookie(alias=settings.session_cookie_name)] = None,
+) -> str:
+    """Web authentication dependency that returns the username."""
+    return await get_current_user(session)
+
+
+async def _derive_user_context(
+    *,
+    username: str,
+    groups: list[str],
+    scopes: list[str],
+    auth_method: str,
+    provider: str,
+    session_id: str | None = None,
+    client_id: str = "",
+    egress_user: str = "",
+    email: str = "",
+) -> dict[str, Any]:
+    """Build the canonical user_context dict from authenticated identity inputs.
+
+    Single source of truth for scope→ui_permissions→is_admin derivation. Both
+    `enhanced_auth` (cookie path) and `nginx_proxied_auth` (header path) call
+    this so a given (groups, scopes, auth_method) tuple produces the same
+    authorization result regardless of how the user was authenticated.
+
+    The two callers differ only in how they obtain `scopes`: the cookie path
+    derives scopes from `groups` via `map_cognito_groups_to_scopes`; the
+    header path uses pre-computed scopes forwarded from the auth_server in
+    `X-Scopes`. Both should equal each other for the same user — see #933.
+
+    `auth_method == "federation-static"` short-circuits to a no-access
+    context (federation static tokens get scoped access via separate routing,
+    not registry-side derivation).
+    """
+    if auth_method == "federation-static":
+        return {
+            "username": username,
+            "email": email,
+            "client_id": client_id,
+            "groups": groups,
+            "scopes": scopes,
+            "auth_method": auth_method,
+            "provider": provider,
+            "egress_user": egress_user or username,
+            "session_id": session_id,
+            "accessible_servers": [],
+            "accessible_tools": {},
+            "accessible_services": [],
+            "accessible_agents": [],
+            "accessible_skills": [],
+            "ui_permissions": {},
+            "can_modify_servers": False,
+            "is_admin": False,
+        }
+
+    # Resolve servers + tools in a single scope-repo pass (Issue #1026).
+    access = await resolve_scope_access(scopes)
+    ui_permissions = await get_ui_permissions_for_user(scopes)
+
+    return {
+        "username": username,
+        # Human-readable email for audit records (preferred over username, which
+        # is the OIDC sub on some paths). Empty when the source carried none.
+        "email": email,
+        "client_id": client_id,
+        "groups": groups,
+        "scopes": scopes,
+        "auth_method": auth_method,
+        "provider": provider,
+        # egress_user is the canonical per-user egress vault id (OIDC sub when
+        # available, else username). The consent-write path keys the vault on
+        # it so it matches the vend path's egress_user claim. See #933.
+        "egress_user": egress_user or username,
+        # session_id is the opaque server-side identifier — used by template
+        # callers to mint CSRF tokens via generate_csrf_token(session_id).
+        "session_id": session_id,
+        "accessible_servers": access.servers,
+        "accessible_tools": access.tools,
+        "accessible_services": get_accessible_services_for_user(ui_permissions),
+        "accessible_agents": get_accessible_agents_for_user(ui_permissions),
+        "accessible_skills": get_accessible_skills_for_user(ui_permissions),
+        "ui_permissions": ui_permissions,
+        "can_modify_servers": user_can_modify_servers(groups, scopes),
+        "is_admin": _user_is_admin(ui_permissions),
+    }
+
+
+async def _resolve_context_from_groups(
+    *,
+    username: str,
+    groups: list[str],
+    auth_method: str,
+    provider: str,
+    session_id: str | None = None,
+    client_id: str = "",
+    egress_user: str = "",
+    email: str = "",
+) -> dict[str, Any]:
+    """Derive the canonical user_context from groups, server-side.
+
+    Single source of truth shared by ``enhanced_auth`` (cookie path) and
+    ``nginx_proxied_auth`` (signed-token path): both map the same ``groups`` to
+    scopes via ``map_cognito_groups_to_scopes`` and then ``_derive_user_context``,
+    so a given user produces an identical authorization result regardless of how
+    they were authenticated (guards #933).
+    """
+    scopes = await map_cognito_groups_to_scopes(groups)
+    logger.info(f"User {username} with {len(groups)} groups mapped to {len(scopes)} scopes")
+    if not groups:
+        logger.warning(
+            f"User {username} has no groups! This user may not have proper group assignments."
+        )
+    return await _derive_user_context(
+        username=username,
+        groups=groups,
+        scopes=scopes,
+        auth_method=auth_method,
+        provider=provider,
+        session_id=session_id,
+        client_id=client_id,
+        egress_user=egress_user,
+        email=email,
+    )
+
+
+async def _context_from_internal_token(
+    request: Request,
+    token: str,
+) -> dict[str, Any]:
+    """Verify the registry-UI internal token and resolve the user_context.
+
+    The token is a thin identity assertion; entitlements are resolved server-side
+    here, mirroring the cookie path:
+
+    - Session-backed callers (``session_id`` present): resolve live groups from the
+      session store. If the session does not resolve (missing/expired/store-error),
+      this is a hard 401 -- we do NOT fall back to claim groups, header trust, or the
+      cookie. The session record's ``auth_method``/``provider`` are used (not the
+      claim's, whose ``auth_method`` is the transport ``"session_cookie"``), for
+      audit-label parity with the cookie-direct path.
+    - Bearer/static-token callers (no ``session_id``): use the claim's ``groups``
+      directly -- the auth_server is the single point of group enrichment.
+
+    Raises HTTPException(401) on any token failure (verification raises it directly).
+    """
+    claims = verify_registry_ui_token(token)  # raises 401/500 on failure
+    username = claims.get("sub") or ""
+    session_id = claims.get("session_id") or ""
+
+    if session_id:
+        session_data = await _store_resolve_session(session_id)
+        if session_data is None or not session_data.get("username"):
+            # Present token bound to a session that no longer resolves: fail closed.
+            logger.warning("signed-token auth: session_id in token did not resolve; rejecting")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication required",
+            )
+        return await _resolve_context_from_groups(
+            username=session_data.get("username") or username,
+            groups=session_data.get("groups", []),
+            auth_method=session_data.get("auth_method") or "oauth2",
+            provider=session_data.get("provider", "local"),
+            session_id=session_id,
+            client_id=claims.get("client_id") or "",
+            # The auth_server stamps the canonical egress user (OIDC sub) into
+            # the token; prefer it so the consent-write vault key matches vend.
+            egress_user=claims.get("egress_user") or "",
+            # Human-readable email for audit records (from the session or claim).
+            email=session_data.get("email") or claims.get("email") or "",
+        )
+
+    # No session row (bearer / IdP-JWT / static-token caller): trust the claim's
+    # groups (signed by the auth_server, the single enrichment point).
+    auth_method = claims.get("auth_method") or ""
+    return await _resolve_context_from_groups(
+        username=username,
+        groups=list(claims.get("groups") or []),
+        auth_method=auth_method,
+        provider=auth_method,
+        client_id=claims.get("client_id") or "",
+        egress_user=claims.get("egress_user") or "",
+        # Human-readable email for audit records when the claim carries it.
+        email=claims.get("email") or "",
+    )
+
+
+async def enhanced_auth(
+    request: Request,
+    session: Annotated[str | None, Cookie(alias=settings.session_cookie_name)] = None,
+) -> dict[str, Any]:
+    """
+    Enhanced authentication dependency that returns full user context.
+    Returns username, groups, scopes, and permission flags.
+    Also sets request.state.user_context for audit logging middleware.
+    """
+    session_data = await get_user_session_data(session)
+
+    username = session_data["username"]
+    groups = session_data.get("groups", [])
+    auth_method = session_data.get("auth_method", "oauth2")
+
+    logger.info(
+        f"Enhanced auth debug for {username}: {len(groups)} groups, auth_method={auth_method}"
+    )
+
+    user_context = await _resolve_context_from_groups(
+        username=username,
+        groups=groups,
+        auth_method=auth_method,
+        provider=session_data.get("provider", "local"),
+        session_id=session_data.get("session_id"),
+        # Canonical egress vault id (OIDC sub persisted at login). Keeps the
+        # consent-write path (which reaches enhanced_auth via the callback's
+        # cookie, no internal token) keyed the same as the vend path. See #933.
+        egress_user=session_data.get("subject") or "",
+        # Human-readable email for audit records (session store persists it).
+        email=session_data.get("email") or "",
+    )
+
+    # Set user context on request state for audit logging middleware
+    request.state.user_context = user_context
+
+    logger.debug(f"Enhanced auth context for {username}: {redact_mapping(user_context)}")
+    return user_context
+
+
+async def nginx_proxied_auth(
+    request: Request,
+    session: Annotated[
+        str | None, Cookie(alias=settings.session_cookie_name, include_in_schema=False)
+    ] = None,
+    x_user: Annotated[str | None, Header(alias="X-User", include_in_schema=False)] = None,
+    x_username: Annotated[str | None, Header(alias="X-Username", include_in_schema=False)] = None,
+    x_scopes: Annotated[str | None, Header(alias="X-Scopes", include_in_schema=False)] = None,
+    x_auth_method: Annotated[
+        str | None, Header(alias="X-Auth-Method", include_in_schema=False)
+    ] = None,
+    x_client_id: Annotated[str | None, Header(alias="X-Client-Id", include_in_schema=False)] = None,
+    x_groups: Annotated[str | None, Header(alias="X-Groups", include_in_schema=False)] = None,
+    x_internal_token: Annotated[
+        str | None, Header(alias="X-Internal-Token-Registry", include_in_schema=False)
+    ] = None,
+) -> dict[str, Any]:
+    """
+    Authentication dependency that works with both nginx-proxied requests and direct requests.
+
+    For nginx-proxied requests: Reads user context from headers set by nginx after auth validation
+    For direct requests: Falls back to session cookie authentication
+
+    This allows Anthropic Registry API endpoints to work both when accessed through nginx (with JWT tokens)
+    and when accessed directly (with session cookies).
+
+    Returns:
+        Dict containing username, groups, scopes, and permission flags
+    """
+    # CRITICAL DIAGNOSTIC: Log ALL incoming headers and auth parameters
+    logger.debug(f"[NGINX_AUTH_DEBUG] Request path: {request.url.path}")
+    logger.debug(f"[NGINX_AUTH_DEBUG] Request method: {request.method}")
+    logger.debug(f"[NGINX_AUTH_DEBUG] X-User header: '{x_user}' (type: {type(x_user).__name__})")
+    logger.debug(
+        f"[NGINX_AUTH_DEBUG] X-Username header: '{x_username}' (type: {type(x_username).__name__})"
+    )
+    logger.debug(
+        f"[NGINX_AUTH_DEBUG] X-Scopes header: '{x_scopes}' (type: {type(x_scopes).__name__})"
+    )
+    logger.debug(
+        f"[NGINX_AUTH_DEBUG] X-Auth-Method header: '{x_auth_method}' (type: {type(x_auth_method).__name__})"
+    )
+    logger.debug(f"[NGINX_AUTH_DEBUG] Session cookie present: {session is not None}")
+    logger.debug(
+        "[NGINX_AUTH_DEBUG] Authorization header present: "
+        f"{request.headers.get('authorization') is not None}"
+    )
+
+    # Log ALL headers for complete diagnostic, with sensitive values redacted.
+    # cookie/authorization carry the session and bearer token, and other headers
+    # (e.g. X-Auth-Credential, X-Api-Key) can carry credentials; even at DEBUG we
+    # never emit any of them (not even a prefix). Uses the shared redaction
+    # helper, which redacts by exact name and by credential substring.
+    logger.debug(f"[NGINX_AUTH_DEBUG] ALL REQUEST HEADERS: {redact_headers(request.headers)}")
+
+    # Signed-token path. The auth_server's /validate mints an HS256 token
+    # (X-Internal-Token-Registry) bound to the validated identity; nginx forwards
+    # it on the /api/ hop. We verify it and read identity from the verified claims,
+    # IGNORING the forgeable inbound X-User/X-Scopes/X-Groups/etc. headers entirely.
+    # This closes the header-forgery bypass: a direct hit on the raw app with forged
+    # headers carries no valid token and is rejected.
+    if x_internal_token:
+        user_context = await _context_from_internal_token(request, x_internal_token)
+        request.state.user_context = user_context
+        logger.debug(
+            f"signed-token auth context for {user_context.get('username')} "
+            f"(is_admin={user_context['is_admin']})"
+        )
+        return user_context
+
+    # No token. If nginx is fronting /api/ with auth_request (the normal/secure
+    # deployment) and yet identity headers arrived without a token, this is the
+    # forged-header attack (or a badly misconfigured nginx) -- reject. The header
+    # values are NEVER trusted; we only use their presence as an attack signal.
+    if _api_auth_request_enabled() and (x_user or x_username):
+        logger.warning(
+            "nginx-proxied auth: identity headers present without a valid "
+            "X-Internal-Token-Registry while auth_request is enabled; rejecting "
+            "(forged-header attempt or misconfigured nginx)."
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required",
+        )
+
+    # Fallback to session cookie authentication. Reached when there is no token and
+    # either no identity headers, or NGINX_DISABLE_API_AUTH_REQUEST is set (local-dev
+    # mode where FastAPI authenticates the cookie/bearer itself). The inbound identity
+    # headers are ignored in every case.
+    logger.info("[NGINX_AUTH_FALLBACK] No internal token; falling back to session cookie auth")
+    # The session cookie is a signed credential: log only its presence, never
+    # any part of its value (a prefix is still credential material).
+    logger.info(f"[NGINX_AUTH_FALLBACK] Session cookie present: {session is not None}")
+    logger.info(f"[NGINX_AUTH_FALLBACK] Request path: {request.url.path}")
+    try:
+        return await enhanced_auth(request, session)
+    except HTTPException as e:
+        logger.error(
+            f"[NGINX_AUTH_FALLBACK] enhanced_auth raised HTTPException: status={e.status_code}, detail={e.detail}"
+        )
+        raise
+    except Exception as e:
+        logger.error(
+            f"[NGINX_AUTH_FALLBACK] enhanced_auth raised unexpected exception: {type(e).__name__}: {str(e)}"
+        )
+        raise
+
+
+def ui_permission_required(permission: str, service_name: str = None):
+    """
+    Decorator to require a specific UI permission for a route.
+
+    Args:
+        permission: The UI permission required (e.g., 'register_service')
+        service_name: Optional service name to check permission for. If None, checks if user has permission for any service.
+
+    Returns:
+        Dependency function that checks the permission
+    """
+
+    def check_permission(user_context: dict[str, Any] = Depends(enhanced_auth)) -> dict[str, Any]:
+        ui_permissions = user_context.get("ui_permissions", {})
+
+        if service_name:
+            # Check permission for specific service
+            if not user_has_ui_permission_for_service(permission, service_name, ui_permissions):
+                logger.warning(
+                    f"User {user_context.get('username')} lacks UI permission '{permission}' for service '{service_name}'"
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Insufficient permissions. Required: {permission} for {service_name}",
+                )
+        else:
+            # Check if user has permission for any service
+            if permission not in ui_permissions or not ui_permissions[permission]:
+                logger.warning(
+                    f"User {user_context.get('username')} lacks UI permission: {permission}"
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Insufficient permissions. Required: {permission}",
+                )
+
+        return user_context
+
+    return check_permission

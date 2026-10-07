@@ -1,0 +1,19 @@
+{
+  "scope_name": "virtual-scoped-tools-users",
+  "description": "Users with access to the scoped virtual server combining cloudflare-docs and currenttime tools",
+  "server_access": [
+    {
+      "server": "/virtual/scoped-tools",
+      "methods": ["initialize", "notifications/initialized", "ping", "tools/list", "tools/call"],
+      "tools": ["*"]
+    },
+    {
+      "server": "api",
+      "methods": ["GET", "POST", "servers", "virtual-servers", "search"],
+      "tools": []
+    }
+  ],
+  "group_mappings": ["virtual-scoped-tools-users"],
+  "custom_scopes": ["virtual-scoped-tools/access"],
+  "create_in_idp": true
+}

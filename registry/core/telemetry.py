@@ -1,0 +1,1199 @@
+"""
+Anonymous telemetry module for tracking registry adoption.
+
+Privacy-first design:
+- Opt-out by default (telemetry ON but easy to disable)
+- No PII: no IP addresses, hostnames, file paths, or user data
+- Conspicuous disclosure at every startup
+- Fail-silent: never impact registry operation
+- Cloud-agnostic: no dependency on any specific provider
+"""
+
+import asyncio
+import functools
+import hashlib
+import hmac
+import json
+import logging
+import os
+import platform
+import sys
+import time
+import uuid
+from datetime import UTC, datetime, timedelta
+from typing import Any
+
+import httpx
+
+from registry.core.config import settings
+from registry.version import __version__
+
+logger = logging.getLogger(__name__)
+
+# Telemetry constants
+STARTUP_LOCK_INTERVAL_SECONDS = 60  # Don't send startup ping more than once per minute
+# HMAC signing key for telemetry requests.
+# This is NOT a secret - it's embedded in open-source code. Its purpose is to
+# raise the bar against casual abuse (random curl requests) by requiring
+# callers to compute a valid HMAC signature over the request body.
+TELEMETRY_SIGNING_KEY = "mcp-registry-telemetry-v1-a7f3b9c2e1d4"
+TELEMETRY_TIMEOUT_SECONDS = 5  # HTTP request timeout
+
+# Cloud-detection method labels. Keep in sync with the regex allowlist in
+# terraform/telemetry-collector/lambda/collector/schemas.py
+# (_CLOUD_DETECTION_METHOD_PATTERN).
+_DETECTION_METHOD_ENV = "env"
+_DETECTION_METHOD_DMI = "dmi"
+_DETECTION_METHOD_ECS_META = "ecs_meta"
+_DETECTION_METHOD_K8S_HEURISTIC = "k8s_heuristic"
+_DETECTION_METHOD_IMDS = "imds"
+_DETECTION_METHOD_UNKNOWN = "unknown"
+_DETECTION_METHOD_EXPLICIT = "explicit"
+_DETECTION_METHOD_OPERATOR_DECLARED = "operator_declared"
+_DETECTION_METHOD_OPERATOR_DECLINED = "operator_declined"
+
+# Hint cache: avoids a DocumentDB read on every banner-state GET within 60s.
+_HINT_CACHE_TTL_SECONDS = 60
+_hint_cache: dict[str, tuple[float, str | None]] = {}
+
+# Worst-case probe budget: three providers x 300ms each = 900ms once per process.
+_IMDS_PROBE_TIMEOUT_SECONDS = 0.3
+
+# The closed set of auth paths the auth-server reports. Keep in sync with
+# KNOWN_AUTH_PATHS in auth_server/auth_path_stats.py and with the key allowlist
+# in terraform/telemetry-collector/lambda/collector/schemas.py. Allowlisting on
+# the way out keeps the share dict from turning into a free-text channel if a
+# stray key ever lands in the stats document.
+_KNOWN_AUTH_PATHS: frozenset[str] = frozenset(
+    {
+        "session_cookie",
+        "self_signed",
+        "jwt",
+        "boto3",
+        "federation-static",
+        "network-trusted",
+        "cognito",
+        "keycloak",
+        "entra",
+        "okta",
+        "auth0",
+        "pingfederate",
+        "unknown",
+    }
+)
+
+# The daily window is reset lazily on write, so a registry that goes quiet can
+# carry one well past 24h. Clamped to the collector's `le` bound: reporting a
+# coarse "at least 48" beats having the whole heartbeat rejected.
+_AUTH_PATH_WINDOW_HOURS_MAX = 48
+
+
+def _detect_cloud_from_env() -> str | None:
+    """Return cloud label or None from cloud-specific env vars."""
+    if os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION"):
+        return "aws"
+    if os.getenv("GOOGLE_CLOUD_PROJECT") or os.getenv("GCLOUD_PROJECT"):
+        return "gcp"
+    if os.getenv("WEBSITE_INSTANCE_ID") or os.getenv("AZURE_CLIENT_ID"):
+        return "azure"
+    return None
+
+
+def _detect_cloud_from_dmi() -> str | None:
+    """Return cloud label or None from DMI files."""
+    try:
+        with open("/sys/devices/virtual/dmi/id/board_asset_tag") as f:
+            if f.read().strip().startswith("i-"):
+                return "aws"
+    except (FileNotFoundError, PermissionError, OSError):
+        pass
+    try:
+        with open("/sys/devices/virtual/dmi/id/product_name") as f:
+            if "Google" in f.read():
+                return "gcp"
+    except (FileNotFoundError, PermissionError, OSError):
+        pass
+    try:
+        with open("/sys/devices/virtual/dmi/id/sys_vendor") as f:
+            if "Microsoft" in f.read():
+                return "azure"
+    except (FileNotFoundError, PermissionError, OSError):
+        pass
+    return None
+
+
+def _detect_cloud_from_k8s_heuristic() -> str | None:
+    """Infer cloud provider from Kubernetes node naming conventions.
+
+    Only fires when the process is clearly running in Kubernetes and NODE_NAME
+    is injected (usually via the downward API). Returns None if either signal
+    is absent or no known pattern matches.
+    """
+    if not os.getenv("KUBERNETES_SERVICE_HOST"):
+        return None
+
+    node_name = (os.getenv("NODE_NAME") or "").lower()
+    if not node_name:
+        return None
+
+    # EKS nodes typically end in *.compute.internal or *.ec2.internal.
+    if node_name.endswith(".compute.internal") or node_name.endswith(".ec2.internal"):
+        return "aws"
+
+    # GKE nodes typically follow gke-<cluster>-<pool>-<hash>-<hash>.
+    if node_name.startswith("gke-"):
+        return "gcp"
+
+    # AKS nodes typically follow aks-<pool>-<id>-vmss<n> or aks-agentpool-*.
+    if node_name.startswith("aks-"):
+        return "azure"
+
+    return None
+
+
+def _should_probe_imds() -> bool:
+    """Return True iff IMDS probing should run for this process."""
+    if not settings.telemetry_enabled:
+        return False
+    if getattr(settings, "telemetry_imds_probe_disabled", False):
+        return False
+    # Respect the env-var master switch too, in case settings was imported
+    # before MCP_TELEMETRY_DISABLED was set.
+    disabled_env = os.getenv("MCP_TELEMETRY_DISABLED", "").lower()
+    if disabled_env in ("1", "true", "yes"):
+        return False
+    return True
+
+
+def _probe_aws_imds(
+    client: httpx.Client,
+) -> bool:
+    """AWS IMDSv2 token PUT; True iff the token endpoint responded 200.
+
+    Does NOT read or log the token value. We only care whether the endpoint
+    was reachable. The token has a 1-second TTL and the response body is
+    discarded when the Response object goes out of scope.
+    """
+    resp = client.put(
+        "http://169.254.169.254/latest/api/token",
+        headers={"X-aws-ec2-metadata-token-ttl-seconds": "1"},
+    )
+    return resp.status_code == 200
+
+
+def _probe_gcp_metadata(
+    client: httpx.Client,
+) -> bool:
+    """GCP metadata server probe; True iff reachable with the required header."""
+    resp = client.get(
+        "http://metadata.google.internal/computeMetadata/v1/instance/zone",
+        headers={"Metadata-Flavor": "Google"},
+    )
+    return resp.status_code == 200
+
+
+def _probe_azure_imds(
+    client: httpx.Client,
+) -> bool:
+    """Azure IMDS probe; True iff reachable with the required header."""
+    resp = client.get(
+        "http://169.254.169.254/metadata/instance?api-version=2021-02-01",
+        headers={"Metadata": "true"},
+    )
+    return resp.status_code == 200
+
+
+def _probe_imds() -> str | None:
+    """Probe cloud metadata services sequentially. Returns cloud label or None.
+
+    Each probe has a fixed 300ms timeout. Worst case total: ~900ms (all three
+    fail). Never raises. Any exception from a probe is caught, logged at DEBUG
+    with the exception type only (no response body, no headers), and the
+    cascade continues to the next provider.
+
+    trust_env=False is load-bearing here: it tells httpx to ignore HTTP_PROXY /
+    HTTPS_PROXY / NO_PROXY env vars so we never route a 169.254.169.254 probe
+    through a corporate proxy.
+    """
+    try:
+        client_cm = httpx.Client(
+            timeout=_IMDS_PROBE_TIMEOUT_SECONDS,
+            trust_env=False,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"[telemetry] imds client init failed: {type(e).__name__}")
+        return None
+
+    with client_cm as client:
+        for provider, probe_fn in (
+            ("aws", _probe_aws_imds),
+            ("gcp", _probe_gcp_metadata),
+            ("azure", _probe_azure_imds),
+        ):
+            try:
+                if probe_fn(client):
+                    return provider
+            except Exception as e:  # noqa: BLE001 - fail-silent on any probe error
+                # Log only the exception type. Never log the URL, headers, body,
+                # or stack trace - any of those could leak sensitive content if
+                # the underlying library is later changed.
+                logger.debug(f"[telemetry] imds probe {provider} failed: {type(e).__name__}")
+                continue
+    return None
+
+
+@functools.lru_cache(maxsize=1)
+def _detect_cloud_provider_with_method() -> tuple[str, str]:
+    """Detect cloud provider and return (cloud, detection_method).
+
+    Detection cascade, first match wins:
+      1. Cloud-specific env vars  -> method="env"
+      2. DMI files                -> method="dmi"
+      3. ECS task metadata URI    -> method="ecs_meta" (always aws)
+      4. Kubernetes node-name     -> method="k8s_heuristic"
+      5. IMDS HTTP probe          -> method="imds"
+      6. Fallback                 -> ("unknown", "unknown")
+
+    Cached for the lifetime of the process. Safe to call from any thread
+    after the first call completes.
+    """
+    cloud = _detect_cloud_from_env()
+    if cloud:
+        _log_detection_result(cloud, _DETECTION_METHOD_ENV)
+        return cloud, _DETECTION_METHOD_ENV
+
+    cloud = _detect_cloud_from_dmi()
+    if cloud:
+        _log_detection_result(cloud, _DETECTION_METHOD_DMI)
+        return cloud, _DETECTION_METHOD_DMI
+
+    if os.getenv("ECS_CONTAINER_METADATA_URI_V4") or os.getenv("ECS_CONTAINER_METADATA_URI"):
+        _log_detection_result("aws", _DETECTION_METHOD_ECS_META)
+        return "aws", _DETECTION_METHOD_ECS_META
+
+    cloud = _detect_cloud_from_k8s_heuristic()
+    if cloud:
+        _log_detection_result(cloud, _DETECTION_METHOD_K8S_HEURISTIC)
+        return cloud, _DETECTION_METHOD_K8S_HEURISTIC
+
+    if _should_probe_imds():
+        cloud = _probe_imds()
+        if cloud:
+            _log_detection_result(cloud, _DETECTION_METHOD_IMDS)
+            return cloud, _DETECTION_METHOD_IMDS
+
+    _log_detection_result("unknown", _DETECTION_METHOD_UNKNOWN)
+    return "unknown", _DETECTION_METHOD_UNKNOWN
+
+
+def _log_detection_result(cloud: str, method: str) -> None:
+    """Log the detection result once and increment the Prometheus counter.
+
+    We never log the contents of any IMDS response - only the final
+    classification and the method label.
+    """
+    logger.info(
+        f"[telemetry] cloud_detection: cloud={cloud}, method={method} "
+        "(see docs/TELEMETRY.md to improve classification)"
+    )
+    try:
+        from registry.core.metrics import CLOUD_DETECTION_TOTAL
+
+        CLOUD_DETECTION_TOTAL.labels(cloud=cloud, method=method).inc()
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"[telemetry] cloud_detection counter inc failed: {type(e).__name__}")
+
+
+def _detect_cloud_provider() -> str:
+    """Return just the cloud label. Kept for code that only needs the label."""
+    cloud, _ = _detect_cloud_provider_with_method()
+    return cloud
+
+
+async def _get_operator_cloud_hint() -> str | None:
+    """Fetch the registry-card operator hint with a 60s TTL cache.
+
+    Returns one of 'on_premises', 'other', 'declined', or None.
+    Never raises — on any repository error returns None so the cascade proceeds.
+    """
+    now = time.monotonic()
+    cached = _hint_cache.get("registry")
+    if cached is not None and now - cached[0] < _HINT_CACHE_TTL_SECONDS:
+        return cached[1]
+
+    hint: str | None = None
+    try:
+        from registry.repositories.factory import get_registry_card_repository
+
+        repo = get_registry_card_repository()
+        card = await repo.get()
+        hint = card.cloud_provider_hint if card else None
+    except Exception as e:
+        logger.debug(f"[telemetry] Failed to load operator cloud hint: {type(e).__name__}")
+
+    _hint_cache["registry"] = (now, hint)
+    return hint
+
+
+def _invalidate_hint_cache() -> None:
+    """Clear the hint cache. Called by the POST endpoint so the next telemetry
+    event picks up the newly set hint without waiting up to 60s."""
+    _hint_cache.clear()
+
+
+async def _resolve_cloud() -> tuple[str, str]:
+    """Resolve the final (cloud, method) applying overrides in priority order.
+
+    Priority:
+        1. MCP_CLOUD_PROVIDER env var       -> method="explicit"
+        2. Registry card operator hint
+             on_premises / other            -> method="operator_declared"
+             declined                       -> ("unknown", "operator_declined")
+        3. Auto-detection cascade           -> existing 5-step
+        4. Fallback                         -> ("unknown", "unknown")
+    """
+    explicit = settings.mcp_cloud_provider
+    if explicit:
+        _log_detection_result(explicit, _DETECTION_METHOD_EXPLICIT)
+        return explicit, _DETECTION_METHOD_EXPLICIT
+
+    hint = await _get_operator_cloud_hint()
+    if hint in ("on_premises", "other"):
+        _log_detection_result(hint, _DETECTION_METHOD_OPERATOR_DECLARED)
+        return hint, _DETECTION_METHOD_OPERATOR_DECLARED
+    if hint == "declined":
+        _log_detection_result("unknown", _DETECTION_METHOD_OPERATOR_DECLINED)
+        return "unknown", _DETECTION_METHOD_OPERATOR_DECLINED
+
+    return _detect_cloud_provider_with_method()
+
+
+def _detect_compute_platform() -> str:
+    """Detect the compute platform where the registry is running.
+
+    Returns:
+        One of: ecs, eks, kubernetes, docker, ec2, vm, or unknown
+    """
+    # ECS: AWS sets these env vars in ECS task containers
+    if os.getenv("ECS_CONTAINER_METADATA_URI_V4") or os.getenv("ECS_CONTAINER_METADATA_URI"):
+        return "ecs"
+
+    # EKS / Kubernetes: k8s injects this env var into every pod
+    if os.getenv("KUBERNETES_SERVICE_HOST"):
+        return "kubernetes"
+
+    # Docker (local): /.dockerenv exists in Docker containers
+    if os.path.exists("/.dockerenv"):
+        return "docker"
+
+    # Podman: /run/.containerenv exists in Podman containers
+    if os.path.exists("/run/.containerenv"):
+        return "podman"
+
+    # EC2: check for AWS hypervisor UUID
+    try:
+        with open("/sys/devices/virtual/dmi/id/board_asset_tag") as f:
+            if f.read().strip().startswith("i-"):
+                return "ec2"
+    except (FileNotFoundError, PermissionError):
+        pass
+
+    return "unknown"
+
+
+# Ordered prefix-match table for deriving embeddings_backend_kind from the
+# configured EMBEDDINGS_MODEL_NAME setting. Order matters: more-specific
+# prefixes must come first. Matching is first-hit-wins, case-insensitive,
+# against the left-trimmed, lowercased model name.
+#
+# NOTE: keep the set of result kinds in sync with the regex allowlist in
+# terraform/telemetry-collector/lambda/collector/schemas.py
+# (StartupEvent.embeddings_backend_kind and HeartbeatEvent.embeddings_backend_kind).
+_BACKEND_KIND_PATTERNS: tuple[tuple[str, str], ...] = (
+    ("bedrock/", "bedrock"),
+    ("amazon.", "bedrock"),
+    ("amazon-", "bedrock"),
+    ("openai/", "openai"),
+    ("azure/", "azure-openai"),
+    ("text-embedding-", "openai"),
+    ("voyage-", "voyage"),
+    ("voyage/", "voyage"),
+    ("embed-english-", "cohere"),
+    ("embed-multilingual-", "cohere"),
+    ("cohere/", "cohere"),
+)
+
+
+def _derive_embeddings_backend_kind(
+    provider: str,
+    model_name: str | None,
+) -> str:
+    """Return a coarse-grained embeddings backend category for telemetry rollups.
+
+    The raw model_name is consulted only locally for this derivation and is
+    NEVER included in the returned telemetry payload. See docs/TELEMETRY.md
+    for the privacy callout.
+
+    Args:
+        provider: Value of settings.embeddings_provider
+            ("sentence-transformers" or "litellm").
+        model_name: Value of settings.embeddings_model_name (may be None/empty).
+
+    Returns:
+        One of: "sentence-transformers", "bedrock", "openai", "azure-openai",
+        "voyage", "cohere", "other", "unknown".
+    """
+    if provider == "sentence-transformers":
+        return "sentence-transformers"
+
+    if not model_name:
+        return "unknown"
+
+    normalized = model_name.strip().lower()
+    for prefix, kind in _BACKEND_KIND_PATTERNS:
+        if normalized.startswith(prefix):
+            return kind
+
+    if provider == "litellm":
+        # Log once per build so operators who see a rising 'other' bucket in
+        # the usage report can turn on DEBUG logging and identify which model
+        # names are unmapped. The model name itself is NOT logged (we keep
+        # the operator-configured string local to the process).
+        logger.debug(
+            "[telemetry] Embeddings model did not match any known backend-kind "
+            "pattern; reporting as 'other'. Extend _BACKEND_KIND_PATTERNS if "
+            "this is a recognized vendor."
+        )
+        return "other"
+
+    return "unknown"
+
+
+def _compute_signature(body: bytes) -> str:
+    """Compute HMAC-SHA256 signature for a telemetry request body.
+
+    Args:
+        body: The JSON-encoded request body as bytes.
+
+    Returns:
+        Hex-encoded HMAC-SHA256 signature string.
+    """
+    return hmac.new(
+        TELEMETRY_SIGNING_KEY.encode(),
+        body,
+        hashlib.sha256,
+    ).hexdigest()
+
+
+async def _get_registry_id() -> str:
+    """Get the registry ID for telemetry events.
+
+    Tries the registry card UUID first. Falls back to the persistent
+    telemetry instance_id if the card hasn't been created yet.
+
+    Returns:
+        Registry card UUID or telemetry instance_id (never None).
+    """
+    try:
+        from registry.repositories.factory import get_registry_card_repository
+
+        repo = get_registry_card_repository()
+        card = await repo.get()
+        if card and card.id:
+            return str(card.id)
+    except Exception as e:
+        logger.warning(f"[telemetry] Failed to get registry card ID: {e}")
+
+    # Fallback: use the persistent telemetry instance_id
+    logger.debug("[telemetry] Registry card not found, using telemetry instance_id")
+    return await _get_or_create_instance_id()
+
+
+def _is_telemetry_enabled() -> bool:
+    """Check if telemetry is enabled (respects MCP_TELEMETRY_DISABLED env var)."""
+    # Environment variable override takes precedence
+    disabled_env = os.getenv("MCP_TELEMETRY_DISABLED", "").lower()
+    if disabled_env in ("1", "true", "yes"):
+        return False
+
+    return settings.telemetry_enabled
+
+
+def _is_heartbeat_enabled() -> bool:
+    """Check if heartbeat telemetry is enabled (on by default, opt-out)."""
+    if not _is_telemetry_enabled():
+        return False
+
+    # Check environment variable override for heartbeat opt-out
+    opt_out_env = os.getenv("MCP_TELEMETRY_OPT_OUT", "").lower()
+    if opt_out_env in ("1", "true", "yes"):
+        return False
+
+    return not settings.telemetry_opt_out
+
+
+def _get_heartbeat_interval_minutes() -> int:
+    """Get heartbeat interval from settings (default 1440 minutes = 24 hours)."""
+    # Environment variable override takes precedence
+    env_val = os.getenv("MCP_TELEMETRY_HEARTBEAT_INTERVAL_MINUTES", "")
+    if env_val.isdigit() and int(env_val) > 0:
+        return int(env_val)
+
+    return settings.telemetry_heartbeat_interval_minutes
+
+
+def _get_heartbeat_lock_interval_seconds() -> int:
+    """Get heartbeat lock interval derived from heartbeat interval."""
+    return _get_heartbeat_interval_minutes() * 60
+
+
+async def _get_or_create_instance_id() -> str:
+    """
+    Get or create anonymous instance ID.
+
+    Stored in the _telemetry_state MongoDB collection. Falls back to a local
+    file ({data_dir}/.telemetry_id) if the database call fails.
+
+    Returns:
+        UUID v4 string (e.g., "a1b2c3d4-e5f6-7890-abcd-ef1234567890")
+    """
+    from registry.repositories.documentdb.client import get_documentdb_client
+
+    try:
+        db = await get_documentdb_client()
+        collection = db["_telemetry_state"]
+
+        doc = await collection.find_one({"_id": "telemetry_config"})
+
+        if doc and "instance_id" in doc:
+            return doc["instance_id"]
+
+        instance_id = str(uuid.uuid4())
+        now = datetime.now(UTC).isoformat()
+
+        await collection.update_one(
+            {"_id": "telemetry_config"},
+            {"$setOnInsert": {"instance_id": instance_id, "created_at": now}},
+            upsert=True,
+        )
+
+        return instance_id
+
+    except Exception as e:
+        logger.warning(f"Failed to get instance ID from MongoDB: {e}")
+
+    # File-based fallback
+    telemetry_file = settings.data_dir / ".telemetry_id"
+
+    try:
+        settings.data_dir.mkdir(parents=True, exist_ok=True)
+
+        if telemetry_file.exists():
+            instance_id = telemetry_file.read_text().strip()
+            if instance_id:
+                return instance_id
+
+        instance_id = str(uuid.uuid4())
+        telemetry_file.write_text(instance_id)
+        return instance_id
+
+    except Exception as e:
+        logger.warning(f"Failed to read/write telemetry ID file: {e}")
+        return str(uuid.uuid4())
+
+
+async def _acquire_telemetry_lock(event_type: str, interval_seconds: int) -> bool:
+    """
+    Acquire a distributed lock for sending telemetry.
+
+    Uses MongoDB findOneAndUpdate with a staleness check to ensure
+    only one replica sends telemetry within the interval window.
+
+    Args:
+        event_type: "startup" or "heartbeat"
+        interval_seconds: Lock interval (e.g., 60 for startup, 86400 for heartbeat)
+
+    Returns:
+        True if lock acquired (caller should send), False if already sent recently
+    """
+    try:
+        from registry.repositories.documentdb.client import get_documentdb_client
+
+        db = await get_documentdb_client()
+        collection = db["_telemetry_state"]
+
+        now = datetime.now(UTC)
+        cutoff = now - timedelta(seconds=interval_seconds)
+
+        field_name = f"last_{event_type}_sent_at"
+
+        # Atomic update: only update if last sent is None or older than cutoff
+        # NOTE: Use BSON datetime objects for proper comparison (not ISO-8601 strings)
+        result = await collection.find_one_and_update(
+            {
+                "_id": "telemetry_config",
+                "$or": [
+                    {field_name: {"$exists": False}},
+                    {field_name: None},
+                    {field_name: {"$lt": cutoff}},  # Motor converts datetime to BSON date
+                ],
+            },
+            {"$set": {field_name: now}},  # Store as BSON datetime
+            upsert=False,
+        )
+
+        # Lock acquired if document was found and updated
+        return result is not None
+
+    except Exception as e:
+        logger.warning(f"Failed to acquire telemetry lock: {e}")
+        # If lock mechanism fails, don't block telemetry
+        return True
+
+
+def _classification_fields() -> dict:
+    """Return the internal-deployment classification keys for telemetry payloads.
+
+    Single source of truth so the startup and heartbeat builders cannot drift
+    (issue #1216). Both builders merge this dict into their payload.
+    """
+    return {
+        "internal_only_deployment": settings.internal_only_deployment,
+        "internal_deployment_type": settings.internal_deployment_type.value,
+    }
+
+
+def _auth_path_volume_bucket(total: int) -> str:
+    """Return the order-of-magnitude bucket label for an observed request total.
+
+    Coarse by design: enough to discard a noise sample, not enough to be a
+    traffic meter. A total of 0 never reaches here -- zero volume is reported as
+    None by _auth_path_fields.
+    """
+    if total < 10:
+        return "1-9"
+    if total < 100:
+        return "10-99"
+    if total < 1000:
+        return "100-999"
+    if total < 10000:
+        return "1k-9k"
+    return "10k+"
+
+
+def _auth_path_fields(counts: dict[str, int], window_hours: float) -> dict[str, Any]:
+    """Return the observed auth-path mix keys for the heartbeat payload.
+
+    Shares, not counts: per-path request counts against a stable registry_id
+    would be a traffic meter, and the mix is what the fleet view needs. Two
+    coarse companions travel with the mix so a reader can tell a three-request
+    sample from a full day of traffic.
+
+    All three keys are None when nothing was observed -- never {} and never 0,
+    because an empty mix must not read as a measured one.
+
+    Args:
+        counts: Auth path -> request count over the window. Keys outside
+            _KNOWN_AUTH_PATHS are dropped rather than passed through.
+        window_hours: Hours the counts accumulated over.
+
+    Returns:
+        Dict with keys auth_path_share_24h, auth_path_volume_bucket_24h and
+        auth_path_window_hours.
+    """
+    known = {path: n for path, n in counts.items() if path in _KNOWN_AUTH_PATHS and n > 0}
+    total = sum(known.values())
+    if total == 0:
+        return {
+            "auth_path_share_24h": None,
+            "auth_path_volume_bucket_24h": None,
+            "auth_path_window_hours": None,
+        }
+
+    # Largest remainder: floor every share, then hand the leftover points to the
+    # largest fractional parts, so a reader is never told the mix adds up to 99.
+    exact = {path: n * 100 / total for path, n in known.items()}
+    shares = {path: int(value) for path, value in exact.items()}
+    leftover = 100 - sum(shares.values())
+    ranked = sorted(exact, key=lambda p: (exact[p] - shares[p], known[p], p), reverse=True)
+    for path in ranked[:leftover]:
+        shares[path] += 1
+
+    return {
+        "auth_path_share_24h": shares,
+        "auth_path_volume_bucket_24h": _auth_path_volume_bucket(total),
+        "auth_path_window_hours": min(max(int(window_hours), 0), _AUTH_PATH_WINDOW_HOURS_MAX),
+    }
+
+
+async def _build_startup_payload() -> dict:
+    """Build the anonymous startup event payload."""
+    from registry.repositories.stats_repository import get_search_counts
+
+    counts = await get_search_counts()
+    registry_id = await _get_registry_id()
+    embeddings_backend_kind = _derive_embeddings_backend_kind(
+        settings.embeddings_provider,
+        settings.embeddings_model_name,
+    )
+    cloud, detection_method = await _resolve_cloud()
+
+    return {
+        "event": "startup",
+        "schema_version": "6",
+        "registry_id": registry_id,
+        "v": __version__,
+        "py": f"{sys.version_info.major}.{sys.version_info.minor}",
+        "os": platform.system().lower(),  # linux, darwin, windows
+        "arch": platform.machine(),  # x86_64, arm64, aarch64
+        "cloud": cloud,  # aws, gcp, azure, unknown
+        "cloud_detection_method": detection_method,  # env, dmi, ecs_meta, k8s_heuristic, imds, unknown
+        "compute": _detect_compute_platform(),  # ecs, eks, kubernetes, docker, ec2, unknown
+        "mode": settings.deployment_mode.value,  # with-gateway, registry-only
+        "registry_mode": settings.registry_mode.value,  # full, skills-only, etc.
+        "storage": settings.storage_backend,  # file, documentdb, mongodb-ce
+        "auth": settings.auth_provider,  # cognito, keycloak, entra, okta, auth0, pingfederate
+        "federation": settings.federation_static_token_auth_enabled,
+        "embeddings_provider": settings.embeddings_provider,
+        "embeddings_backend_kind": embeddings_backend_kind,
+        "search_queries_total": counts["total"],
+        "search_queries_24h": counts["last_24h"],
+        "search_queries_1h": counts["last_1h"],
+        # Internal/workshop deployment classification (schema v5+, issue #1216)
+        **_classification_fields(),
+        "ts": datetime.now(UTC).isoformat(),
+    }
+
+
+async def _build_heartbeat_payload() -> dict:
+    """Build the richer opt-in heartbeat payload with aggregate counts."""
+    from registry.api.system_routes import get_server_start_time
+    from registry.repositories.factory import (
+        get_agent_repository,
+        get_peer_federation_repository,
+        get_server_repository,
+        get_skill_repository,
+    )
+    from registry.repositories.stats_repository import get_auth_path_counts, get_search_counts
+
+    # Calculate uptime
+    uptime_hours = 0
+    server_start_time = get_server_start_time()
+    if server_start_time:
+        elapsed = datetime.now(UTC) - server_start_time
+        uptime_hours = int(elapsed.total_seconds() / 3600)
+
+    # Get aggregate counts (with detailed error logging)
+    try:
+        server_repo = get_server_repository()
+        servers = await server_repo.list_all()
+        servers_count = len(servers)
+    except Exception as e:
+        logger.warning(f"[telemetry] Failed to get server count: {e}")
+        servers_count = 0
+
+    try:
+        agent_repo = get_agent_repository()
+        agents = await agent_repo.list_all()
+        agents_count = len(agents)
+    except Exception as e:
+        logger.warning(f"[telemetry] Failed to get agent count: {e}")
+        agents_count = 0
+
+    try:
+        skill_repo = get_skill_repository()
+        skills = await skill_repo.list_all(skip=0, limit=10000)
+        skills_count = len(skills)
+    except Exception as e:
+        logger.warning(f"[telemetry] Failed to get skill count: {e}")
+        skills_count = 0
+
+    try:
+        peer_repo = get_peer_federation_repository()
+        peers = await peer_repo.list_peers()
+        peers_count = len(peers)
+    except Exception as e:
+        logger.warning(f"[telemetry] Failed to get peer count: {e}")
+        peers_count = 0
+
+    # All storage backends use the DocumentDB search repository.
+    search_backend = "documentdb"
+
+    counts = await get_search_counts()
+    auth_path = await get_auth_path_counts()
+    registry_id = await _get_registry_id()
+    embeddings_backend_kind = _derive_embeddings_backend_kind(
+        settings.embeddings_provider,
+        settings.embeddings_model_name,
+    )
+    cloud, detection_method = await _resolve_cloud()
+
+    return {
+        "event": "heartbeat",
+        "schema_version": "6",
+        "registry_id": registry_id,
+        "v": __version__,
+        # Deployment-shape fields (schema v4+). Carrying them on every
+        # heartbeat lets the analyzer attribute auth/arch/etc to long-lived
+        # instances whose original startup event predates the report
+        # collection window. Without this, those instances fall into the
+        # "unknown" bucket on the report's auth and architecture panels.
+        "py": f"{sys.version_info.major}.{sys.version_info.minor}",
+        "os": platform.system().lower(),
+        "arch": platform.machine(),
+        "mode": settings.deployment_mode.value,
+        "registry_mode": settings.registry_mode.value,
+        "storage": settings.storage_backend,
+        "auth": settings.auth_provider,
+        "federation": settings.federation_static_token_auth_enabled,
+        "cloud": cloud,
+        "cloud_detection_method": detection_method,
+        "compute": _detect_compute_platform(),
+        "servers_count": servers_count,
+        "agents_count": agents_count,
+        "skills_count": skills_count,
+        "peers_count": peers_count,
+        "search_backend": search_backend,
+        "embeddings_provider": settings.embeddings_provider,
+        "embeddings_backend_kind": embeddings_backend_kind,
+        "uptime_hours": uptime_hours,
+        "search_queries_total": counts["total"],
+        "search_queries_24h": counts["last_24h"],
+        "search_queries_1h": counts["last_1h"],
+        # Observed auth-path mix (schema v6+, issue #1753)
+        **_auth_path_fields(auth_path["counts"], auth_path["window_hours"]),
+        # Internal/workshop deployment classification (schema v5+, issue #1216)
+        **_classification_fields(),
+        "ts": datetime.now(UTC).isoformat(),
+    }
+
+
+async def _send_telemetry(payload: dict) -> None:
+    """
+    Send telemetry payload to the collector endpoint.
+
+    - 5-second timeout
+    - Fail-silent: log errors but never raise
+    - Debug mode: log payload instead of sending
+
+    Args:
+        payload: Telemetry event payload (startup or heartbeat)
+    """
+
+    # Debug mode: log payload instead of sending
+    if settings.telemetry_debug:
+        logger.info(f"[telemetry] Debug mode - payload:\n{json.dumps(payload, indent=2)}")
+        return
+
+    # Serialize payload and compute HMAC signature
+    body = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
+    signature = _compute_signature(body)
+
+    # Send telemetry with retry logic
+    max_retries = 1  # Single retry
+    retry_delay = 1.0  # 1 second delay
+
+    for attempt in range(max_retries + 1):
+        try:
+            async with httpx.AsyncClient(timeout=TELEMETRY_TIMEOUT_SECONDS) as client:
+                response = await client.post(
+                    settings.telemetry_endpoint,
+                    content=body,
+                    headers={
+                        "Content-Type": "application/json",
+                        "X-Telemetry-Signature": signature,
+                    },
+                )
+
+                if response.status_code in (200, 204):
+                    logger.info(f"[telemetry] {payload['event']} event sent successfully")
+
+                    # Track success in Datadog
+                    from registry.core.metrics import telemetry_sends_total
+
+                    telemetry_sends_total.labels(event=payload["event"], status="success").inc()
+
+                    return  # Success, exit
+
+                else:
+                    logger.warning(
+                        f"[telemetry] Unexpected response {response.status_code} from collector"
+                    )
+
+                    # Track failure in Datadog
+                    from registry.core.metrics import telemetry_sends_total
+
+                    status_category = f"{response.status_code // 100}xx"
+                    telemetry_sends_total.labels(
+                        event=payload["event"], status=status_category
+                    ).inc()
+
+        except httpx.TimeoutException:
+            logger.info(f"[telemetry] Request timed out (attempt {attempt + 1}/{max_retries + 1})")
+
+            # Track timeout in Datadog
+            from registry.core.metrics import telemetry_sends_total
+
+            telemetry_sends_total.labels(
+                event=payload.get("event", "unknown"), status="timeout"
+            ).inc()
+
+        except Exception as e:
+            logger.info(
+                f"[telemetry] Failed to send (attempt {attempt + 1}/{max_retries + 1}): {e}"
+            )
+
+            # Track error in Datadog
+            from registry.core.metrics import telemetry_sends_total
+
+            telemetry_sends_total.labels(
+                event=payload.get("event", "unknown"), status="error"
+            ).inc()
+
+        # Retry after delay (but not on last attempt)
+        if attempt < max_retries:
+            await asyncio.sleep(retry_delay)
+
+
+async def _initialize_telemetry_collection() -> None:
+    """
+    Proactively create the _telemetry_state collection with proper schema.
+
+    Called during application startup to ensure MongoDB permissions are correct
+    and avoid silent failures on first telemetry send.
+    """
+    try:
+        from registry.repositories.documentdb.client import get_documentdb_client
+
+        db = await get_documentdb_client()
+
+        # Check if collection exists
+        existing_collections = await db.list_collection_names()
+
+        if "_telemetry_state" not in existing_collections:
+            # Create collection
+            await db.create_collection("_telemetry_state")
+            logger.info("[telemetry] Created _telemetry_state collection")
+
+        # Ensure the singleton document exists
+        collection = db["_telemetry_state"]
+        doc = await collection.find_one({"_id": "telemetry_config"})
+
+        if not doc:
+            # Create initial document with instance_id
+            instance_id = str(uuid.uuid4())
+            now = datetime.now(UTC)
+
+            await collection.insert_one(
+                {"_id": "telemetry_config", "instance_id": instance_id, "created_at": now}
+            )
+            logger.info(f"[telemetry] Initialized instance_id: {instance_id}")
+
+    except Exception as e:
+        logger.warning(f"[telemetry] Failed to initialize collection: {e}")
+        # Non-fatal: will fall back to lazy creation or file-based storage
+
+
+# Global scheduler instance
+_telemetry_scheduler: "TelemetryScheduler | None" = None
+
+
+async def initialize_telemetry() -> None:
+    """
+    Initialize telemetry system (create MongoDB collection, etc.).
+
+    Called during lifespan startup, before send_startup_ping().
+    """
+    await _initialize_telemetry_collection()
+
+
+async def send_startup_ping() -> None:
+    """
+    Send anonymous startup ping (Tier 1 - Opt-Out).
+
+    Called once during lifespan startup. Checks lock to prevent
+    duplicate sends in multi-replica deployments.
+    """
+    if not _is_telemetry_enabled():
+        logger.info("[telemetry] Telemetry is disabled")
+        return
+
+    # Log conspicuous disclosure
+    logger.info("=" * 78)
+    logger.info("[telemetry] Anonymous usage telemetry is ON (startup ping + daily heartbeat)")
+    logger.info("[telemetry] No PII is collected (no IPs, hostnames, or user data)")
+    logger.info(f"[telemetry] Endpoint: {settings.telemetry_endpoint}")
+    logger.info("[telemetry] To disable all: set MCP_TELEMETRY_DISABLED=1")
+    logger.info(
+        "[telemetry] Details: https://github.com/agentic-community/"
+        "mcp-gateway-registry/blob/main/docs/TELEMETRY.md"
+    )
+    logger.info("=" * 78)
+
+    try:
+        # Acquire lock (60-second interval)
+        lock_acquired = await _acquire_telemetry_lock("startup", STARTUP_LOCK_INTERVAL_SECONDS)
+
+        if not lock_acquired:
+            logger.info("[telemetry] Startup ping already sent recently by another replica")
+            return
+
+        # Build and send payload
+        payload = await _build_startup_payload()
+        await _send_telemetry(payload)
+
+    except Exception as e:
+        logger.warning(f"[telemetry] Startup ping failed: {e}")
+
+
+async def start_heartbeat_scheduler() -> None:
+    """
+    Start the heartbeat scheduler (Tier 2 - Opt-Out, default ON).
+
+    No-op if heartbeat is disabled. Called during lifespan startup.
+    """
+    global _telemetry_scheduler
+
+    if not _is_heartbeat_enabled():
+        logger.info("[telemetry] Heartbeat scheduler not started (opted out or telemetry disabled)")
+        return
+
+    if _telemetry_scheduler is not None:
+        logger.warning("[telemetry] Heartbeat scheduler already running")
+        return
+
+    _telemetry_scheduler = TelemetryScheduler()
+    await _telemetry_scheduler.start()
+    interval = _get_heartbeat_interval_minutes()
+    logger.info(f"[telemetry] Daily heartbeat telemetry is ON ({interval}-minute interval)")
+
+
+async def stop_heartbeat_scheduler() -> None:
+    """Stop the heartbeat scheduler. Called during lifespan shutdown."""
+    global _telemetry_scheduler
+
+    if _telemetry_scheduler is not None:
+        await _telemetry_scheduler.stop()
+        _telemetry_scheduler = None
+
+
+async def send_forced_heartbeat() -> dict:
+    """
+    Force-send a heartbeat event immediately, bypassing the interval lock.
+
+    Called from admin API endpoint. Respects telemetry enabled/disabled setting
+    but skips the distributed lock so the event is always sent.
+
+    Returns:
+        Dict with status and optional payload summary.
+    """
+    if not _is_telemetry_enabled():
+        return {"status": "disabled", "message": "Telemetry is disabled"}
+
+    try:
+        payload = await _build_heartbeat_payload()
+        await _send_telemetry(payload)
+        return {
+            "status": "sent",
+            "event": "heartbeat",
+            "servers_count": payload.get("servers_count", 0),
+            "agents_count": payload.get("agents_count", 0),
+            "skills_count": payload.get("skills_count", 0),
+            "peers_count": payload.get("peers_count", 0),
+            "ts": payload.get("ts"),
+        }
+    except Exception as e:
+        logger.error(f"[telemetry] Forced heartbeat failed: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+async def send_forced_startup() -> dict:
+    """
+    Force-send a startup event immediately, bypassing the 60-second lock.
+
+    Called from admin API endpoint. Respects telemetry enabled/disabled setting
+    but skips the distributed lock so the event is always sent.
+
+    Returns:
+        Dict with status and optional payload summary.
+    """
+    if not _is_telemetry_enabled():
+        return {"status": "disabled", "message": "Telemetry is disabled"}
+
+    try:
+        payload = await _build_startup_payload()
+        await _send_telemetry(payload)
+        return {
+            "status": "sent",
+            "event": "startup",
+            "v": payload.get("v"),
+            "storage": payload.get("storage"),
+            "mode": payload.get("mode"),
+            "ts": payload.get("ts"),
+        }
+    except Exception as e:
+        logger.error(f"[telemetry] Forced startup ping failed: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+class TelemetryScheduler:
+    """
+    Background scheduler for daily heartbeat telemetry.
+
+    Follows the same pattern as PeerSyncScheduler.
+    """
+
+    def __init__(self):
+        self._task: asyncio.Task | None = None
+        self._running: bool = False
+
+    async def start(self) -> None:
+        """Start the background scheduler."""
+        if self._running:
+            logger.warning("[telemetry] Heartbeat scheduler already running")
+            return
+
+        self._running = True
+        self._task = asyncio.create_task(self._scheduler_loop())
+        logger.info("[telemetry] Heartbeat scheduler started")
+
+    async def stop(self) -> None:
+        """Stop the background scheduler."""
+        self._running = False
+        if self._task:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+            self._task = None
+        logger.info("[telemetry] Heartbeat scheduler stopped")
+
+    async def _scheduler_loop(self) -> None:
+        """Main scheduler loop that sends heartbeat at configured interval."""
+        interval_minutes = _get_heartbeat_interval_minutes()
+        logger.info(f"[telemetry] Heartbeat loop started ({interval_minutes}-minute interval)")
+
+        while self._running:
+            try:
+                await self._send_heartbeat()
+            except Exception as e:
+                logger.error(f"[telemetry] Error in heartbeat scheduler: {e}", exc_info=True)
+
+            # Wait for configured interval before next heartbeat
+            await asyncio.sleep(interval_minutes * 60)
+
+    async def _send_heartbeat(self) -> None:
+        """Send heartbeat event if lock acquired."""
+        # Acquire lock (interval matches heartbeat frequency)
+        lock_acquired = await _acquire_telemetry_lock(
+            "heartbeat", _get_heartbeat_lock_interval_seconds()
+        )
+
+        if not lock_acquired:
+            logger.info("[telemetry] Heartbeat already sent recently by another replica")
+            return
+
+        # Build and send payload
+        payload = await _build_heartbeat_payload()
+        await _send_telemetry(payload)

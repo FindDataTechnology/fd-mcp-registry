@@ -1,0 +1,368 @@
+"""Generic OAuth 2.0 authorization-code engine.
+
+Three pure-ish functions cover ~90% of every provider; the ~3 providers that
+bend the spec are handled by a small ``token_response_parser`` hook table, not
+bespoke code (the AgentCore one-engine model).
+
+- ``build_authorize_url``  -- construct the consent URL (PKCE S256, scopes, state).
+- ``exchange_code``        -- code -> tokens at the token endpoint.
+- ``refresh_token``        -- refresh_token grant -> new tokens.
+
+PKCE helpers live here too. The engine never touches the SecretStore or the
+provider config table directly -- callers pass the resolved ``OAuthProviderConfig``
+plus the operator ``client_id``/``client_secret``. Token material is returned as
+``StoredToken``; the caller persists it.
+"""
+
+import base64
+import hashlib
+import json
+import logging
+import secrets
+from datetime import UTC, datetime, timedelta
+from urllib.parse import urlencode
+
+import httpx
+
+from registry.egress_auth.schemas import (
+    OAuthProviderConfig,
+    StoredToken,
+    TokenEndpointAuthStyle,
+)
+from registry.exceptions import UrlValidationError
+from registry.utils.url_guard import (
+    CREDENTIALED_OAUTH_PROFILE,
+    shared_guarded_async_client,
+)
+
+logger = logging.getLogger(__name__)
+
+_HTTP_TIMEOUT = 30.0
+
+
+class OAuthEngineError(Exception):
+    """OAuth token-endpoint failure (network, non-2xx, unparseable response)."""
+
+
+class DeadRefreshTokenError(OAuthEngineError):
+    """The refresh token was rejected by the provider (invalid_grant) -> re-consent."""
+
+
+# --------------------------------------------------------------------------- #
+# PKCE
+# --------------------------------------------------------------------------- #
+
+
+def generate_pkce_verifier() -> str:
+    """RFC 7636 code_verifier: 43-128 chars of unreserved URL-safe base64."""
+    return base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b"=").decode("ascii")
+
+
+def pkce_challenge_s256(verifier: str) -> str:
+    """S256 code_challenge = base64url(sha256(verifier)), no padding."""
+    digest = hashlib.sha256(verifier.encode("ascii")).digest()
+    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+
+
+# --------------------------------------------------------------------------- #
+# Authorize URL
+# --------------------------------------------------------------------------- #
+
+
+def build_authorize_url(
+    cfg: OAuthProviderConfig,
+    client_id: str,
+    redirect_uri: str,
+    scopes: list[str],
+    state: str,
+    pkce_challenge: str | None = None,
+) -> str:
+    """Build the provider authorization-code consent URL."""
+    params = {
+        "response_type": "code",
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "state": state,
+    }
+    if scopes:
+        params["scope"] = cfg.scope_separator.join(scopes)
+    if cfg.use_pkce and pkce_challenge:
+        params["code_challenge"] = pkce_challenge
+        params["code_challenge_method"] = "S256"
+    # RFC 8707 resource indicator. Sent here on the authorize leg AND on the
+    # token/refresh legs (see exchange_code/refresh_token) -- providers like
+    # Atlassian's Rovo MCP require it on BOTH or they reject the flow. Set before
+    # extra_authorize_params so a built-in's static params still win a collision.
+    if cfg.resource:
+        params["resource"] = cfg.resource
+    params.update(cfg.extra_authorize_params)
+    return f"{cfg.authorize_url}?{urlencode(params)}"
+
+
+# --------------------------------------------------------------------------- #
+# Token-endpoint quirk hooks
+# --------------------------------------------------------------------------- #
+
+
+def _parse_standard(payload: dict) -> dict:
+    return payload
+
+
+def _parse_github_form(payload: dict) -> dict:
+    """GitHub already arrives as a dict here (we force Accept: json); identity.
+
+    Kept as an explicit hook so a future form-encoded edge has one place to live.
+    """
+    return payload
+
+
+def _parse_slack_nested(payload: dict) -> dict:
+    """Slack nests the user token under ``authed_user``.
+
+    Slack v2 returns ``{ok, authed_user: {access_token, token_type, scope, ...}}``
+    for user tokens. Lift the user token to the top level the engine expects.
+    """
+    if not payload.get("ok", True):
+        raise OAuthEngineError(f"Slack token error: {payload.get('error')}")
+    authed = payload.get("authed_user")
+    if isinstance(authed, dict) and authed.get("access_token"):
+        merged = dict(payload)
+        merged["access_token"] = authed.get("access_token")
+        merged["token_type"] = authed.get("token_type", "Bearer")
+        if authed.get("scope"):
+            merged["scope"] = authed["scope"]
+        if authed.get("refresh_token"):
+            merged["refresh_token"] = authed["refresh_token"]
+        if authed.get("expires_in"):
+            merged["expires_in"] = authed["expires_in"]
+        return merged
+    return payload
+
+
+_TOKEN_RESPONSE_PARSERS = {
+    "github_form": _parse_github_form,
+    "slack_nested": _parse_slack_nested,
+}
+
+
+def _parse_token_response(cfg: OAuthProviderConfig, payload: dict) -> dict:
+    parser = _TOKEN_RESPONSE_PARSERS.get(cfg.token_response_parser or "", _parse_standard)
+    return parser(payload)
+
+
+# --------------------------------------------------------------------------- #
+# Token endpoint calls
+# --------------------------------------------------------------------------- #
+
+
+def _jwt_exp(access_token: str | None) -> int | None:
+    """Best-effort ``exp`` (epoch seconds) from a JWT access token, else None.
+
+    Opaque (non-JWT) tokens and any decode/parse failure return None; the payload
+    is base64url-decoded WITHOUT signature verification purely to read the
+    provider-asserted lifetime, never to trust the token.
+    """
+    if not access_token or access_token.count(".") != 2:
+        return None
+    payload_b64 = access_token.split(".")[1]
+    payload_b64 += "=" * (-len(payload_b64) % 4)
+    try:
+        claims = json.loads(base64.urlsafe_b64decode(payload_b64.encode("ascii")))
+    except (ValueError, TypeError):
+        return None
+    exp = claims.get("exp")
+    return int(exp) if isinstance(exp, int | float) and not isinstance(exp, bool) else None
+
+
+def _expires_at(expires_in: int | None, access_token: str | None = None) -> str | None:
+    """ISO expiry from ``expires_in`` when present, else the access token's JWT ``exp``.
+
+    Some providers (e.g. Salesforce) omit ``expires_in`` from the token response
+    but issue a JWT access token bounded by an ``exp`` claim. Without this
+    fallback ``expires_at`` stays None, the vend path treats the token as
+    long-lived and never fires the single-flight refresh, so the gateway keeps
+    injecting a token the upstream has already expired ("Invalid token").
+    """
+    if expires_in:
+        return (datetime.now(UTC) + timedelta(seconds=int(expires_in))).isoformat()
+    exp = _jwt_exp(access_token)
+    if exp is not None:
+        return datetime.fromtimestamp(exp, tz=UTC).isoformat()
+    return None
+
+
+def _build_token_request(
+    cfg: OAuthProviderConfig,
+    client_id: str,
+    client_secret: str | None,
+    form: dict,
+) -> tuple[dict, dict]:
+    """Return (form_data, headers), placing the client secret per the provider's style.
+
+    ``NONE`` (RFC 7591 ``token_endpoint_auth_method=none``) is a public client:
+    only ``client_id`` goes in the body and no secret exists anywhere in the
+    request. The confidential styles fail closed on a missing secret rather
+    than sending an empty one (which providers accept-then-misattribute).
+    """
+    headers = {"Accept": "application/json"}
+    data = dict(form)
+    if cfg.token_endpoint_auth_style == TokenEndpointAuthStyle.NONE:
+        data["client_id"] = client_id
+        return data, headers
+    if not client_secret:
+        raise OAuthEngineError(
+            f"provider {cfg.name!r} uses token_endpoint_auth_style="
+            f"{cfg.token_endpoint_auth_style.value!r} but no client_secret is configured"
+        )
+    if cfg.token_endpoint_auth_style == TokenEndpointAuthStyle.BASIC_HEADER:
+        basic = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+        headers["Authorization"] = f"Basic {basic}"
+    else:  # POST_BODY (default)
+        data["client_id"] = client_id
+        data["client_secret"] = client_secret
+    return data, headers
+
+
+async def _post_token(cfg: OAuthProviderConfig, data: dict, headers: dict) -> dict:
+    # The token endpoint receives the operator client_secret (and, on refresh, the
+    # user's refresh_token). For a 'custom' provider cfg.token_url is registrant-
+    # supplied, so the request MUST go through the SSRF/rebinding-safe client: it
+    # pins the connection to a validated public IP at connect time (blocking a
+    # post-registration DNS rebind to a private/metadata address) and rejects a
+    # non-http(s) scheme, so the credential can never be exfiltrated to an
+    # internal target. The dedicated profile has an empty allowlist and
+    # requires HTTPS, so proxy allowlist entries cannot weaken this path.
+    # Built-in providers resolve to public HTTPS hosts and pass unchanged.
+    try:
+        # Pooled, process-lifetime SSRF-guarded client (keep-alive reuse across
+        # exchange/refresh calls). Timeout is per-request. NOTE: unlike the OBO and
+        # vend hops, this is NOT wrapped in a keep-alive reconnect retry: both grant
+        # types here are single-use/rotating (an authorization_code is single-use; a
+        # refresh_token rotates), so a blind re-POST after a connection reset could
+        # double-spend the grant -> invalid_grant. A reset instead surfaces as a
+        # transient "unreachable" error the refresh worker / caller retries safely.
+        client = shared_guarded_async_client(profile=CREDENTIALED_OAUTH_PROFILE)
+        resp = await client.post(cfg.token_url, data=data, headers=headers, timeout=_HTTP_TIMEOUT)
+    except UrlValidationError as exc:
+        # The pinned guard rejected the target before sending any credential.
+        # Keep the wrapped detail out of higher-level logs and browser responses.
+        raise OAuthEngineError("token endpoint blocked by security policy") from exc
+    except httpx.HTTPError as exc:
+        raise OAuthEngineError("token endpoint unreachable") from exc
+
+    try:
+        payload = resp.json()
+    except ValueError as exc:
+        raise OAuthEngineError(
+            f"token endpoint returned non-JSON (status {resp.status_code})"
+        ) from exc
+
+    if resp.status_code >= 400 or payload.get("error"):
+        err = payload.get("error", f"http {resp.status_code}")
+        if err in ("invalid_grant", "bad_refresh_token"):
+            raise DeadRefreshTokenError(f"refresh rejected by provider: {err}")
+        raise OAuthEngineError(f"token endpoint error: {err}")
+    return payload
+
+
+def _to_stored_token(
+    cfg: OAuthProviderConfig,
+    payload: dict,
+    client_id: str,
+    fallback_refresh: str | None = None,
+) -> StoredToken:
+    parsed = _parse_token_response(cfg, payload)
+    access = parsed.get("access_token")
+    if not access:
+        raise OAuthEngineError("token response missing access_token")
+    scope_raw = parsed.get("scope", "")
+    scopes = scope_raw.split(cfg.scope_separator) if scope_raw else []
+    now = datetime.now(UTC).isoformat()
+    return StoredToken(
+        access_token=access,
+        # Providers that rotate refresh tokens return a new one; otherwise keep
+        # the prior one (some don't re-send it on refresh).
+        refresh_token=parsed.get("refresh_token") or fallback_refresh,
+        token_type=parsed.get("token_type", "Bearer"),
+        expires_at=_expires_at(parsed.get("expires_in"), access),
+        scopes=[s for s in scopes if s],
+        status="active",
+        client_id=client_id,
+        created_at=now,
+        last_refreshed_at=now,
+    )
+
+
+async def exchange_code(
+    cfg: OAuthProviderConfig,
+    client_id: str,
+    client_secret: str | None,
+    code: str,
+    redirect_uri: str,
+    pkce_verifier: str | None = None,
+) -> StoredToken:
+    """Exchange an authorization code for tokens."""
+    form = {
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": redirect_uri,
+    }
+    if cfg.use_pkce and pkce_verifier:
+        form["code_verifier"] = pkce_verifier
+    # RFC 8707: the resource indicator MUST match the one sent on authorize, or a
+    # resource server like Atlassian's Rovo MCP rejects the exchange.
+    if cfg.resource:
+        form["resource"] = cfg.resource
+    data, headers = _build_token_request(cfg, client_id, client_secret, form)
+    payload = await _post_token(cfg, data, headers)
+    return _to_stored_token(cfg, payload, client_id)
+
+
+async def refresh_token(
+    cfg: OAuthProviderConfig,
+    client_id: str,
+    client_secret: str | None,
+    refresh_token_value: str,
+) -> StoredToken:
+    """Exchange a refresh token for a new access token (and possibly new refresh token).
+
+    Raises ``DeadRefreshTokenError`` when the provider rejects the refresh token
+    (invalid_grant) so the caller marks the entry ``refresh_failed`` -> re-consent.
+    """
+    form = {
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token_value,
+    }
+    # RFC 8707: carry the resource indicator on refresh too so the rotated access
+    # token stays bound to the same protected resource.
+    if cfg.resource:
+        form["resource"] = cfg.resource
+    data, headers = _build_token_request(cfg, client_id, client_secret, form)
+    payload = await _post_token(cfg, data, headers)
+    return _to_stored_token(cfg, payload, client_id, fallback_refresh=refresh_token_value)
+
+
+async def client_credentials_token(
+    cfg: OAuthProviderConfig,
+    client_id: str,
+    client_secret: str | None,
+    scopes: list[str] | None = None,
+) -> StoredToken:
+    """Acquire a token via the OAuth 2.0 ``client_credentials`` grant (RFC 6749 §4.4).
+
+    Used for machine-to-machine auth where the registry itself is the client
+    (e.g. authenticating to an OAuth-backed MCP server for health checks and
+    tool discovery). No user, no refresh token: the caller re-acquires when the
+    cached token nears expiry. The token endpoint receives the operator
+    client_secret, so the request goes through the same SSRF/rebinding-safe
+    client as the other grants (public HTTPS token endpoints only).
+    """
+    form: dict = {"grant_type": "client_credentials"}
+    if scopes:
+        form["scope"] = cfg.scope_separator.join(scopes)
+    # RFC 8707: bind the issued token to a specific protected resource when set.
+    if cfg.resource:
+        form["resource"] = cfg.resource
+    data, headers = _build_token_request(cfg, client_id, client_secret, form)
+    payload = await _post_token(cfg, data, headers)
+    return _to_stored_token(cfg, payload, client_id)

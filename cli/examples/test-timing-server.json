@@ -1,0 +1,9 @@
+{
+  "server_name": "Test Timing Server",
+  "description": "Test server to verify timing optimizations",
+  "path": "/test-timing-123",
+  "proxy_pass_url": "https://example.com/mcp",
+  "supported_transports": ["streamable-http"],
+  "auth_scheme": "none",
+  "tags": ["test", "timing"]
+}

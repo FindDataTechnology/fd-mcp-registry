@@ -1,0 +1,493 @@
+"""
+FastAPI middleware for audit logging.
+
+This module provides middleware that captures request/response
+envelope and identity context for every API request, creating
+structured audit records.
+"""
+
+import logging
+import time
+from collections.abc import Callable
+from datetime import UTC, datetime
+
+from fastapi import Request, Response
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.types import ASGIApp
+
+from ..common.instance import resolve_instance_id
+from ..utils.request_utils import get_client_ip
+from .models import (
+    Action,
+    Authorization,
+    Identity,
+    RegistryApiAccessRecord,
+)
+from .models import (
+    Request as AuditRequest,
+)
+from .models import (
+    Response as AuditResponse,
+)
+from .request_id import new_audit_request_id, sanitize_correlation_id
+from .service import AuditLogger
+
+logger = logging.getLogger(__name__)
+
+# Exact request paths of the real monitoring / health endpoints whose GET traffic
+# may be suppressed from the audit trail when audit_log_health_checks is False.
+#
+# This is an EXACT/PREFIX allowlist, deliberately NOT a "/health" substring test.
+# A substring test skipped auditing for any request URL that merely CONTAINED
+# "/health" -- including MANAGEMENT-PLANE mutations against a server registered
+# under the name "health" (e.g. POST /api/toggle/health,
+# POST /api/servers/health/rescan, PATCH /api/servers/health/auth-credential).
+# Those routes embed the caller-chosen server path in request.url.path via
+# {service_path:path}/{path:path}, so the substring test let an attacker turn a
+# mutating admin action into an un-audited one. Matching the known health routes
+# exactly closes that bypass while preserving legitimate health-check suppression.
+#
+# MUST stay in sync with the actual monitoring routes:
+#   - registry/main.py            @app.get("/health")
+#   - registry/health/routes.py   mounted at prefix /api/health (all sub-paths)
+#   - registry/api/federation_export_routes.py  GET /api/federation/health
+#   - registry/api/ans_routes.py                GET /api/admin/ans/health
+#   - registry/api/server_routes.py             POST /api/internal/healthcheck
+#   - registry/api/server_routes.py             GET  /api/servers/health
+# Per-entity health checks with a user-controlled {path} segment
+# (/api/skills/.../health, /api/agents/.../health) are intentionally NOT listed:
+# they cannot be matched exactly, so they fail closed to being audited.
+_HEALTH_CHECK_EXACT_PATHS: frozenset[str] = frozenset(
+    {
+        "/health",
+        "/api/health",
+        "/api/federation/health",
+        "/api/admin/ans/health",
+        "/api/internal/healthcheck",
+        "/api/servers/health",
+    }
+)
+
+# Everything under the /api/health router (e.g. /api/health/ws/health_status,
+# /api/health/ws/stats) is monitoring traffic; matched by prefix.
+_HEALTH_CHECK_PREFIX: str = "/api/health/"
+
+
+def _is_health_check_path(path: str) -> bool:
+    """Return True only for the known monitoring/health endpoints.
+
+    Uses an exact match against :data:`_HEALTH_CHECK_EXACT_PATHS` plus the
+    :data:`_HEALTH_CHECK_PREFIX` sub-tree, never a ``"/health" in path``
+    substring test. This prevents a management-plane mutation whose URL happens
+    to contain a server named ``health`` (e.g. ``/api/toggle/health``) from being
+    misclassified as a health check and dropped from the audit trail.
+
+    Args:
+        path: The request path (``request.url.path``).
+
+    Returns:
+        True if ``path`` is a genuine health endpoint, False otherwise.
+    """
+    normalized = path.rstrip("/") or "/"
+    if normalized in _HEALTH_CHECK_EXACT_PATHS:
+        return True
+    return path.startswith(_HEALTH_CHECK_PREFIX)
+
+
+class AuditMiddleware(BaseHTTPMiddleware):
+    """
+    Middleware that captures request/response data for audit logging.
+
+    Creates structured audit records for every API request, including
+    identity context, request/response details, and optional action context.
+
+    Attributes:
+        audit_logger: The AuditLogger service for writing events
+        exclude_paths: List of paths to exclude from logging
+        log_health_checks: Whether to log health check requests
+        log_static_assets: Whether to log static asset requests
+    """
+
+    def __init__(
+        self,
+        app: ASGIApp,
+        audit_logger: AuditLogger,
+        exclude_paths: list[str] | None = None,
+        log_health_checks: bool = False,
+        log_static_assets: bool = False,
+    ):
+        """
+        Initialize the AuditMiddleware.
+
+        Args:
+            app: The ASGI application
+            audit_logger: AuditLogger service instance
+            exclude_paths: List of paths to exclude from audit logging
+            log_health_checks: Whether to log health check endpoints (default: False)
+            log_static_assets: Whether to log static asset requests (default: False)
+        """
+        super().__init__(app)
+        self.audit_logger = audit_logger
+        self.exclude_paths = exclude_paths or []
+        self.log_health_checks = log_health_checks
+        self.log_static_assets = log_static_assets
+
+    def _should_log(self, path: str) -> bool:
+        """
+        Determine if a request should be logged.
+
+        Args:
+            path: The request path
+
+        Returns:
+            True if the request should be logged, False otherwise
+        """
+        # Check explicit exclusions
+        if path in self.exclude_paths:
+            return False
+
+        # Check health check endpoints. Match the known monitoring routes
+        # exactly (not a "/health" substring) so a management-plane mutation
+        # against a server named "health" is still audited.
+        if not self.log_health_checks and _is_health_check_path(path):
+            return False
+
+        # Check static assets
+        if not self.log_static_assets:
+            if path.startswith("/static"):
+                return False
+            if path.startswith("/favicon"):
+                return False
+            # Common static file extensions
+            static_extensions = (
+                ".css",
+                ".js",
+                ".png",
+                ".jpg",
+                ".jpeg",
+                ".gif",
+                ".ico",
+                ".svg",
+                ".woff",
+                ".woff2",
+                ".ttf",
+            )
+            if path.endswith(static_extensions):
+                return False
+
+        return True
+
+    def _get_credential_type(self, request: Request) -> str:
+        """
+        Determine the type of credential used for authentication.
+
+        Args:
+            request: The FastAPI request object
+
+        Returns:
+            Credential type: 'session_cookie', 'bearer_token', or 'none'
+        """
+        from ..core.config import settings
+
+        # Check for session cookie (use configured cookie name)
+        if request.cookies.get(settings.session_cookie_name):
+            return "session_cookie"
+
+        # Check for bearer token
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            return "bearer_token"
+
+        return "none"
+
+    def _get_credential_hint(self, request: Request) -> str | None:
+        """
+        Extract credential hint for audit logging.
+
+        The hint will be masked by the Identity model validator.
+
+        Args:
+            request: The FastAPI request object
+
+        Returns:
+            Raw credential value (will be masked), or None
+        """
+        from ..core.config import settings
+
+        # Check for session cookie (use configured cookie name)
+        session = request.cookies.get(settings.session_cookie_name)
+        if session:
+            return session  # Will be masked by validator
+
+        # Check for bearer token
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            return auth_header[7:]  # Will be masked by validator
+
+        return None
+
+    async def _best_effort_session_identity(self, request: Request) -> dict | None:
+        """Resolve the session cookie to recover the caller's username.
+
+        Used only when no auth dependency has populated request.state.user_context
+        (e.g. endpoints declared without Depends(...) such as /api/version).
+        Resolves the opaque session_id in the signed cookie to its server-side
+        record. Strictly read-only: must not mutate request.state, extend the
+        session, or issue any cookie.
+
+        Returns None on missing, tampered, expired, or legacy-format cookies
+        so callers can stamp anonymous identity.
+        """
+        from ..auth.dependencies import resolve_session_from_cookie
+        from ..core.config import settings
+
+        session = request.cookies.get(settings.session_cookie_name)
+        if not session:
+            return None
+
+        data = await resolve_session_from_cookie(session)
+        if not data or not data.get("username"):
+            return None
+
+        return {
+            "username": data["username"],
+            "email": data.get("email") or "",
+            "auth_method": "session-cookie-fallback",
+            "provider": data.get("provider"),
+        }
+
+    async def _extract_identity(self, request: Request) -> Identity:
+        """
+        Extract identity information from the request.
+
+        Looks for user context in request.state (set by auth dependency),
+        then falls back to a best-effort session-cookie decode for endpoints
+        declared without an auth dependency, and finally to anonymous.
+
+        Args:
+            request: The FastAPI request object
+
+        Returns:
+            Identity model with user information
+        """
+        # Try to get user context from request state (set by auth dependency)
+        user_context = getattr(request.state, "user_context", None)
+
+        if user_context and isinstance(user_context, dict):
+            return Identity(
+                # Human-readable identity for the audit record: prefer the
+                # email so an operator knows who to contact without an IdP
+                # reverse lookup. `username` may be the OIDC sub on some auth
+                # paths; email is threaded through user_context for this.
+                username=(user_context.get("email") or user_context.get("username") or "anonymous"),
+                auth_method=user_context.get("auth_method", "anonymous"),
+                provider=user_context.get("provider"),
+                groups=user_context.get("groups", []),
+                scopes=user_context.get("scopes", []),
+                is_admin=user_context.get("is_admin", False),
+                credential_type=self._get_credential_type(request),
+                credential_hint=self._get_credential_hint(request),
+            )
+
+        # Fallback 1: decode session cookie ourselves (read-only) so audit
+        # logs tell the truth on endpoints without an auth dependency.
+        fallback = await self._best_effort_session_identity(request)
+        if fallback:
+            return Identity(
+                username=fallback.get("email") or fallback["username"],
+                auth_method=fallback["auth_method"],
+                provider=fallback.get("provider"),
+                credential_type=self._get_credential_type(request),
+                credential_hint=self._get_credential_hint(request),
+            )
+
+        # Fallback 2: anonymous identity
+        return Identity(
+            username="anonymous",
+            auth_method="anonymous",
+            credential_type=self._get_credential_type(request),
+            credential_hint=self._get_credential_hint(request),
+        )
+
+    def _extract_action(self, request: Request) -> Action | None:
+        """
+        Extract action context from the request.
+
+        Route handlers can set audit_action in request.state to provide
+        semantic context about the operation being performed.
+
+        Args:
+            request: The FastAPI request object
+
+        Returns:
+            Action model if audit_action is set, None otherwise
+        """
+        audit_action = getattr(request.state, "audit_action", None)
+
+        if audit_action and isinstance(audit_action, dict):
+            return Action(
+                operation=audit_action.get("operation", "unknown"),
+                resource_type=audit_action.get("resource_type", "unknown"),
+                resource_id=audit_action.get("resource_id"),
+                description=audit_action.get("description"),
+                idp_skip_reason=audit_action.get("idp_skip_reason"),
+                metadata=audit_action.get("metadata") or {},
+            )
+
+        return None
+
+    def _extract_authorization(self, request: Request) -> Authorization | None:
+        """
+        Extract authorization decision from the request.
+
+        Route handlers can set audit_authorization in request.state to
+        record the authorization decision for the request.
+
+        Args:
+            request: The FastAPI request object
+
+        Returns:
+            Authorization model if audit_authorization is set, None otherwise
+        """
+        audit_auth = getattr(request.state, "audit_authorization", None)
+
+        if audit_auth and isinstance(audit_auth, dict):
+            return Authorization(
+                decision=audit_auth.get("decision", "NOT_REQUIRED"),
+                required_permission=audit_auth.get("required_permission"),
+                evaluated_scopes=audit_auth.get("evaluated_scopes", []),
+            )
+
+        return None
+
+    async def dispatch(self, request: Request, call_next: Callable) -> Response:
+        """
+        Process the request and create an audit record.
+
+        Args:
+            request: The FastAPI request object
+            call_next: The next middleware/handler in the chain
+
+        Returns:
+            The response from the next handler
+        """
+        # Check if this request should be logged
+        if not self._should_log(request.url.path):
+            return await call_next(request)
+
+        # The audit record's unique key (request_id, log_type) MUST be
+        # server-controlled. A client that chooses X-Request-ID could pre-seed a
+        # collision so a later action of the same log_type is silently dropped by
+        # the unique-index dedup, suppressing its audit trail. Always mint a fresh
+        # server-side id for the key, and keep the client-supplied ids only as a
+        # sanitized, NON-key correlation value for cross-record stitching.
+        request_id = new_audit_request_id()
+        correlation_id = sanitize_correlation_id(
+            request.headers.get("X-Correlation-ID") or request.headers.get("X-Request-ID")
+        )
+
+        # Start timing
+        start_time = time.perf_counter()
+
+        # Process the request
+        response = await call_next(request)
+
+        # Work around Starlette BaseHTTPMiddleware bug: call_next wraps
+        # the response in a StreamingResponse which can send body bytes
+        # for 204 No Content, causing "Response content longer than
+        # Content-Length" errors.  Return a plain Response instead.
+        if response.status_code == 204:
+            response = Response(status_code=204, headers=dict(response.headers))
+
+        # Calculate duration
+        duration_ms = (time.perf_counter() - start_time) * 1000
+
+        # Extract client IP (validated against spoofed/malformed headers)
+        client_ip = get_client_ip(request)
+
+        # Get content length from request headers (may be None)
+        request_content_length = None
+        if "content-length" in request.headers:
+            try:
+                request_content_length = int(request.headers["content-length"])
+            except (ValueError, TypeError):
+                pass
+
+        # Get content length from response headers (may be None)
+        response_content_length = None
+        if "content-length" in response.headers:
+            try:
+                response_content_length = int(response.headers["content-length"])
+            except (ValueError, TypeError):
+                pass
+
+        # Build the audit record
+        try:
+            record = RegistryApiAccessRecord(
+                timestamp=datetime.now(UTC),
+                request_id=request_id,
+                correlation_id=correlation_id,
+                instance_id=resolve_instance_id(),
+                identity=await self._extract_identity(request),
+                request=AuditRequest(
+                    method=request.method,
+                    path=request.url.path,
+                    query_params=dict(request.query_params),
+                    client_ip=client_ip,
+                    forwarded_for=request.headers.get("X-Forwarded-For"),
+                    user_agent=request.headers.get("User-Agent"),
+                    content_length=request_content_length,
+                ),
+                response=AuditResponse(
+                    status_code=response.status_code,
+                    duration_ms=duration_ms,
+                    content_length=response_content_length,
+                ),
+                action=self._extract_action(request),
+                authorization=self._extract_authorization(request),
+            )
+
+            # Log the event asynchronously
+            await self.audit_logger.log_event(record)
+
+        except Exception as e:
+            # Never break the request on an audit failure, but a record we could
+            # not even build is a dropped audit event — make it loud/alertable
+            # (CRITICAL) rather than a quiet error line. log_event() handles its
+            # own durable-write failures internally, so reaching here means
+            # record construction itself failed.
+            logger.critical(
+                "AUDIT RECORD DROPPED: could not build/log record for %s %s: %s",
+                request.method,
+                request.url.path,
+                e,
+            )
+
+        return response
+
+
+def add_audit_middleware(
+    app,
+    audit_logger: AuditLogger,
+    exclude_paths: list[str] | None = None,
+    log_health_checks: bool = False,
+    log_static_assets: bool = False,
+) -> None:
+    """
+    Convenience function to add audit middleware to a FastAPI app.
+
+    Args:
+        app: FastAPI application instance
+        audit_logger: AuditLogger service instance
+        exclude_paths: List of paths to exclude from audit logging
+        log_health_checks: Whether to log health check endpoints
+        log_static_assets: Whether to log static asset requests
+    """
+    app.add_middleware(
+        AuditMiddleware,
+        audit_logger=audit_logger,
+        exclude_paths=exclude_paths,
+        log_health_checks=log_health_checks,
+        log_static_assets=log_static_assets,
+    )
+    logger.info("Audit middleware added to application")

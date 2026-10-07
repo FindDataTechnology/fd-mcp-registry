@@ -1,0 +1,474 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Models
+.models/
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+!infra/lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+#  Usually these files are written by a python script from a template
+#  before PyInstaller builds the exe, so as to inject date/other infos into it.
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+cover/
+tests/reports/
+frontend/tests/reports/
+# pytest report artifacts from the agents/a2a subproject (its own test runs)
+agents/a2a/tests/reports/
+agents/a2a/src/*/tests/reports/
+
+# Translations
+*.mo
+*.pot
+
+# Django stuff:
+*.log
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+
+# Flask stuff:
+instance/
+.webassets-cache
+
+# Scrapy stuff:
+.scrapy
+
+# Sphinx documentation
+docs/_build/
+
+# PyBuilder
+.pybuilder/
+target/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IPython
+profile_default/
+ipython_config.py
+
+# pyenv
+#   For a library or package, you might want to ignore these files since the code is
+#   intended to run in multiple environments; otherwise, check them in:
+# .python-version
+
+# pipenv
+#   According to pypa/pipenv#598, it is recommended to include Pipfile.lock in version control.
+#   However, in case of collaboration, if having platform-specific dependencies or dependencies
+#   having no cross-platform support, pipenv may install dependencies that don't work, or not
+#   install all needed dependencies.
+#Pipfile.lock
+
+# UV
+#   Similar to Pipfile.lock, it is generally recommended to include uv.lock in version control.
+#   This is especially recommended for binary packages to ensure reproducibility, and is more
+#   commonly ignored for libraries.
+#uv.lock
+
+# poetry
+#   Similar to Pipfile.lock, it is generally recommended to include poetry.lock in version control.
+#   This is especially recommended for binary packages to ensure reproducibility, and is more
+#   commonly ignored for libraries.
+#   https://python-poetry.org/docs/basic-usage/#commit-your-poetrylock-file-to-version-control
+#poetry.lock
+
+# pdm
+#   Similar to Pipfile.lock, it is generally recommended to include pdm.lock in version control.
+#pdm.lock
+#   pdm stores project-wide configurations in .pdm.toml, but it is recommended to not include it
+#   in version control.
+#   https://pdm.fming.dev/latest/usage/project/#working-with-version-control
+.pdm.toml
+.pdm-python
+.pdm-build/
+
+# PEP 582; used by e.g. github.com/David-OConnor/pyflow and github.com/pdm-project/pdm
+__pypackages__/
+
+# Celery stuff
+celerybeat-schedule
+celerybeat.pid
+
+# SageMath parsed files
+*.sage.py
+
+# Environments
+.env
+.env.*
+!.env.example
+# Allow committed env EXAMPLES (never real .env). Covers variants like
+# .env.ecs.example / .env.local.example that .env.* would otherwise ignore.
+!.env.*.example
+.env.backup
+.env.user
+.env.docker
+
+# Extra environment injection files (Issue #1000)
+# Default location is extra_env/ at the repo root; users can override the
+# path with MCP_EXTRA_ENV_DIR. Exclude the .env files themselves so
+# per-operator secrets never land in git.
+**/extra_env/*.env
+
+# Configuration files with sensitive data
+credentials-provider/agentcore-auth/config.yaml
+credentials-provider/oauth/config.yaml
+cli/examples/peer-registry-lob-1.json
+cli/examples/peer-sales-registry.json
+
+# One-time credential dumps written by management/CLI helpers to the CWD.
+# These hold a freshly-minted API key / M2M client secret and must never be
+# committed; operators are told to delete them after use.
+.api_key_*.txt
+.m2m_client_secret_*.txt
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Spyder project settings
+.spyderproject
+.spyproject
+
+# Rope project settings
+.ropeproject
+
+# mkdocs documentation
+/site
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# pytype static type analyzer
+.pytype/
+
+# Cython debug symbols
+cython_debug/
+
+# PyCharm
+#  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
+#  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore
+#  and can be added to the global gitignore or merged into this file.  For a more nuclear
+#  option (not recommended) you can uncomment the following to ignore the entire idea folder.
+.idea/
+
+# Ruff stuff:
+.ruff_cache/
+.cache/
+
+# PyPI configuration file
+.pypirc
+cookies.txt
+.cookies
+
+# Scratchpad for temporary notes and planning
+.scratchpad/
+
+# MongoDB keyfile for replica set authentication
+.mongodb-keyfile
+
+# Roo IDE files
+.roo/
+
+# VS Code / IDE files
+.vscode/
+
+# Kiro files
+.kiro
+.kiro/
+
+# Agent config
+agents/agent_config.json
+
+# Jules files
+.Jules/
+
+# OAuth tokens and credentials - never commit these!
+.oauth-tokens/
+.agentcore-params
+.cognito_access_token
+.network-trusted-token
+.token*
+api/.token
+api/.mcp-session
+
+# Keycloak client secrets (generated by init-keycloak.sh)
+keycloak/setup/keycloak-client-secrets.txt
+keycloak/setup/retrieved-keycloak-secrets.txt
+
+# MCP Gateway specific
+registry/server_state.json
+registry/nginx_mcp_revproxy.conf
+registry/agents/
+registry/data/
+logs/
+token_refresher.pid
+token_refresher.log
+token_refresh_manifest.json
+.mcp.json
+
+# Secrets and API keys - never commit these!
+.keys.yml
+.keys.yml.encrypted
+*.keys.yml
+*.keys.yml.encrypted
+
+# SSL certificates and keys - never commit these!
+*.pem
+*.key
+*.crt
+*.csr
+*.p12
+*.pfx
+/etc/ssl/
+
+# Agent testing
+agents/test_results/
+agents/.env.user
+ssl_data/
+agents/.env.agent
+
+# Frontend / Node.js / React / TypeScript
+frontend/node_modules/
+frontend/build/
+frontend/dist/
+frontend/.env
+frontend/.env.local
+frontend/.env.development.local
+frontend/.env.test.local
+frontend/.env.production.local
+frontend/npm-debug.log*
+frontend/yarn-debug.log*
+frontend/yarn-error.log*
+frontend/.pnpm-debug.log*
+frontend/lerna-debug.log*
+frontend/.DS_Store
+frontend/.vscode/
+frontend/.idea/
+frontend/*.tsbuildinfo
+frontend/.nyc_output
+frontend/coverage/
+frontend/.cache/
+frontend/.parcel-cache/
+frontend/.next/
+frontend/out/
+frontend/.nuxt/
+frontend/.vuepress/dist
+frontend/.serverless/
+frontend/.fusebox/
+frontend/.dynamodb/
+frontend/.tern-port
+frontend/storybook-static/
+
+# Node.js (global patterns)
+node_modules/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+lerna-debug.log*
+.DS_Store
+*.tsbuildinfo
+.nyc_output
+coverage/
+.cache/
+.parcel-cache/
+
+#MCP Json
+.tmp/anthropic-import
+
+# Anthropic registry temporary files
+anthropic_servers_*.json
+curated_import_list.txt
+
+#Security scans
+security_scans/
+
+#Temporary directories
+.tmp
+
+#AgentCore CLI generated files
+.bedrock_agentcore
+.bedrock_agentcore.yaml
+
+# Terraform user-specific configuration (NEVER COMMIT!)
+# Users should copy terraform.tfvars.example to terraform.tfvars and edit it
+terraform.tfvars
+terraform.tfvars.json
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraform/
+.terraform.lock.hcl
+crash.log
+crash.*.log
+tfplan*
+terraform.tfstate*
+terraform-outputs.json.backup*
+
+# Terraform outputs and region-specific configs (environment-specific, do not commit)
+terraform-outputs.json
+terraform-outputs.txt
+terraform/aws-ecs/scripts/terraform-outputs.json
+terraform/aws-ecs/terraform-outputs.txt
+terraform.tfvars.*
+!terraform.tfvars.example
+terraform/aws-ecs/terraform.tfvars.*
+!terraform/aws-ecs/terraform.tfvars.example
+
+# Generated image manifest for container builds (generated by Makefile)
+image-manifest.json# Admin password files
+*.admin_password
+terraform/.admin_password
+image-manifest.json
+agent_security_scans/
+skill_security_scans/
+
+# Helm dependency charts and lock files (fetched via helm dependency build)
+charts/*/charts/
+charts/*/Chart.lock
+
+# Shell config artifacts
+.ash/
+
+# Claude
+.claude/*
+!.claude/skills/
+.token?
+
+# Telemetry collector build artifacts and state
+terraform/telemetry-collector/terraform.tfstate
+terraform/telemetry-collector/terraform.tfstate.backup
+terraform/telemetry-collector/tfplan
+terraform/telemetry-collector/terraform-apply.log
+terraform/telemetry-collector/deployment-info-testing.txt
+terraform/telemetry-collector/lambda_function.zip
+terraform/telemetry-collector/lambda/collector/lambda_function_linux.zip
+terraform/telemetry-collector/lambda/index-setup/index_setup.zip
+terraform/telemetry-collector/lambda/lambda_function.zip
+terraform/telemetry-collector/global-bundle.pem
+# Generated at runtime by deploy.sh (mongosh index script), then removed
+terraform/telemetry-collector/create-indexes.js
+terraform/telemetry-collector/terraform.tfvars
+terraform/telemetry-collector/DEPLOYMENT-SUMMARY.md
+terraform/telemetry-collector/INTEGRATION-TEST-SUMMARY.md
+terraform/telemetry-collector/MONITORING-GUIDE.md
+terraform/telemetry-collector/PROGRESS.md
+terraform/telemetry-collector/lambda/collector/package/
+terraform/telemetry-collector/lambda/index-setup/package/
+terraform/telemetry-collector/.terraform/
+terraform/telemetry-collector/.terraform.lock.hcl
+
+# Vendored Python packages in Lambda directories (build artifacts)
+terraform/telemetry-collector/lambda/collector/*.dist-info/
+terraform/telemetry-collector/lambda/collector/bson/
+terraform/telemetry-collector/lambda/collector/dns/
+terraform/telemetry-collector/lambda/collector/gridfs/
+terraform/telemetry-collector/lambda/collector/motor/
+terraform/telemetry-collector/lambda/collector/pymongo/
+terraform/telemetry-collector/lambda/collector/pydantic/
+terraform/telemetry-collector/lambda/collector/pydantic_core/
+terraform/telemetry-collector/lambda/collector/annotated_types/
+terraform/telemetry-collector/lambda/collector/typing_inspection/
+terraform/telemetry-collector/lambda/collector/typing_extensions.py
+terraform/telemetry-collector/lambda/collector/boto3/
+terraform/telemetry-collector/lambda/collector/botocore/
+terraform/telemetry-collector/lambda/collector/dateutil/
+terraform/telemetry-collector/lambda/collector/jmespath/
+terraform/telemetry-collector/lambda/collector/s3transfer/
+terraform/telemetry-collector/lambda/collector/urllib3/
+terraform/telemetry-collector/lambda/collector/bin/
+terraform/telemetry-collector/lambda/collector/six.py
+terraform/telemetry-collector/lambda/collector/*.dist-info/
+terraform/telemetry-collector/lambda/index-setup/*.dist-info/
+terraform/telemetry-collector/lambda/index-setup/bson/
+terraform/telemetry-collector/lambda/index-setup/pymongo/
+
+# Root-level telemetry test scripts (not part of the project)
+test-telemetry-*.sh
+test-telemetry-*.py
+verify-telemetry-test.sh
+watch-collector-logs.sh
+NEXT-STEPS-TELEMETRY.md
+.env.telemetry-test
+registry_metrics.csv
+.claude/skills/usage-report/known-internal-instances.md
+
+# Local-only security-audit skill (not committed); findings live under the git-ignored .scratchpad/
+.claude/skills/security-audit/
+
+# Stress test generated data and results (may move to a separate repo later)
+tests/stress/data/
+tests/stress/results/
+
+# Search evaluation (datasets + generated results)
+tests/fixtures/search_dataset/unified_dataset.json
+tests/fixtures/search_dataset/ground_truth.json
+tests/fixtures/search_dataset/generated_ground_truth.json
+tests/fixtures/search_dataset/benchmark_results.json
+tests/fixtures/search_dataset/benchmark_results.md
+
+# Benchmark search results (generated, not committed)
+results*.json
+pingfederate/setup/pingfederate-ca-bundle.pem
+
+# Local Docker Compose override (machine-specific paths, e.g. macOS log-dir redirect)
+docker-compose.override.yml
+
+# Local MCP connect command with bearer token (never commit)
+.mcp
+
+# Generated landing page (built by scripts/build_landing_page.py in CI)
+site/

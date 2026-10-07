@@ -1,0 +1,54 @@
+{
+  "protocolVersion": "0.3.0",
+  "supportedProtocol": "a2a",
+  "name": "Travel Assistant Agent",
+  "description": "Intelligent travel planning and assistance agent",
+  "url": "http://mcpgateway.ddns.net:9001/",
+  "version": "0.0.1",
+  "status": "active",
+  "capabilities": {
+    "streaming": true
+  },
+  "defaultInputModes": ["text/plain", "application/json"],
+  "defaultOutputModes": ["text/plain", "application/json"],
+  "provider": {
+    "organization": "MCP Gateway",
+    "url": "https://github.com/agentic-community/mcp-gateway-registry"
+  },
+  "skills": [
+    {
+      "id": "plan_trip",
+      "name": "Plan Trip",
+      "description": "Plan a complete trip including flights, hotels, and activities.",
+      "tags": ["travel", "planning", "itinerary"]
+    },
+    {
+      "id": "find_destinations",
+      "name": "Find Destinations",
+      "description": "Discover travel destinations based on preferences and budget.",
+      "tags": ["travel", "destinations", "recommendations"]
+    },
+    {
+      "id": "get_recommendations",
+      "name": "Get Recommendations",
+      "description": "Get personalized travel recommendations and tips.",
+      "tags": ["travel", "recommendations", "advice"]
+    },
+    {
+      "id": "manage_itinerary",
+      "name": "Manage Itinerary",
+      "description": "Create, update, and manage travel itineraries.",
+      "tags": ["travel", "itinerary", "management"]
+    },
+    {
+      "id": "coordinate_bookings",
+      "name": "Coordinate Bookings",
+      "description": "Coordinate flight bookings and other travel services.",
+      "tags": ["travel", "coordination", "booking"]
+    }
+  ],
+  "tags": ["travel", "assistant", "planning"],
+  "visibility": "public",
+  "license": "MIT",
+  "path": "/travel-assistant-agent"
+}

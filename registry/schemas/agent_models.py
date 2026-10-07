@@ -1,0 +1,1439 @@
+"""
+Pydantic models for A2A (Agent-to-Agent) protocol support.
+
+This module defines Agent Cards and related models following the A2A specification
+for agent discovery and registration in the MCP Gateway Registry.
+
+Based on: docs/design/a2a-protocol-integration.md
+"""
+
+import logging
+import re
+from datetime import datetime
+from enum import Enum
+from typing import Annotated, Any, Literal
+from uuid import uuid4
+
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
+
+from registry.schemas.proxy_mixin import (
+    ProxyableMixin,
+    assert_proxy_target_resolvable,
+    egress_guard_validator,
+)
+
+# Configure logging with basicConfig
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s,p%(process)s,{%(filename)s:%(lineno)d},%(levelname)s,%(message)s",
+)
+
+logger = logging.getLogger(__name__)
+
+GROUP_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_\-\.]+$")
+
+
+def _validate_path_format(
+    path: str,
+) -> str:
+    """
+    Validate agent path format.
+
+    Args:
+        path: Agent path to validate
+
+    Returns:
+        Validated path string
+
+    Raises:
+        ValueError: If path format is invalid
+    """
+    if not path.startswith("/"):
+        raise ValueError("Path must start with '/'")
+
+    if "//" in path:
+        raise ValueError("Path cannot contain consecutive slashes")
+
+    if path.endswith("/") and len(path) > 1:
+        raise ValueError("Path cannot end with '/' unless it is the root path")
+
+    return path
+
+
+def _validate_protocol_version(
+    version: str,
+) -> str:
+    """
+    Validate A2A protocol version format.
+
+    Args:
+        version: Protocol version string
+
+    Returns:
+        Validated version string
+
+    Raises:
+        ValueError: If version format is invalid
+    """
+    if not version:
+        raise ValueError("Protocol version cannot be empty")
+
+    parts = version.split(".")
+    if len(parts) < 2:
+        raise ValueError("Protocol version must be in format 'X.Y' or 'X.Y.Z'")
+
+    for part in parts:
+        if not part.isdigit():
+            raise ValueError("Protocol version parts must be numeric")
+
+    return version
+
+
+def _validate_skill_ids_unique(
+    skills: list["Skill"],
+) -> list["Skill"]:
+    """
+    Validate that skill IDs are unique within the agent.
+
+    Args:
+        skills: List of skill objects
+
+    Returns:
+        Validated skills list
+
+    Raises:
+        ValueError: If duplicate skill IDs are found
+    """
+    if not skills:
+        return skills
+
+    skill_ids = [skill.id for skill in skills]
+    duplicates = [sid for sid in skill_ids if skill_ids.count(sid) > 1]
+
+    if duplicates:
+        unique_duplicates = list(set(duplicates))
+        raise ValueError(f"Duplicate skill IDs found: {', '.join(unique_duplicates)}")
+
+    return skills
+
+
+def _validate_url_format(
+    url: str,
+) -> str:
+    """
+    Validate URL format and protocol.
+
+    Allows both HTTP and HTTPS for flexibility in local/development environments,
+    though HTTPS is required for production per A2A specification.
+
+    Args:
+        url: URL string to validate
+
+    Returns:
+        Validated URL string
+
+    Raises:
+        ValueError: If URL format is invalid or protocol is not HTTP/HTTPS
+    """
+    if not url:
+        raise ValueError("URL cannot be empty")
+
+    if not (url.startswith("http://") or url.startswith("https://")):
+        raise ValueError("URL must use HTTP or HTTPS protocol")
+
+    try:
+        from urllib.parse import urlparse
+
+        parsed = urlparse(url)
+        if not parsed.netloc:
+            raise ValueError("URL must include a valid hostname")
+    except Exception as e:
+        raise ValueError(f"Invalid URL format: {e}")
+
+    return url
+
+
+def _validate_security_references(
+    security: list[dict[str, list[str]]] | None,
+    security_schemes: dict[str, "SecurityScheme | dict[str, Any]"],
+) -> list[dict[str, list[str]]] | None:
+    """
+    Validate that security references exist in security_schemes.
+
+    Args:
+        security: Security requirements array
+        security_schemes: Available security schemes
+
+    Returns:
+        Validated security array
+
+    Raises:
+        ValueError: If referenced security scheme does not exist
+    """
+    if not security:
+        return security
+
+    for requirement in security:
+        for scheme_name in requirement.keys():
+            if scheme_name not in security_schemes:
+                raise ValueError(f"Security requirement references undefined scheme: {scheme_name}")
+
+    return security
+
+
+class SecurityScheme(BaseModel):
+    """
+    Security scheme for agent authentication.
+
+    Supports various authentication methods including OAuth2, bearer tokens,
+    API keys, and OpenID Connect.
+
+    Note: Uses snake_case internally but serializes to camelCase for A2A compliance.
+    """
+
+    type: str = Field(
+        ...,
+        description="Security type: apiKey, http, oauth2, openIdConnect",
+    )
+    scheme: str | None = Field(
+        None,
+        description="HTTP auth scheme: basic, bearer, digest",
+    )
+    in_: str | None = Field(
+        None,
+        alias="in",
+        description="API key location: header, query, cookie",
+    )
+    name: str | None = Field(
+        None,
+        description="Name of header/query/cookie for API key",
+    )
+    bearer_format: str | None = Field(
+        None,
+        alias="bearerFormat",
+        description="Bearer token format hint (e.g., JWT)",
+    )
+    flows: dict[str, Any] | None = Field(
+        None,
+        description="OAuth2 flows configuration",
+    )
+    openid_connect_url: str | None = Field(
+        None,
+        alias="openIdConnectUrl",
+        description="OpenID Connect discovery URL",
+    )
+
+    model_config = ConfigDict(
+        populate_by_name=True  # Allow both snake_case and camelCase on input
+    )
+
+    @field_validator("type")
+    @classmethod
+    def _validate_security_type(
+        cls,
+        v: str,
+    ) -> str:
+        """Validate security type is one of the supported types."""
+        valid_types = ["apiKey", "http", "oauth2", "openIdConnect"]
+        if v not in valid_types:
+            raise ValueError(f"Security type must be one of: {', '.join(valid_types)}")
+        return v
+
+    @field_validator("in_")
+    @classmethod
+    def _validate_api_key_location(
+        cls,
+        v: str | None,
+    ) -> str | None:
+        """Validate API key location."""
+        if v is not None:
+            valid_locations = ["header", "query", "cookie"]
+            if v not in valid_locations:
+                raise ValueError(f"API key location must be one of: {', '.join(valid_locations)}")
+        return v
+
+
+class AgentProvider(BaseModel):
+    """
+    A2A Agent Provider information.
+
+    Represents the service provider of an agent with organization name and website URL.
+    Per A2A specification, if provider is present, both organization and url are required.
+    """
+
+    organization: str = Field(
+        ...,
+        description="Provider organization name",
+    )
+    url: str = Field(
+        ...,
+        description="Provider website or documentation URL",
+    )
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class Skill(BaseModel):
+    """
+    Agent skill definition per A2A protocol specification.
+
+    A skill represents a discrete capability that an agent can perform.
+    Skills describe high-level capabilities without operation-specific schemas.
+
+    Note: Uses snake_case internally but serializes to camelCase for A2A compliance.
+    """
+
+    id: str = Field(
+        ...,
+        description="Unique skill identifier",
+    )
+    name: str = Field(
+        ...,
+        description="Human-readable skill name",
+    )
+    description: str = Field(
+        ...,
+        description="Detailed skill description",
+    )
+    tags: list[str] = Field(
+        ...,
+        description="Skill categorization tags - keywords describing capability",
+    )
+    examples: list[str] | None = Field(
+        None,
+        description="Usage scenarios and examples",
+    )
+    input_modes: list[str] | None = Field(
+        None,
+        alias="inputModes",
+        description="Skill-specific input MIME types",
+    )
+    output_modes: list[str] | None = Field(
+        None,
+        alias="outputModes",
+        description="Skill-specific output MIME types",
+    )
+    security: list[dict[str, list[str]]] | None = Field(
+        None,
+        description="Skill-level security requirements",
+    )
+
+    model_config = ConfigDict(
+        populate_by_name=True  # Allow both snake_case and camelCase on input
+    )
+
+    @field_validator("id")
+    @classmethod
+    def _validate_skill_id(
+        cls,
+        v: str,
+    ) -> str:
+        """Validate skill ID format."""
+        if not v:
+            raise ValueError("Skill ID cannot be empty")
+        if " " in v:
+            raise ValueError("Skill ID cannot contain spaces")
+        return v
+
+    @field_validator("name")
+    @classmethod
+    def _validate_skill_name(
+        cls,
+        v: str,
+    ) -> str:
+        """Validate skill name."""
+        if not v or not v.strip():
+            raise ValueError("Skill name cannot be empty")
+        return v.strip()
+
+
+class AgentCard(ProxyableMixin):
+    """
+    A2A Agent Card - machine-readable agent profile.
+
+    This model represents a complete agent card following the A2A protocol
+    specification (v0.3.0), with extensions for MCP Gateway Registry integration.
+
+    The agent card includes:
+    - Required A2A fields (protocolVersion, name, description, url, version, capabilities, etc.)
+    - Optional A2A fields (provider, skills, security, etc.)
+    - MCP Gateway Registry extensions (path, tags, visibility, trust_level)
+
+    Note: Uses snake_case internally but serializes to camelCase for A2A compliance.
+    """
+
+    # Unique identifier
+    id: str = Field(
+        default_factory=lambda: str(uuid4()),
+        min_length=1,
+        max_length=512,
+        description=(
+            "Unique identifier for this agent. Any non-empty string "
+            "(UUID, ARN, URN, ...). Auto-generated UUID if not supplied."
+        ),
+    )
+
+    # Required A2A fields
+    protocol_version: str = Field(
+        "1.0",
+        alias="protocolVersion",
+        description="A2A protocol version (e.g., '1.0')",
+    )
+    name: str = Field(
+        ...,
+        description="Agent name",
+    )
+    description: str = Field(
+        ...,
+        description="Agent description",
+    )
+    url: str = Field(
+        ...,
+        description="Agent endpoint URL (HTTP or HTTPS)",
+    )
+    version: str = Field(
+        ...,
+        description="Agent version",
+    )
+    capabilities: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Feature declarations (e.g., {'streaming': true})",
+    )
+    default_input_modes: list[str] = Field(
+        default_factory=lambda: ["text/plain"],
+        alias="defaultInputModes",
+        description="Supported input MIME types",
+    )
+    default_output_modes: list[str] = Field(
+        default_factory=lambda: ["text/plain"],
+        alias="defaultOutputModes",
+        description="Supported output MIME types",
+    )
+    skills: list[Skill] = Field(
+        default_factory=list,
+        description="Agent capabilities (skills)",
+    )
+
+    # Optional A2A fields
+    preferred_transport: str | None = Field(
+        "JSONRPC",
+        alias="preferredTransport",
+        description="Preferred transport protocol: JSONRPC, GRPC, HTTP+JSON",
+    )
+    provider: AgentProvider | None = Field(
+        None,
+        description="Agent provider information per A2A spec",
+    )
+    icon_url: str | None = Field(
+        None,
+        alias="iconUrl",
+        description="Agent icon URL",
+    )
+    documentation_url: str | None = Field(
+        None,
+        alias="documentationUrl",
+        description="Documentation URL",
+    )
+    security_schemes: dict[str, SecurityScheme | dict[str, Any]] = Field(
+        default_factory=dict,
+        alias="securitySchemes",
+        description="Supported authentication methods",
+    )
+    security: list[dict[str, list[str]]] | None = Field(
+        None,
+        description="Security requirements array",
+    )
+    supports_authenticated_extended_card: bool | None = Field(
+        None,
+        alias="supportsAuthenticatedExtendedCard",
+        description="Supports extended card with auth",
+    )
+    metadata: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Additional metadata",
+    )
+
+    # MCP Gateway Registry extensions (optional - not part of A2A spec)
+    path: str | None = Field(
+        None,
+        description="Registry path (e.g., /agents/my-agent). Optional - auto-generated if not provided.",
+    )
+    tags: list[str] = Field(
+        default_factory=list,
+        description="Categorization tags",
+    )
+    is_enabled: bool = Field(
+        False,
+        alias="isEnabled",
+        description="Whether agent is enabled in registry",
+    )
+    num_stars: float = Field(
+        0.0,
+        ge=0.0,
+        le=5.0,
+        alias="numStars",
+        description="Average community rating (0.0-5.0)",
+    )
+    rating_details: list[dict[str, Any]] = Field(
+        default_factory=list,
+        alias="ratingDetails",
+        description="Individual user ratings with username and rating value",
+    )
+    license: str = Field(
+        "N/A",
+        description="License information",
+    )
+
+    # Registry metadata
+    registered_at: datetime | None = Field(
+        None,
+        alias="registeredAt",
+        description="Registration timestamp",
+    )
+    updated_at: datetime | None = Field(
+        None,
+        alias="updatedAt",
+        description="Last update timestamp",
+    )
+    registered_by: str | None = Field(
+        None,
+        alias="registeredBy",
+        description="Username who registered agent",
+    )
+
+    # Access control
+    visibility: str = Field(
+        "public",
+        description="public, group-restricted, or internal",
+    )
+    allowed_groups: list[str] = Field(
+        default_factory=list,
+        alias="allowedGroups",
+        description="Groups with access when visibility is group-restricted",
+    )
+
+    # Federation sync metadata
+    sync_metadata: dict[str, Any] | None = Field(
+        default=None,
+        alias="syncMetadata",
+        description="Metadata for items synced from peer registries",
+    )
+
+    # Validation and trust
+    signature: str | None = Field(
+        None,
+        description="JWS signature for card integrity",
+    )
+    trust_level: str = Field(
+        "community",
+        alias="trustLevel",
+        description="unverified, community, verified, trusted",
+    )
+
+    # ANS Integration
+    ans_metadata: dict[str, Any] | None = Field(
+        default=None,
+        alias="ansMetadata",
+        description="ANS (Agent Name Service) verification metadata",
+    )
+
+    # Health check status (persisted to MongoDB)
+    health_status: str = Field(
+        default="unknown",
+        alias="healthStatus",
+        description="Last known health status: healthy, unhealthy, unknown",
+    )
+    last_health_check: datetime | None = Field(
+        default=None,
+        alias="lastHealthCheck",
+        description="Timestamp of last health check",
+    )
+
+    # Lifecycle and federation metadata
+    status: str = Field(
+        default="active",
+        description="Lifecycle status (default: active for existing assets)",
+    )
+    source_created_at: datetime | None = Field(
+        default=None,
+        description="Original creation timestamp from source system",
+        alias="sourceCreatedAt",
+    )
+    source_updated_at: datetime | None = Field(
+        default=None,
+        description="Last update timestamp from source system",
+        alias="sourceUpdatedAt",
+    )
+    external_tags: list[str] = Field(
+        default_factory=list,
+        description="Tags from external/source system",
+        alias="externalTags",
+    )
+    supported_protocol: str | None = Field(
+        default=None,
+        alias="supportedProtocol",
+        description="Agent protocol: 'a2a' for A2A protocol agents, 'other' for non-A2A agents",
+    )
+    proxy_pass_url: str | None = Field(
+        default=None,
+        alias="proxyPassUrl",
+        description=(
+            "Internal backend URL the gateway proxies to when A2A reverse-proxy "
+            "mode is enabled. Set at registration time from the registrant's URL; "
+            "``url`` is then rewritten to the gateway-facing address so discovery "
+            "routes callers through the gateway. Mirrors the MCP-server "
+            "proxy_pass_url split and is redacted from non-admin read responses "
+            "(see registry/services/visibility.py)."
+        ),
+    )
+    registry_name: str = Field(
+        default="local",
+        description="Registry this agent belongs to (federation origin).",
+    )
+    record_kind: str | None = Field(
+        default=None,
+        description="Origin marker, e.g. 'ard_ingested' for ARD discovery imports.",
+    )
+    ard_source_url: str | None = Field(
+        default=None,
+        alias="ardSourceUrl",
+        description="URL to the source registry's descriptor (ARD discovery imports).",
+    )
+
+    model_config = ConfigDict(
+        populate_by_name=True  # Allow both snake_case and camelCase on input
+    )
+
+    @field_validator("protocol_version")
+    @classmethod
+    def _validate_protocol_version_field(
+        cls,
+        v: str,
+    ) -> str:
+        """Validate protocol version format."""
+        return _validate_protocol_version(v)
+
+    @field_validator("url")
+    @classmethod
+    def _validate_url_field(
+        cls,
+        v: str,
+    ) -> str:
+        """Validate URL format and protocol."""
+        return _validate_url_format(v)
+
+    @field_validator("path")
+    @classmethod
+    def _validate_path_field(
+        cls,
+        v: str | None,
+    ) -> str | None:
+        """Validate path format if provided."""
+        if v is None:
+            return None
+        return _validate_path_format(v)
+
+    @field_validator("visibility")
+    @classmethod
+    def _validate_visibility_field(
+        cls,
+        v: str,
+    ) -> str:
+        """Validate and normalize visibility value.
+
+        Accepts "internal" as alias for "private" and "group" as alias
+        for "group-restricted" for backward compatibility.
+        """
+        from registry.utils.visibility import validate_visibility
+
+        return validate_visibility(v)
+
+    @field_validator("trust_level")
+    @classmethod
+    def _validate_trust_level_field(
+        cls,
+        v: str,
+    ) -> str:
+        """Validate trust level value."""
+        valid_levels = ["unverified", "community", "verified", "trusted"]
+        if v not in valid_levels:
+            raise ValueError(f"Trust level must be one of: {', '.join(valid_levels)}")
+        return v
+
+    @field_validator("tags", mode="before")
+    @classmethod
+    def _convert_tags_field(
+        cls,
+        v: Any,
+    ) -> list[str]:
+        """Convert tags from string or list format to list of strings.
+
+        Supports both:
+        - String format: "tag1,tag2,tag3"
+        - List format: ["tag1", "tag2", "tag3"]
+        """
+        if isinstance(v, str):
+            return [tag.strip() for tag in v.split(",") if tag.strip()]
+        if isinstance(v, list):
+            return [str(tag).strip() for tag in v if str(tag).strip()]
+        return []
+
+    @field_validator("skills")
+    @classmethod
+    def _validate_skills_field(
+        cls,
+        v: list[Skill],
+    ) -> list[Skill]:
+        """Validate skills have unique IDs."""
+        return _validate_skill_ids_unique(v)
+
+    @model_validator(mode="after")
+    def _validate_security_requirements(
+        self,
+    ) -> "AgentCard":
+        """Validate security requirements reference existing schemes."""
+        if self.security is not None:
+            _validate_security_references(self.security, self.security_schemes)
+        return self
+
+    @model_validator(mode="after")
+    def _validate_group_restricted_access(
+        self,
+    ) -> "AgentCard":
+        """Validate group-restricted visibility has allowed groups."""
+        if self.visibility == "group-restricted" and not self.allowed_groups:
+            raise ValueError("Group-restricted visibility requires at least one allowed group")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_proxy_target(
+        self,
+    ) -> "AgentCard":
+        """If proxied, require a resolvable backend (proxy_target_url or the agent url).
+
+        The mixin's is_proxied/proxy_target_url are registry extensions and
+        serialize as snake_case (not A2A-spec fields; populate_by_name accepts
+        both on input). Passes only the scalars the check reads (this runs on
+        every construction, including reads that rebuild the model from a doc).
+        """
+        assert_proxy_target_resolvable(
+            "a2a_agent",
+            {
+                "is_proxied": self.is_proxied,
+                "proxy_target_url": self.proxy_target_url,
+                "proxy_disabled_reason": self.proxy_disabled_reason,
+                "url": self.url,
+            },
+            read_safe=True,  # storage model: reconstructed on read, log-not-raise
+        )
+        # Derive the read-only client-facing path from type + path (self-healing).
+        # Agent path may be None pre-generation; populate handles that (clears).
+        self.populate_proxy_client_url("a2a_agent")
+        return self
+
+
+class AgentInfo(BaseModel):
+    """
+    Simplified agent information for listing and search.
+
+    This lightweight model is used for agent discovery results and listings,
+    containing only the essential information needed for agent selection.
+
+    Note: Uses snake_case internally but serializes to camelCase for A2A compliance.
+    """
+
+    name: str = Field(
+        ...,
+        description="Agent name",
+    )
+    description: str = Field(
+        default="",
+        description="Agent description",
+    )
+    path: str = Field(
+        ...,
+        description="Registry path",
+    )
+    url: str = Field(
+        ...,
+        description="Agent endpoint URL",
+    )
+    tags: list[str] = Field(
+        default_factory=list,
+        description="Categorization tags",
+    )
+    skills: list[str] = Field(
+        default_factory=list,
+        description="Skill names only",
+    )
+    num_skills: int = Field(
+        0,
+        ge=0,
+        alias="numSkills",
+        description="Number of skills",
+    )
+    num_stars: float = Field(
+        0.0,
+        ge=0.0,
+        le=5.0,
+        alias="numStars",
+        description="Average community rating (0.0-5.0)",
+    )
+    rating_details: list[dict[str, Any]] = Field(
+        default_factory=list,
+        alias="ratingDetails",
+        description="Individual user ratings; included so cards render the rating "
+        "widget without a per-card /rating fetch.",
+    )
+    security_scan: dict[str, Any] | None = Field(
+        default=None,
+        alias="securityScan",
+        description="Lightweight scan summary (scan_failed + severity counts) for "
+        "the shield icon. None if the agent has not been scanned.",
+    )
+    is_enabled: bool = Field(
+        False,
+        alias="isEnabled",
+        description="Whether agent is enabled",
+    )
+    provider: str | None = Field(
+        None,
+        description="Agent provider/author",
+    )
+    streaming: bool = Field(
+        False,
+        description="Supports streaming responses",
+    )
+    trust_level: str = Field(
+        "community",
+        alias="trustLevel",
+        description="unverified, community, verified, trusted",
+    )
+    visibility: str = Field(
+        "public",
+        description="public, group-restricted, or internal",
+    )
+    allowed_groups: list[str] = Field(
+        default_factory=list,
+        alias="allowedGroups",
+        description="Groups with access when visibility is group-restricted",
+    )
+    supported_protocol: str | None = Field(
+        default=None,
+        alias="supportedProtocol",
+        description="Agent protocol: 'a2a' or 'other'",
+    )
+    sync_metadata: dict[str, Any] | None = Field(
+        default=None,
+        alias="syncMetadata",
+        description="Federation sync metadata for items from peer registries",
+    )
+    record_kind: str | None = Field(
+        default=None,
+        description="Origin marker, e.g. 'ard_ingested' for ARD discovery imports.",
+    )
+    ard_source_url: str | None = Field(
+        default=None,
+        alias="ardSourceUrl",
+        description="URL to the source registry's descriptor (ARD discovery imports).",
+    )
+    ans_metadata: dict[str, Any] | None = Field(
+        default=None,
+        alias="ansMetadata",
+        description="ANS verification metadata",
+    )
+    registered_by: str | None = Field(
+        None,
+        alias="registeredBy",
+        description="Username who registered the agent",
+    )
+    status: str = Field(
+        "active",
+        description="Lifecycle status: active, deprecated, draft, beta",
+    )
+    provider_organization: str | None = Field(
+        None,
+        alias="providerOrganization",
+        description="Provider organization name",
+    )
+    provider_url: str | None = Field(
+        None,
+        alias="providerUrl",
+        description="Provider URL",
+    )
+    source_created_at: str | None = Field(
+        None,
+        alias="sourceCreatedAt",
+        description="Original creation timestamp from source system (ISO format)",
+    )
+    source_updated_at: str | None = Field(
+        None,
+        alias="sourceUpdatedAt",
+        description="Last update timestamp from source system (ISO format)",
+    )
+    registered_at: str | None = Field(
+        None,
+        alias="registeredAt",
+        description="Registration timestamp in this registry (ISO format)",
+    )
+    updated_at: str | None = Field(
+        None,
+        alias="updatedAt",
+        description="Last update timestamp in this registry (ISO format)",
+    )
+    health_status: str = Field(
+        default="unknown",
+        alias="healthStatus",
+        description="Last known health status: healthy, unhealthy, unknown",
+    )
+    last_health_check: str | None = Field(
+        default=None,
+        alias="lastHealthCheck",
+        description="Timestamp of last health check (ISO format)",
+    )
+    metadata: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Additional metadata key-value pairs",
+    )
+    # Gateway-proxy opt-in (mirrored from the AgentCard so listings show the badge
+    # and the edit modal populates the toggle). proxy_client_url is the read-only,
+    # server-derived client path; proxy_target_url is the backend/origin.
+    is_proxied: bool = Field(
+        default=False,
+        description="When true, the agent is served through the gateway generic proxy.",
+    )
+    proxy_target_url: str | None = Field(
+        default=None,
+        description="Backend/origin HTTP(S) URL the gateway forwards to (falls back to the agent url).",
+    )
+    proxy_client_url: str | None = Field(
+        default=None,
+        description="Read-only, auto-derived client-facing gateway path (/{prefix}/a2a_agent/{name}).",
+    )
+
+    model_config = ConfigDict(
+        populate_by_name=True  # Allow both snake_case and camelCase on input
+    )
+
+
+class AgentRegistrationRequest(ProxyableMixin):
+    """
+    API request model for agent registration.
+
+    This model is used for the agent registration API endpoint and converts
+    form-style inputs (e.g., comma-separated tags) into the proper types.
+    Accepts both snake_case (Python) and camelCase (A2A spec JSON) field names.
+    Inherits the ``is_proxied`` / ``proxy_target_url`` opt-in from ProxyableMixin.
+    """
+
+    name: str = Field(
+        ...,
+        min_length=1,
+        description="Agent name",
+    )
+    description: str = Field(
+        default="",
+        description="Agent description",
+    )
+    url: str = Field(
+        ...,
+        min_length=1,
+        description="Agent endpoint URL",
+    )
+    path: str | None = Field(
+        None,
+        description="Registry path (optional - auto-generated if not provided)",
+    )
+
+    id: str | None = Field(
+        None,
+        min_length=1,
+        max_length=512,
+        description="Optional caller-supplied id (UUID, ARN, ...). Auto-generated if omitted.",
+    )
+
+    protocol_version: str = Field(
+        default="1.0",
+        alias="protocolVersion",
+        description="A2A protocol version",
+    )
+    version: str | None = Field(
+        None,
+        description="Agent version",
+    )
+    provider: dict[str, str] | None = Field(
+        None,
+        description="Agent provider information {organization, url}",
+    )
+    security_schemes: dict[str, dict[str, Any]] | None = Field(
+        None,
+        alias="securitySchemes",
+        description="Security schemes configuration",
+    )
+    skills: list[dict[str, Any]] | None = Field(
+        None,
+        description="Agent skills",
+    )
+    streaming: bool = Field(
+        False,
+        description="Supports streaming responses",
+    )
+    tags: str | list[str] = Field(
+        default="",
+        description="Comma-separated tags or list of tags",
+    )
+    license: str = Field(
+        default="N/A",
+        description="License information",
+    )
+    visibility: str = Field(
+        default="public",
+        description="Visibility: public, private, or group-restricted (default: public). 'internal' accepted as alias for 'private'.",
+    )
+    allowed_groups: list[str] = Field(
+        default_factory=list,
+        alias="allowedGroups",
+        max_length=50,
+        description="Groups with access when visibility is group-restricted (list or comma-separated string)",
+    )
+    trust_level: str = Field(
+        default="community",
+        alias="trustLevel",
+        description="Trust level: unverified, community, verified, trusted (default: community)",
+    )
+
+    status: str = Field(
+        default="draft",
+        description="Lifecycle status (default: draft). Allowed: active, deprecated, draft, beta",
+    )
+    source_created_at: str | None = Field(
+        None,
+        description="Original creation timestamp from source system (ISO format)",
+    )
+    source_updated_at: str | None = Field(
+        None,
+        description="Last update timestamp from source system (ISO format)",
+    )
+    external_tags: str | list[str] | None = Field(
+        None,
+        description="Comma-separated tags or list of tags from external/source system",
+    )
+    default_input_modes: list[str] | None = Field(
+        None,
+        alias="defaultInputModes",
+        description="Supported input MIME types (e.g., ['text', 'text/plain'])",
+    )
+    default_output_modes: list[str] | None = Field(
+        None,
+        alias="defaultOutputModes",
+        description="Supported output MIME types (e.g., ['text', 'text/plain'])",
+    )
+    ans_agent_id: str | None = Field(
+        default=None,
+        description="Optional ANS Agent ID to link during registration",
+    )
+    supported_protocol: str = Field(
+        ...,
+        alias="supportedProtocol",
+        description="Agent protocol: 'a2a' for A2A protocol agents, 'other' for non-A2A agents",
+    )
+    metadata: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Additional metadata key-value pairs",
+    )
+    capabilities: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Agent capabilities (e.g., streaming, push_notifications)",
+    )
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    @field_validator("tags", mode="before")
+    @classmethod
+    def _normalize_tags(
+        cls,
+        v: str | list[str] | None,
+    ) -> str:
+        """Normalize tags to comma-separated string."""
+        if v is None:
+            return ""
+        if isinstance(v, list):
+            return ",".join(v)
+        return v
+
+    @field_validator("external_tags", mode="before")
+    @classmethod
+    def _normalize_external_tags(
+        cls,
+        v: str | list[str] | None,
+    ) -> str | None:
+        """Normalize external_tags to comma-separated string."""
+        if v is None:
+            return None
+        if isinstance(v, list):
+            return ",".join(v)
+        return v
+
+    @field_validator("path")
+    @classmethod
+    def _validate_path_request(
+        cls,
+        v: str | None,
+    ) -> str | None:
+        """Validate path format if provided."""
+        if v is None:
+            return None
+        return _validate_path_format(v)
+
+    @field_validator("id")
+    @classmethod
+    def _validate_id(cls, v: str | None) -> str | None:
+        # Delegate to the shared validator so the id rules (non-empty, length,
+        # safe charset) never drift from the server route's resolve_asset_id.
+        from ..services._asset_id import validate_asset_id
+
+        if v is None:
+            return v
+        return validate_asset_id(v)
+
+    @field_validator("protocol_version")
+    @classmethod
+    def _validate_protocol_version_request(
+        cls,
+        v: str,
+    ) -> str:
+        """Validate protocol version format."""
+        return _validate_protocol_version(v)
+
+    @field_validator("supported_protocol")
+    @classmethod
+    def _validate_supported_protocol(
+        cls,
+        v: str,
+    ) -> str:
+        """Validate and normalize supported_protocol to lowercase."""
+        v = v.lower()
+        valid_values = ["a2a", "other"]
+        if v not in valid_values:
+            raise ValueError(f"supported_protocol must be one of: {', '.join(valid_values)}")
+        return v
+
+    @field_validator("visibility")
+    @classmethod
+    def _validate_visibility_request(
+        cls,
+        v: str,
+    ) -> str:
+        """Validate and normalize visibility value.
+
+        Accepts "internal" as alias for "private" and "group" as alias
+        for "group-restricted" for backward compatibility.
+        """
+        from registry.utils.visibility import validate_visibility
+
+        return validate_visibility(v)
+
+    @field_validator("trust_level")
+    @classmethod
+    def _validate_trust_level_request(
+        cls,
+        v: str,
+    ) -> str:
+        """Validate trust_level value."""
+        valid_values = ["unverified", "community", "verified", "trusted"]
+        if v not in valid_values:
+            raise ValueError(f"trust_level must be one of: {', '.join(valid_values)}")
+        return v
+
+    @field_validator("proxy_target_url")
+    @classmethod
+    def _guard_proxy_target_url_request(cls, v: str | None) -> str | None:
+        """API-edge SSRF fast-fail (the mixin no longer raises; storage is read-safe)."""
+        return egress_guard_validator(v)
+
+    @field_validator("allowed_groups", mode="before")
+    @classmethod
+    def _normalize_allowed_groups(
+        cls,
+        v: str | list[str] | None,
+    ) -> list[str]:
+        """Normalize allowed_groups from comma-separated string or list."""
+        if v is None:
+            return []
+        if isinstance(v, str):
+            return [g.strip() for g in v.split(",") if g.strip()]
+        if isinstance(v, list):
+            return [str(g).strip() for g in v if str(g).strip()]
+        return []
+
+    @field_validator("allowed_groups", mode="after")
+    @classmethod
+    def _validate_group_name_format(
+        cls,
+        v: list[str],
+    ) -> list[str]:
+        """Validate group name format (alphanumeric, hyphens, underscores, dots)."""
+        for name in v:
+            if not GROUP_NAME_PATTERN.match(name):
+                raise ValueError(
+                    f"Invalid group name '{name}'. "
+                    "Group names may only contain letters, digits, hyphens, underscores, and dots."
+                )
+        return v
+
+    @model_validator(mode="after")
+    def _validate_group_restricted_groups(
+        self,
+    ) -> "AgentRegistrationRequest":
+        """Validate group-restricted visibility has allowed groups."""
+        if self.visibility == "group-restricted" and not self.allowed_groups:
+            raise ValueError("group-restricted visibility requires at least one allowed_group")
+        return self
+
+
+# Fields a registrant must not be able to change via PATCH or batch patch.
+# These are either server-managed (timestamps, health, ratings) or identity
+# anchors (id, path, registered_by). Supplying any of them is rejected.
+REGISTRANT_ONLY_FIELDS: frozenset[str] = frozenset(
+    {
+        "id",
+        "path",
+        "registered_by",
+        "registered_at",
+        "updated_at",
+        "num_stars",
+        "rating_details",
+        "health_status",
+        "last_health_check",
+        "sync_metadata",
+        "ans_metadata",
+    }
+)
+
+
+class AgentCardPatch(BaseModel):
+    """RFC 7396 JSON Merge Patch body for an agent card.
+
+    Every field is optional. A field present here overrides the stored value;
+    a field that is absent is preserved. Registrant-only fields (timestamps,
+    health, ratings, identity anchors) are rejected with a validation error if
+    supplied, so they can never be mutated through PATCH.
+    """
+
+    model_config = ConfigDict(
+        populate_by_name=True,
+        extra="forbid",
+    )
+
+    name: str | None = Field(default=None, min_length=1)
+    description: str | None = None
+    url: str | None = Field(default=None, min_length=1)
+    version: str | None = Field(default=None, min_length=1)
+    protocol_version: str | None = Field(default=None, alias="protocolVersion")
+    provider: dict[str, str] | None = None
+    skills: list[dict[str, Any]] | None = None
+    security_schemes: dict[str, dict[str, Any]] | None = Field(
+        default=None, alias="securitySchemes"
+    )
+    capabilities: dict[str, Any] | None = None
+    security: list[dict[str, list[str]]] | None = None
+    tags: list[str] | str | None = None
+    visibility: str | None = None
+    allowed_groups: list[str] | None = Field(default=None, alias="allowedGroups")
+    trust_level: str | None = Field(default=None, alias="trustLevel")
+    license: str | None = None
+    status: str | None = None
+    external_tags: list[str] | str | None = None
+    # Gateway-proxy opt-in (patchable subset of ProxyableMixin; the bookkeeping
+    # fields proxy_resolved_ips/proxy_target_host/proxy_disabled_reason are
+    # server-managed and intentionally NOT patchable). extra="forbid" would 422
+    # these without an explicit declaration.
+    is_proxied: bool | None = Field(default=None, alias="isProxied")
+    proxy_target_url: str | None = Field(default=None, alias="proxyTargetUrl")
+
+    @field_validator("proxy_target_url")
+    @classmethod
+    def _validate_proxy_target_url_patch(cls, v: str | None) -> str | None:
+        """Run the SSRF egress guard on a patched target (same as the mixin)."""
+        if v is None:
+            return v
+        from registry.schemas.proxy_mixin import _assert_egress_allowed
+
+        _assert_egress_allowed(v)
+        return v
+
+    @model_validator(mode="after")
+    def _reject_registrant_only(self) -> "AgentCardPatch":
+        """Reject any registrant-only field that was explicitly supplied."""
+        supplied = set(self.model_dump(exclude_unset=True, by_alias=False).keys())
+        bad = REGISTRANT_ONLY_FIELDS & supplied
+        if bad:
+            raise ValueError(f"Field(s) {sorted(bad)} are read-only and cannot be patched")
+        return self
+
+
+class BatchItemOp(str, Enum):
+    """Supported operations for a single item inside a batch job."""
+
+    register = "register"
+    patch = "patch"
+    replace = "replace"  # type: ignore[assignment]  # enum member shadows str.replace
+    delete = "delete"
+
+
+class _RegisterItem(BaseModel):
+    """Batch item that registers a new agent card."""
+
+    op: Literal[BatchItemOp.register] = BatchItemOp.register
+    card: AgentRegistrationRequest
+
+
+class _PatchItem(BaseModel):
+    """Batch item that applies a JSON Merge Patch to an existing agent."""
+
+    op: Literal[BatchItemOp.patch] = BatchItemOp.patch
+    path: str
+    card: AgentCardPatch
+
+
+class _ReplaceItem(BaseModel):
+    """Batch item that fully replaces an existing agent card (PUT semantics)."""
+
+    op: Literal[BatchItemOp.replace] = BatchItemOp.replace
+    path: str
+    card: AgentRegistrationRequest
+
+
+class _DeleteItem(BaseModel):
+    """Batch item that deletes an existing agent."""
+
+    op: Literal[BatchItemOp.delete] = BatchItemOp.delete
+    path: str
+
+
+# Discriminated union keyed on `op`. Each variant's body is type-checked at
+# submit time, so malformed items fail with a precise 422 before the job is
+# ever enqueued, and OpenAPI renders each variant concretely.
+AgentBatchItem = Annotated[
+    _RegisterItem | _PatchItem | _ReplaceItem | _DeleteItem,
+    Field(discriminator="op"),
+]
+
+
+class AgentBatchRequest(BaseModel):
+    """Request body for POST /api/agents/batch."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    idempotency_key: str | None = Field(default=None, max_length=200)
+    items: list[AgentBatchItem] = Field(..., min_length=1)
+
+
+class AgentBatchItemResult(BaseModel):
+    """Per-item outcome recorded as a batch job runs."""
+
+    index: int
+    op: BatchItemOp
+    path: str | None = None
+    status: int  # HTTP-style status code per item
+    error: dict[str, Any] | None = None  # {"code", "message"} when status >= 400
+
+
+class AgentBatchJobState(str, Enum):
+    """Lifecycle state of a batch job."""
+
+    queued = "queued"
+    running = "running"
+    succeeded = "succeeded"
+    partial = "partial"
+    failed = "failed"
+
+
+class AgentBatchJob(BaseModel):
+    """Persisted batch job document (collection: mcp_agent_batch_jobs)."""
+
+    job_id: str  # uuid4 hex
+    state: AgentBatchJobState
+    submitted_by: str
+    submitted_at: datetime
+    updated_at: datetime  # refreshed on every item checkpoint; anchors TTL
+    request_id: str | None = None  # X-Request-Id captured at submit time
+    idempotency_key: str | None = None
+    submitted_body_hash: str  # SHA-256 of canonicalized items; detects divergent replays
+    # Submitter authorization snapshot, captured at submit time. The worker
+    # runs outside the original HTTP request and cannot rebuild scopes from a
+    # username, so we persist exactly what per-item authz needs.
+    submitter_is_admin: bool = False
+    submitter_ui_permissions: dict[str, list[str]] = Field(default_factory=dict)
+    total: int
+    succeeded: int = 0
+    failed: int = 0
+    next_index: int = 0  # resume pointer after a reclaim
+    # Lease fields. claimed_by identifies the owning worker (diagnostic);
+    # lease_expires_at is the instant the claim goes stale. A worker renews the
+    # lease via heartbeat while running; once it lapses any worker may reclaim
+    # the job, resuming from next_index.
+    claimed_by: str | None = None
+    lease_expires_at: datetime | None = None
+    items: list[AgentBatchItem]  # original submission (immutable)
+    results: list[AgentBatchItemResult] = Field(default_factory=list)
+
+
+class PullCardFieldChange(BaseModel):
+    """A single field that differs between local and remote agent card."""
+
+    field: str = Field(
+        ...,
+        description="Field name that changed",
+    )
+    current_value: Any = Field(
+        ...,
+        description="Current value in the local registry",
+    )
+    remote_value: Any = Field(
+        ...,
+        description="Value from the remote agent card",
+    )
+
+
+class PullCardResponse(BaseModel):
+    """Response from the pull-card endpoint (dry-run and overwrite modes)."""
+
+    agent_path: str = Field(
+        ...,
+        description="Agent path in the registry",
+    )
+    dry_run: bool = Field(
+        ...,
+        description="Whether this was a dry-run (preview only)",
+    )
+    remote_card_url: str = Field(
+        ...,
+        description="URL the remote card was fetched from",
+    )
+    changes: list[PullCardFieldChange] = Field(
+        default_factory=list,
+        description="List of fields that differ between local and remote",
+    )
+    has_changes: bool = Field(
+        ...,
+        description="Whether any A2A-spec fields differ",
+    )
+    applied: bool = Field(
+        False,
+        description="Whether changes were applied (only true when dry_run=false and has_changes=true)",
+    )
+    health_status: str = Field(
+        "healthy",
+        description="Health status updated as side effect of successful fetch",
+    )
+    remote_card: dict[str, Any] = Field(
+        default_factory=dict,
+        description="The full remote agent card as received",
+    )

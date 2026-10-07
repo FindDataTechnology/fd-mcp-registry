@@ -1,0 +1,346 @@
+"""
+Repository factory - creates concrete implementations based on configuration.
+
+Since v1.24.8 the only supported storage backend is DocumentDB / MongoDB.
+Every getter unconditionally returns the DocumentDB implementation.
+"""
+
+import logging
+from typing import TYPE_CHECKING, Any
+
+from ..core.config import settings
+
+if TYPE_CHECKING:
+    from ..services.custom_entity_service import CustomEntityService
+from .app_log_repository import AppLogRepository
+from .audit_repository import AuditRepositoryBase
+from .interfaces import (
+    AgentRepositoryBase,
+    BackendSessionRepositoryBase,
+    CustomEntityRepositoryBase,
+    CustomTypeRepositoryBase,
+    FederationConfigRepositoryBase,
+    PeerFederationRepositoryBase,
+    RegistryCardRepositoryBase,
+    ScopeRepositoryBase,
+    SearchRepositoryBase,
+    SecurityScanRepositoryBase,
+    ServerRepositoryBase,
+    SkillRepositoryBase,
+    SkillSecurityScanRepositoryBase,
+    VirtualServerRepositoryBase,
+)
+
+logger = logging.getLogger(__name__)
+
+# Singleton instances
+_server_repo: ServerRepositoryBase | None = None
+_agent_repo: AgentRepositoryBase | None = None
+_scope_repo: ScopeRepositoryBase | None = None
+_security_scan_repo: SecurityScanRepositoryBase | None = None
+_search_repo: SearchRepositoryBase | None = None
+_federation_config_repo: FederationConfigRepositoryBase | None = None
+_peer_federation_repo: PeerFederationRepositoryBase | None = None
+_audit_repo: AuditRepositoryBase | None = None
+_skill_repo: SkillRepositoryBase | None = None
+_virtual_server_repo: VirtualServerRepositoryBase | None = None
+_backend_session_repo: BackendSessionRepositoryBase | None = None
+_skill_security_scan_repo: SkillSecurityScanRepositoryBase | None = None
+_registry_card_repo: RegistryCardRepositoryBase | None = None
+_app_log_repo: AppLogRepository | None = None
+_custom_type_repo: CustomTypeRepositoryBase | None = None
+_custom_entity_repo: CustomEntityRepositoryBase | None = None
+_custom_entity_service: Any = None
+
+
+def get_server_repository() -> ServerRepositoryBase:
+    """Get server repository singleton."""
+    global _server_repo
+
+    if _server_repo is not None:
+        return _server_repo
+
+    logger.info(f"Creating server repository with backend: {settings.storage_backend}")
+
+    from .documentdb.server_repository import DocumentDBServerRepository
+
+    _server_repo = DocumentDBServerRepository()
+    return _server_repo
+
+
+def get_agent_repository() -> AgentRepositoryBase:
+    """Get agent repository singleton."""
+    global _agent_repo
+
+    if _agent_repo is not None:
+        return _agent_repo
+
+    logger.info(f"Creating agent repository with backend: {settings.storage_backend}")
+
+    from .documentdb.agent_repository import DocumentDBAgentRepository
+
+    _agent_repo = DocumentDBAgentRepository()
+    return _agent_repo
+
+
+def get_scope_repository() -> ScopeRepositoryBase:
+    """Get scope repository singleton."""
+    global _scope_repo
+
+    if _scope_repo is not None:
+        return _scope_repo
+
+    logger.info(f"Creating scope repository with backend: {settings.storage_backend}")
+
+    from .documentdb.scope_repository import DocumentDBScopeRepository
+
+    _scope_repo = DocumentDBScopeRepository()
+    return _scope_repo
+
+
+def get_security_scan_repository() -> SecurityScanRepositoryBase:
+    """Get security scan repository singleton."""
+    global _security_scan_repo
+
+    if _security_scan_repo is not None:
+        return _security_scan_repo
+
+    logger.info(f"Creating security scan repository with backend: {settings.storage_backend}")
+
+    from .documentdb.security_scan_repository import DocumentDBSecurityScanRepository
+
+    _security_scan_repo = DocumentDBSecurityScanRepository()
+    return _security_scan_repo
+
+
+def get_search_repository() -> SearchRepositoryBase:
+    """Get search repository singleton."""
+    global _search_repo
+
+    if _search_repo is not None:
+        return _search_repo
+
+    logger.info(f"Creating search repository with backend: {settings.storage_backend}")
+
+    from .documentdb.search_repository import DocumentDBSearchRepository
+
+    _search_repo = DocumentDBSearchRepository()
+    return _search_repo
+
+
+def get_federation_config_repository() -> FederationConfigRepositoryBase:
+    """Get federation config repository singleton."""
+    global _federation_config_repo
+
+    if _federation_config_repo is not None:
+        return _federation_config_repo
+
+    logger.info(f"Creating federation config repository with backend: {settings.storage_backend}")
+
+    from .documentdb.federation_config_repository import DocumentDBFederationConfigRepository
+
+    _federation_config_repo = DocumentDBFederationConfigRepository()
+    return _federation_config_repo
+
+
+def get_peer_federation_repository() -> PeerFederationRepositoryBase:
+    """Get peer federation repository singleton."""
+    global _peer_federation_repo
+
+    if _peer_federation_repo is not None:
+        return _peer_federation_repo
+
+    logger.info(f"Creating peer federation repository with backend: {settings.storage_backend}")
+
+    from .documentdb.peer_federation_repository import DocumentDBPeerFederationRepository
+
+    _peer_federation_repo = DocumentDBPeerFederationRepository()
+    return _peer_federation_repo
+
+
+def get_audit_repository() -> AuditRepositoryBase:
+    """Get audit repository singleton."""
+    global _audit_repo
+
+    if _audit_repo is not None:
+        return _audit_repo
+
+    logger.info(f"Creating audit repository with backend: {settings.storage_backend}")
+
+    from .audit_repository import DocumentDBAuditRepository
+
+    _audit_repo = DocumentDBAuditRepository()
+    return _audit_repo
+
+
+def get_skill_repository() -> SkillRepositoryBase:
+    """Get skill repository singleton."""
+    global _skill_repo
+
+    if _skill_repo is not None:
+        return _skill_repo
+
+    logger.info(f"Creating skill repository with backend: {settings.storage_backend}")
+
+    from .documentdb.skill_repository import DocumentDBSkillRepository
+
+    _skill_repo = DocumentDBSkillRepository()
+    return _skill_repo
+
+
+def get_skill_security_scan_repository() -> SkillSecurityScanRepositoryBase:
+    """Get skill security scan repository singleton."""
+    global _skill_security_scan_repo
+
+    if _skill_security_scan_repo is not None:
+        return _skill_security_scan_repo
+
+    logger.info(f"Creating skill security scan repository with backend: {settings.storage_backend}")
+
+    from .documentdb.skill_security_scan_repository import DocumentDBSkillSecurityScanRepository
+
+    _skill_security_scan_repo = DocumentDBSkillSecurityScanRepository()
+    return _skill_security_scan_repo
+
+
+def get_virtual_server_repository() -> VirtualServerRepositoryBase:
+    """Get virtual server repository singleton."""
+    global _virtual_server_repo
+
+    if _virtual_server_repo is not None:
+        return _virtual_server_repo
+
+    logger.info(f"Creating virtual server repository with backend: {settings.storage_backend}")
+
+    from .documentdb.virtual_server_repository import DocumentDBVirtualServerRepository
+
+    _virtual_server_repo = DocumentDBVirtualServerRepository()
+    return _virtual_server_repo
+
+
+def get_backend_session_repository() -> BackendSessionRepositoryBase:
+    """Get backend session repository singleton."""
+    global _backend_session_repo
+
+    if _backend_session_repo is not None:
+        return _backend_session_repo
+
+    logger.info(f"Creating backend session repository with backend: {settings.storage_backend}")
+
+    from .documentdb.backend_session_repository import DocumentDBBackendSessionRepository
+
+    _backend_session_repo = DocumentDBBackendSessionRepository()
+    return _backend_session_repo
+
+
+def get_registry_card_repository() -> RegistryCardRepositoryBase:
+    """
+    Get Registry Card repository instance (singleton).
+
+    Uses DocumentDB storage for all deployments.
+    """
+    global _registry_card_repo
+
+    if _registry_card_repo is None:
+        from .documentdb.registry_card_repository import DocumentDBRegistryCardRepository
+
+        _registry_card_repo = DocumentDBRegistryCardRepository()
+        logger.info("Initialized Registry Card repository (DocumentDB)")
+
+    return _registry_card_repo
+
+
+def get_app_log_repository() -> AppLogRepository:
+    """Get application log repository singleton."""
+    global _app_log_repo
+
+    if _app_log_repo is not None:
+        return _app_log_repo
+
+    _app_log_repo = AppLogRepository()
+    logger.info("Initialized application log repository (DocumentDB/MongoDB)")
+    return _app_log_repo
+
+
+def get_custom_type_repository() -> CustomTypeRepositoryBase:
+    """Get custom type descriptor repository singleton (DocumentDB only)."""
+    global _custom_type_repo
+
+    if _custom_type_repo is not None:
+        return _custom_type_repo
+
+    backend = settings.storage_backend
+    logger.info(f"Creating custom type repository with backend: {backend}")
+
+    from .documentdb.custom_type_repository import DocumentDBCustomTypeRepository
+
+    _custom_type_repo = DocumentDBCustomTypeRepository()
+    return _custom_type_repo
+
+
+def get_custom_entity_repository() -> CustomEntityRepositoryBase:
+    """Get custom entity record repository singleton (DocumentDB only)."""
+    global _custom_entity_repo
+
+    if _custom_entity_repo is not None:
+        return _custom_entity_repo
+
+    backend = settings.storage_backend
+    logger.info(f"Creating custom entity repository with backend: {backend}")
+
+    from .documentdb.custom_entity_repository import DocumentDBCustomEntityRepository
+
+    _custom_entity_repo = DocumentDBCustomEntityRepository()
+    return _custom_entity_repo
+
+
+def get_custom_entity_service() -> "CustomEntityService":
+    """Get custom entity service singleton."""
+    global _custom_entity_service
+
+    if _custom_entity_service is not None:
+        return _custom_entity_service
+
+    from ..services.custom_entity_service import CustomEntityService
+
+    _custom_entity_service = CustomEntityService()
+    return _custom_entity_service
+
+
+def reset_repositories() -> None:
+    """Reset all repository singletons. USE ONLY IN TESTS."""
+    global \
+        _server_repo, \
+        _agent_repo, \
+        _scope_repo, \
+        _security_scan_repo, \
+        _search_repo, \
+        _federation_config_repo, \
+        _peer_federation_repo, \
+        _audit_repo, \
+        _skill_repo, \
+        _virtual_server_repo, \
+        _backend_session_repo, \
+        _skill_security_scan_repo, \
+        _registry_card_repo, \
+        _app_log_repo, \
+        _custom_type_repo, \
+        _custom_entity_repo, \
+        _custom_entity_service
+    _server_repo = None
+    _agent_repo = None
+    _scope_repo = None
+    _security_scan_repo = None
+    _search_repo = None
+    _federation_config_repo = None
+    _peer_federation_repo = None
+    _audit_repo = None
+    _skill_repo = None
+    _virtual_server_repo = None
+    _backend_session_repo = None
+    _skill_security_scan_repo = None
+    _registry_card_repo = None
+    _app_log_repo = None
+    _custom_type_repo = None
+    _custom_entity_repo = None
+    _custom_entity_service = None

@@ -1,0 +1,22 @@
+{
+  "server_name": "Current Time API",
+  "description": "A simple API that returns the current server time in various formats.",
+  "path": "/currenttime/",
+  "proxy_pass_url": "http://currenttime-server:8000/",
+  "mcp_endpoint": "http://currenttime-server:8000/mcp",
+  "auth_scheme": "none",
+  "tags": ["time", "timezone", "datetime", "api", "utility", "v0.9"],
+  "num_tools": 1,
+  "version": "v0.9",
+  "status": "beta",
+  "license": "MIT-0",
+  "metadata": {
+    "team": "platform-services",
+    "owner": "alice@example.com",
+    "cost_center": "CC-1001",
+    "compliance": ["SOC2"],
+    "deployment_region": "us-east-1",
+    "jira_project": "PLAT-123",
+    "environment": "production"
+  }
+}

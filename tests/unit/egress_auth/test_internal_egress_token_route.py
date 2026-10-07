@@ -1,0 +1,413 @@
+"""Authz tests for POST /internal/egress-token.
+
+Drives each security branch with the dependencies stubbed:
+- validate_internal_auth overridden (caller already authenticated).
+- verify_mcp_proxy_token monkeypatched to return controlled claims (this is
+  covered separately in test_verify_mcp_proxy_token.py).
+- get_server_repository / get_egress_auth_service stubbed.
+"""
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+import registry.api.egress_auth_routes as routes
+from registry.secrets import keys
+
+
+class _StubRepo:
+    def __init__(self, server):
+        self._server = server
+        self.queried_paths: list[str] = []
+
+    async def get(self, path):
+        self.queried_paths.append(path)
+        return self._server
+
+
+class _StubService:
+    def __init__(self, token):
+        self._token = token
+        self.called = False
+
+    async def get_valid_token(self, **kwargs):
+        self.called = True
+        return self._token
+
+    def build_consent_url(self, **kwargs):
+        return "https://github.com/login/oauth/authorize?from=miss"
+
+
+def _server(**over):
+    base = {
+        "egress_auth_mode": "oauth_user",
+        "egress_oauth": {"provider": "github", "client_id": "Iv1.x"},
+        "proxy_pass_url": "https://api.githubcopilot.com/mcp",
+        "versions": [],
+    }
+    base.update(over)
+    return base
+
+
+@pytest.fixture
+def make_client(monkeypatch):
+    """Factory: build a TestClient with controllable claims/server/token."""
+
+    def _build(claims, server, vended_token="at_vended", enabled=True):
+        monkeypatch.setattr(routes.settings, "egress_auth_enabled", enabled)
+        monkeypatch.setattr(routes, "verify_mcp_proxy_token", lambda tok: claims)
+        repo = _StubRepo(server)
+        monkeypatch.setattr(routes, "get_server_repository", lambda: repo)
+        svc = _StubService(vended_token)
+        monkeypatch.setattr(routes, "get_egress_auth_service", lambda: svc)
+
+        app = FastAPI()
+        app.include_router(routes.router)
+        app.dependency_overrides[routes.validate_internal_auth] = lambda: "auth-server"
+        client = TestClient(app)
+        client._svc = svc  # expose for assertions
+        client._repo = repo
+        return client
+
+    return _build
+
+
+def _claims(**over):
+    # Shape of a token minted by the current auth-server: the canonical vault id
+    # travels in ``egress_user``. ``sub`` (the login username) is present but is
+    # NOT a fallback for it -- the vend refuses to cross that namespace.
+    base = {
+        "sub": "alice",
+        "egress_user": "alice",
+        "auth_method": "oauth2",
+        "upstream_url": "https://api.githubcopilot.com/mcp",
+    }
+    base.update(over)
+    return base
+
+
+def _post(client, token="proxy-token", server_path="/github-mcp"):
+    return client.post(
+        "/internal/egress-token",
+        json={"server_path": server_path},
+        headers={"X-Internal-Token": token},
+    )
+
+
+@pytest.mark.unit
+class TestInternalEgressTokenRoute:
+    def test_happy_path_vends(self, make_client):
+        client = make_client(_claims(), _server())
+        r = _post(client)
+        assert r.status_code == 200
+        assert r.json()["access_token"] == "at_vended"
+        assert client._svc.called
+
+    def test_no_leading_slash_is_normalized(self, make_client):
+        # mcp_proxy sends the bare first path segment ("github"); the endpoint must
+        # normalize to "/github" so the server lookup + vault key + consent agree.
+        client = make_client(_claims(), _server())
+        r = _post(client, server_path="github-mcp")  # no leading slash
+        assert r.status_code == 200
+        assert r.json()["access_token"] == "at_vended"
+        assert client._repo.queried_paths == ["/github-mcp"]  # normalized before lookup
+
+    def test_feature_disabled_404(self, make_client):
+        client = make_client(_claims(), _server(), enabled=False)
+        assert _post(client).status_code == 404
+
+    def test_missing_internal_token_401(self, make_client):
+        client = make_client(_claims(), _server())
+        r = client.post("/internal/egress-token", json={"server_path": "/github-mcp"})
+        assert r.status_code == 401
+
+    def test_non_per_user_auth_method_consent_no_vend(self, make_client):
+        # Network-trusted/federation callers never vend.
+        client = make_client(_claims(auth_method="network-trusted"), _server())
+        r = _post(client)
+        assert r.status_code == 200
+        assert r.json()["consent_required"] is True
+        assert r.json()["access_token"] is None
+        assert not client._svc.called
+
+    def test_per_user_without_egress_user_claim_consents_and_warns(self, make_client, caplog):
+        # A per-user token that carries no egress_user claim (minted before the
+        # claim existed) must NOT fall back to the token's `sub`: that value is the
+        # login username, a different identifier namespace from the OIDC sub the
+        # consent path wrote, so vending against it reads an empty vault bucket and
+        # the user sees 0 tools. Refuse, and make the refusal visible in the logs --
+        # the old cross-namespace fallback failed completely silently.
+        claims = _claims()
+        del claims["egress_user"]
+        client = make_client(claims, _server())
+        with caplog.at_level("WARNING", logger=routes.logger.name):
+            r = _post(client)
+        assert r.status_code == 200
+        assert r.json()["consent_required"] is True
+        assert r.json()["access_token"] is None
+        assert not client._svc.called
+        warnings = [rec.getMessage() for rec in caplog.records if rec.levelname == "WARNING"]
+        assert any("no egress_user claim" in msg for msg in warnings), warnings
+        assert any("/github-mcp" in msg for msg in warnings), warnings
+
+    def test_server_not_oauth_user_consent(self, make_client):
+        client = make_client(_claims(), _server(egress_auth_mode="none", egress_oauth=None))
+        r = _post(client)
+        assert r.json()["consent_required"] is True
+        assert not client._svc.called
+
+    def test_unknown_server_consent(self, make_client):
+        client = make_client(_claims(), None)
+        assert _post(client).json()["consent_required"] is True
+
+    def test_upstream_mismatch_403(self, make_client):
+        # Forged upstream not in the registered set -> refuse.
+        client = make_client(_claims(upstream_url="https://attacker.example/mcp"), _server())
+        r = _post(client)
+        assert r.status_code == 403
+        assert not client._svc.called
+
+    def test_multi_version_upstream_accepted(self, make_client):
+        # Union: a versioned upstream (not the base proxy_pass_url) is legal.
+        srv = _server(
+            versions=[{"version": "v2", "proxy_pass_url": "https://v2.githubcopilot.com/mcp"}]
+        )
+        client = make_client(_claims(upstream_url="https://v2.githubcopilot.com/mcp/sub"), srv)
+        # note: base-URL comparison ignores the sub-path; v2 host matches the union
+        r = _post(client)
+        assert r.status_code == 200
+        assert client._svc.called
+
+    def test_vend_miss_returns_consent_url(self, make_client):
+        # On a miss for an egress-configured server, the vend builds + returns the
+        # authorize_url so mcp_proxy can hand it to the user (auto-consent trigger).
+        client = make_client(_claims(), _server(), vended_token=None)
+        r = _post(client)
+        body = r.json()
+        assert body["consent_required"] is True
+        assert body["access_token"] is None
+        assert body["authorize_url"] == "https://github.com/login/oauth/authorize?from=miss"
+
+    def test_vend_miss_returns_connect_url_and_request_state(self, make_client):
+        # The URL-mode elicitation switch adds a session-verified connect_url
+        # (the gateway front door the MCP client opens, no DCR), an AEAD
+        # request_state blob for the MRTR retry, and the provider key.
+        client = make_client(_claims(), _server(), vended_token=None)
+        body = _post(client, server_path="/github-mcp").json()
+        assert body["consent_required"] is True
+        # connect_url points at the gateway's own /oauth2/egress/connect with the
+        # server path, NOT the provider-direct authorize_url.
+        assert "/oauth2/egress/connect" in body["connect_url"]
+        assert "server=" in body["connect_url"]
+        assert "github" in body["connect_url"]
+        # request_state is an opaque, non-empty AEAD blob (decodable by the codec).
+        assert body["request_state"]
+        from registry.egress_auth.state_codec import decode_state
+
+        st = decode_state(body["request_state"])
+        assert st.user_id == "alice"
+        assert st.auth_method == "oauth2"
+        assert st.provider == "github"
+        assert st.server_path == "/github-mcp"
+        assert body["provider"] == "github"
+
+    def test_non_per_user_miss_has_no_authorize_url(self, make_client):
+        # A non-per-user caller has nothing to connect -> no authorize_url and no
+        # connect_url (mcp_proxy then falls through to normal forwarding).
+        client = make_client(_claims(auth_method="network-trusted"), _server())
+        body = _post(client).json()
+        assert body["consent_required"] is True
+        assert body.get("authorize_url") is None
+        assert body.get("connect_url") is None
+        assert body.get("request_state") is None
+
+    def test_store_transiently_unavailable_returns_503(self, make_client):
+        # When the token store fails transiently (get_valid_token raises
+        # SecretStoreError after the store exhausted its own retry budget), the
+        # vend must NOT masquerade as a clean miss (consent_required) -- that would
+        # wrongly tell the user to reconnect. It fails closed with a retryable 503
+        # so the auth-server vend hop can surface "temporarily unavailable, retry".
+        from registry.secrets.interfaces import SecretStoreError
+
+        client = make_client(_claims(), _server())
+
+        async def _boom(**kwargs):
+            client._svc.called = True
+            raise SecretStoreError("OpenBao get failed: connection refused")
+
+        client._svc.get_valid_token = _boom
+        r = _post(client)
+        assert r.status_code == 503
+        assert client._svc.called
+        # It is an availability signal, never a miss (no consent nudge).
+        assert "consent_required" not in r.text
+
+
+# --- Destination binding at the route level (real EgressAuthService) --------- #
+# The _StubService above ignores the binding; these drive the REAL service so a
+# repointed proxy_pass_url is refused end-to-end through the vend route: the live
+# cross-check passes (record + minted upstream claim move together) yet the
+# write-time binding still fail-closes to consent.
+from registry.egress_auth.schemas import StoredToken  # noqa: E402
+from registry.egress_auth.service import EgressAuthService  # noqa: E402
+from registry.secrets.interfaces import SecretStoreBase  # noqa: E402
+
+_REGISTERED = "https://api.githubcopilot.com/mcp"
+_REGISTERED_BASE = "https://api.githubcopilot.com"
+_NEW_UPSTREAM = "https://new-upstream.example/mcp"
+
+
+class _InMemoryStore(SecretStoreBase):
+    def __init__(self):
+        self._d = {}
+
+    async def put_token(self, a, u, p, s, t, *, purpose):
+        self._d[(purpose, a, u, p, s)] = t
+
+    async def get_token(self, a, u, p, s, *, purpose):
+        return self._d.get((purpose, a, u, p, s))
+
+    async def delete_token(self, a, u, p, s, *, purpose):
+        self._d.pop((purpose, a, u, p, s), None)
+
+    async def list_for_user(self, a, u):
+        # Egress space only, mirroring the real backends.
+        return [
+            (p, s, t)
+            for (purpose, aa, uu, p, s), t in self._d.items()
+            if aa == a and uu == u and purpose == keys.EGRESS_PURPOSE
+        ]
+
+
+@pytest.fixture
+def make_real_client(monkeypatch):
+    """Like make_client, but wires the REAL EgressAuthService (in-memory store)
+    so the write-time destination binding is actually enforced by the vend."""
+
+    def _build(claims, server, bound_upstreams):
+        monkeypatch.setattr(routes.settings, "egress_auth_enabled", True)
+        monkeypatch.setattr(routes, "verify_mcp_proxy_token", lambda tok: claims)
+        monkeypatch.setattr(routes, "get_server_repository", lambda: _StubRepo(server))
+        store = _InMemoryStore()
+        store._d[(keys.EGRESS_PURPOSE, "oauth2", "alice", "github", "/github-mcp")] = StoredToken(
+            access_token="gho_real",
+            client_id="Iv1.x",
+            expires_at="2999-01-01T00:00:00+00:00",
+            bound_upstreams=bound_upstreams,
+        )
+        svc = EgressAuthService(secret_store=store, callback_base_url="https://gw.example")
+        monkeypatch.setattr(routes, "get_egress_auth_service", lambda: svc)
+        app = FastAPI()
+        app.include_router(routes.router)
+        app.dependency_overrides[routes.validate_internal_auth] = lambda: "auth-server"
+        return TestClient(app)
+
+    return _build
+
+
+@pytest.mark.unit
+class TestDestinationBindingRoute:
+    def test_registered_upstream_vends(self, make_real_client):
+        client = make_real_client(
+            _claims(upstream_url=_REGISTERED),
+            _server(proxy_pass_url=_REGISTERED),
+            bound_upstreams=[_REGISTERED_BASE],
+        )
+        r = _post(client)
+        assert r.status_code == 200
+        assert r.json()["access_token"] == "gho_real"
+
+    def test_repointed_proxy_pass_url_refuses(self, make_real_client):
+        # Admin repoints proxy_pass_url to a host they control. The live
+        # cross-check passes (both the record and the minted upstream claim moved
+        # together), but the write-time binding refuses -> consent_required, no token.
+        client = make_real_client(
+            _claims(upstream_url=_NEW_UPSTREAM),
+            _server(proxy_pass_url=_NEW_UPSTREAM),
+            bound_upstreams=[_REGISTERED_BASE],
+        )
+        r = _post(client)
+        assert r.status_code == 200
+        body = r.json()
+        assert body["consent_required"] is True
+        assert body["access_token"] is None
+
+
+@pytest.mark.unit
+class TestOboExchangeVendDefense:
+    """The vend path returns the stored obo_exchange DIRECTIVE to the exchange
+    engine. It must re-validate the stored directive (defense in depth) so a
+    directive persisted before the write-path allowlist existed -- or via any
+    other mutation path -- can never be exchanged for a delegated token to a
+    disallowed audience. Fail closed: refuse, never silently pass through."""
+
+    def test_valid_obo_directive_vends(self, make_client):
+        client = make_client(
+            _claims(),
+            _server(
+                egress_auth_mode="obo_exchange",
+                egress_oauth={
+                    "target_audience": "api://outlook-mcp-server",
+                    "scopes": ["api://outlook-mcp-server/.default"],
+                },
+            ),
+        )
+        r = _post(client)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["mode"] == "obo_exchange"
+        assert body["obo_target_audience"] == "api://outlook-mcp-server"
+
+    def test_obo_directive_vends_without_egress_user_claim(self, make_client):
+        # obo_exchange is stateless: it never reads the vault, so the missing
+        # vault id that refuses a per-user oauth/pat vend must not block it.
+        claims = _claims()
+        del claims["egress_user"]
+        client = make_client(
+            claims,
+            _server(
+                egress_auth_mode="obo_exchange",
+                egress_oauth={
+                    "target_audience": "api://outlook-mcp-server",
+                    "scopes": ["api://outlook-mcp-server/.default"],
+                },
+            ),
+        )
+        r = _post(client)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["mode"] == "obo_exchange"
+        assert body["consent_required"] is False
+        assert not client._svc.called
+
+    def test_disallowed_stored_audience_refused(self, make_client):
+        # A directive that predates the write-path floor names a first-party
+        # resource; vending it would exfiltrate a delegated token upstream.
+        client = make_client(
+            _claims(),
+            _server(
+                egress_auth_mode="obo_exchange",
+                egress_oauth={
+                    "target_audience": "https://graph.microsoft.com",
+                    "scopes": [],
+                },
+            ),
+        )
+        r = _post(client)
+        assert r.status_code == 403
+        assert "not allowed" in r.json()["detail"]
+
+    def test_mismatched_stored_scope_refused(self, make_client):
+        client = make_client(
+            _claims(),
+            _server(
+                egress_auth_mode="obo_exchange",
+                egress_oauth={
+                    "target_audience": "api://outlook-mcp-server",
+                    "scopes": ["https://graph.microsoft.com/.default"],
+                },
+            ),
+        )
+        r = _post(client)
+        assert r.status_code == 403
+        assert "not allowed" in r.json()["detail"]

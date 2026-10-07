@@ -1,0 +1,38 @@
+cat .claudeignore
+```
+
+Should look like this:
+```
+# Dependencies
+**/node_modules/
+node_modules/
+
+# Python
+**/.venv/
+**/__pycache__/
+*.pyc
+
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.log
+tfplan
+
+# Test/Build outputs
+htmlcov/
+site/
+.coverage
+*.egg-info/
+
+# Caches
+.hypothesis/
+.ruff_cache/
+.pytest_cache/
+.scratchpad/
+.tmp/
+.oauth-tokens/
+
+# Log files
+*.log
+**/*.log

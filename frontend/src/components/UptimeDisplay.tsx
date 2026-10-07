@@ -1,0 +1,288 @@
+import React, {
+  useState,
+  useEffect,
+} from 'react';
+import axios from 'axios';
+import {
+  SystemStats,
+} from '../types/stats';
+import { useI18n } from '../contexts/I18nContext';
+import { useUiTitle } from '../hooks/useUiTitle';
+
+
+/**
+ * UptimeDisplay component shows system uptime with a hover tooltip containing detailed stats.
+ *
+ * Features:
+ * - Fetches /api/stats every 60 seconds
+ * - Displays human-readable uptime (e.g., "2 days 5 hours")
+ * - Shows detailed system info on hover
+ * - Handles loading and error states gracefully
+ * - Hidden on mobile screens (<768px)
+ */
+interface TelemetryDetection {
+  cloud: string;
+  cloud_detection_method: string;
+}
+
+
+const UptimeDisplay: React.FC = () => {
+  const [stats, setStats] = useState<SystemStats | null>(null);
+  const [detection, setDetection] = useState<TelemetryDetection | null>(null);
+  const [error, setError] = useState<boolean>(false);
+  const uiTitle = useUiTitle();
+  const { t } = useI18n();
+
+
+  useEffect(() => {
+    const fetchStats = async () => {
+      try {
+        const response = await axios.get<SystemStats>('/api/stats');
+        setStats(response.data);
+        setError(false);
+      } catch (err) {
+        console.error('Error fetching stats:', err);
+        setError(true);
+      }
+    };
+
+    // Telemetry detection is cached server-side, so fetch once per mount.
+    const fetchDetection = async () => {
+      try {
+        const response = await axios.get<TelemetryDetection>('/api/system/telemetry-detection');
+        setDetection(response.data);
+      } catch (err) {
+        console.error('Error fetching telemetry detection:', err);
+      }
+    };
+
+    // Initial fetch
+    fetchStats();
+    fetchDetection();
+
+    // Poll every 60 seconds
+    const interval = setInterval(fetchStats, 60000);
+
+    return () => clearInterval(interval);
+  }, []);
+
+
+  const formatUptime = (
+    seconds: number,
+  ): string => {
+    const days = Math.floor(seconds / 86400);
+    const hours = Math.floor((seconds % 86400) / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+
+    const parts: string[] = [];
+    if (days > 0) {
+      parts.push(t(days > 1 ? '{count} days' : '{count} day', { count: days }));
+    }
+    if (hours > 0) {
+      parts.push(t(hours > 1 ? '{count} hours' : '{count} hour', { count: hours }));
+    }
+    if (parts.length === 0 && minutes > 0) {
+      parts.push(t(minutes > 1 ? '{count} minutes' : '{count} minute', { count: minutes }));
+    }
+    if (parts.length === 0) {
+      return t('less than a minute');
+    }
+
+    return parts.join(' ');
+  };
+
+
+  if (error) {
+    return (
+      <div className="hidden md:flex items-center px-2.5 py-1 bg-gray-50 dark:bg-gray-900/20 rounded-md">
+        <span className="text-xs font-medium text-gray-500 dark:text-gray-400">
+          {t('Uptime: unavailable')}
+        </span>
+      </div>
+    );
+  }
+
+
+  if (!stats) {
+    return null;
+  }
+
+
+  const uptimeText = formatUptime(stats.uptime_seconds);
+  const dbStatusColor = stats.database_status.status.toLowerCase() === 'healthy'
+    ? 'text-green-600 dark:text-green-400'
+    : 'text-red-600 dark:text-red-400';
+  const authStatusColor = stats.auth_status.status.toLowerCase() === 'healthy'
+    ? 'text-green-600 dark:text-green-400'
+    : 'text-red-600 dark:text-red-400';
+
+
+  return (
+    <div className="hidden md:flex items-center px-2.5 py-1 bg-green-50 dark:bg-green-900/20 rounded-md group relative">
+      <span className="text-xs font-medium text-green-700 dark:text-green-300">
+        {t('Uptime: {uptime}', { uptime: uptimeText })}
+      </span>
+
+      {/* Tooltip on hover */}
+      <div className="absolute right-0 top-full mt-2 w-80 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-50">
+        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg ring-1 ring-black ring-opacity-5 p-4">
+          <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-3">
+            {t(uiTitle)}
+          </h3>
+
+          {/* Version & Start Time */}
+          <div className="space-y-1 text-xs mb-3">
+            <div className="flex justify-between gap-2">
+              <span className="text-gray-500 dark:text-gray-400 flex-shrink-0">{t('Version:')}</span>
+              <span
+                className="text-gray-900 dark:text-gray-100 font-mono truncate text-right"
+                title={stats.version}
+              >
+                {stats.version}
+              </span>
+            </div>
+            <div className="flex justify-between gap-2">
+              <span className="text-gray-500 dark:text-gray-400 flex-shrink-0">{t('Started:')}</span>
+              <span className="text-gray-900 dark:text-gray-100 truncate text-right">
+                {new Date(stats.started_at).toLocaleString()}
+              </span>
+            </div>
+          </div>
+
+          {/* Deployment */}
+          <div className="mb-3 pt-3 border-t border-gray-200 dark:border-gray-700">
+            <h4 className="text-xs font-semibold text-gray-700 dark:text-gray-300 mb-2">
+              {t('Deployment')}
+            </h4>
+            <div className="space-y-1 text-xs">
+              <div className="flex justify-between gap-2">
+                <span className="text-gray-500 dark:text-gray-400 flex-shrink-0">{t('Type:')}</span>
+                <span className="text-gray-900 dark:text-gray-100 truncate text-right">
+                  {stats.deployment_type}
+                </span>
+              </div>
+              <div className="flex justify-between gap-2">
+                <span className="text-gray-500 dark:text-gray-400 flex-shrink-0">{t('Mode:')}</span>
+                <span className="text-gray-900 dark:text-gray-100 truncate text-right">
+                  {stats.deployment_mode}
+                </span>
+              </div>
+              {stats.internal_only_deployment && (
+                <div className="flex justify-between gap-2">
+                  <span className="text-gray-500 dark:text-gray-400 flex-shrink-0">{t('Internal:')}</span>
+                  <span className="text-gray-900 dark:text-gray-100 truncate text-right">
+                    {stats.internal_deployment_type}
+                  </span>
+                </div>
+              )}
+              {detection && (
+                <div className="flex justify-between gap-2">
+                  <span className="text-gray-500 dark:text-gray-400 flex-shrink-0">{t('Cloud:')}</span>
+                  <span
+                    className="text-gray-900 dark:text-gray-100 truncate text-right"
+                    title={t('Detected via {method}. See docs/TELEMETRY.md for details.', { method: detection.cloud_detection_method })}
+                  >
+                    {detection.cloud}{' '}
+                    <small className="text-gray-500 dark:text-gray-400">
+                      {t('(via {method})', { method: detection.cloud_detection_method })}
+                    </small>
+                  </span>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Registry Stats */}
+          <div className="mb-3 pt-3 border-t border-gray-200 dark:border-gray-700">
+            <h4 className="text-xs font-semibold text-gray-700 dark:text-gray-300 mb-2">
+              {t('Registry Stats')}
+            </h4>
+            <div className="space-y-1 text-xs">
+              <div className="flex justify-between gap-2">
+                <span className="text-gray-500 dark:text-gray-400 flex-shrink-0">{t('Servers:')}</span>
+                <span className="text-gray-900 dark:text-gray-100 text-right">
+                  {stats.registry_stats.servers}
+                </span>
+              </div>
+              <div className="flex justify-between gap-2">
+                <span className="text-gray-500 dark:text-gray-400 flex-shrink-0">{t('Agents:')}</span>
+                <span className="text-gray-900 dark:text-gray-100 text-right">
+                  {stats.registry_stats.agents}
+                </span>
+              </div>
+              <div className="flex justify-between gap-2">
+                <span className="text-gray-500 dark:text-gray-400 flex-shrink-0">{t('Skills:')}</span>
+                <span className="text-gray-900 dark:text-gray-100 text-right">
+                  {stats.registry_stats.skills}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Database Status */}
+          <div className="mb-3 pt-3 border-t border-gray-200 dark:border-gray-700">
+            <h4 className="text-xs font-semibold text-gray-700 dark:text-gray-300 mb-2">
+              {t('Database')}
+            </h4>
+            <div className="space-y-1 text-xs">
+              <div className="flex justify-between gap-2">
+                <span className="text-gray-500 dark:text-gray-400 flex-shrink-0">{t('Backend:')}</span>
+                <span className="text-gray-900 dark:text-gray-100 truncate text-right">
+                  {stats.database_status.backend}
+                </span>
+              </div>
+              <div className="flex justify-between gap-2">
+                <span className="text-gray-500 dark:text-gray-400 flex-shrink-0">{t('Status:')}</span>
+                <span className={`font-medium ${dbStatusColor} truncate text-right`}>
+                  {stats.database_status.status}
+                </span>
+              </div>
+              <div className="flex justify-between gap-2">
+                <span className="text-gray-500 dark:text-gray-400 flex-shrink-0">{t('Host:')}</span>
+                <span
+                  className="text-gray-900 dark:text-gray-100 font-mono text-xs truncate text-right"
+                  title={stats.database_status.host}
+                >
+                  {stats.database_status.host}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Auth Server Status */}
+          <div className="pt-3 border-t border-gray-200 dark:border-gray-700">
+            <h4 className="text-xs font-semibold text-gray-700 dark:text-gray-300 mb-2">
+              {t('Auth Server')}
+            </h4>
+            <div className="space-y-1 text-xs">
+              <div className="flex justify-between gap-2">
+                <span className="text-gray-500 dark:text-gray-400 flex-shrink-0">{t('Provider:')}</span>
+                <span className="text-gray-900 dark:text-gray-100 truncate text-right">
+                  {stats.auth_status.provider}
+                </span>
+              </div>
+              <div className="flex justify-between gap-2">
+                <span className="text-gray-500 dark:text-gray-400 flex-shrink-0">{t('Status:')}</span>
+                <span className={`font-medium ${authStatusColor} truncate text-right`}>
+                  {stats.auth_status.status}
+                </span>
+              </div>
+              <div className="flex justify-between gap-2">
+                <span className="text-gray-500 dark:text-gray-400 flex-shrink-0">{t('URL:')}</span>
+                <span
+                  className="text-gray-900 dark:text-gray-100 font-mono text-xs truncate text-right"
+                  title={stats.auth_status.url}
+                >
+                  {stats.auth_status.url}
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+
+export default UptimeDisplay;

@@ -1,0 +1,33 @@
+{
+  "path": "/virtual/combined-tools",
+  "server_name": "Combined Context7 and CurrentTime Tools",
+  "description": "Virtual server aggregating documentation search tools from Context7 and timezone tools from CurrentTime server",
+  "tool_mappings": [
+    {
+      "tool_name": "resolve-library-id",
+      "backend_server_path": "/context7"
+    },
+    {
+      "tool_name": "query-docs",
+      "backend_server_path": "/context7"
+    },
+    {
+      "tool_name": "current_time_by_timezone",
+      "alias": "get-current-time",
+      "backend_server_path": "/currenttime/"
+    }
+  ],
+  "required_scopes": [],
+  "tool_scope_overrides": [],
+  "tags": [
+    "documentation",
+    "time",
+    "timezone",
+    "libraries",
+    "combined"
+  ],
+  "supported_transports": [
+    "streamable-http"
+  ],
+  "is_enabled": true
+}

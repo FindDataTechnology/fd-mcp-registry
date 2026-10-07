@@ -1,0 +1,37 @@
+{
+  "scope_name": "currenttime-users",
+  "description": "Users with access to currenttime server",
+  "server_access": [
+    {
+      "server": "currenttime",
+      "methods": ["initialize", "tools/list", "tools/call"],
+      "tools": ["current_time_by_timezone"]
+    },
+     {
+      "server": "/currenttime/",
+      "methods": ["initialize", "tools/list", "tools/call"],
+      "tools": ["current_time_by_timezone"]
+    },
+     {
+      "server": "/currenttime",
+      "methods": ["initialize", "tools/list", "tools/call"],
+      "tools": ["current_time_by_timezone"]
+    },
+     {
+      "server": "context7",
+      "methods": ["initialize", "tools/list", "tools/call"],
+      "tools": ["*"]
+    },
+    {
+      "server": "api",
+      "methods": ["initialize", "GET", "POST", "servers", "agents", "search", "rating"],
+      "tools": []
+    }
+  ],
+  "group_mappings": ["currenttime-users"],
+  "ui_permissions": {
+    "list_service": ["all"],
+    "health_check_service": ["all"]
+  },
+  "create_in_idp": true
+}

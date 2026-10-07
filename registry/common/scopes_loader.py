@@ -1,0 +1,145 @@
+"""
+Shared scopes loader module for loading authorization scopes from repository.
+
+This module is used by both the auth server and registry to load scopes
+from the DocumentDB / MongoDB repository.
+"""
+
+import asyncio
+import logging
+from typing import Any
+
+logger = logging.getLogger(__name__)
+
+
+async def load_scopes_from_repository(
+    max_retries: int = 5, initial_delay: float = 2.0
+) -> dict[str, Any]:
+    """
+    Load scopes configuration from repository with retry logic.
+
+    Args:
+        max_retries: Maximum number of retry attempts
+        initial_delay: Initial delay in seconds (exponential backoff)
+
+    Returns:
+        Dict with "group_mappings", scope definitions, and "UI-Scopes"
+    """
+    last_exception: Exception | None = None
+
+    for attempt in range(max_retries):
+        try:
+            # Import here to avoid circular dependencies
+            from ..core.config import settings
+            from ..repositories.factory import get_scope_repository
+
+            if attempt == 0:
+                logger.info(f"Repository settings - backend: {settings.storage_backend}")
+
+            scope_repo = get_scope_repository()
+
+            # Load all scopes
+            await scope_repo.load_all()
+
+            # Get all groups and build scopes configuration
+            groups_dict = await scope_repo.list_groups()
+
+            group_mappings: dict[str, list[str]] = {}
+            scopes_config: dict[str, Any] = {}
+            ui_scopes: dict[str, Any] = {}
+
+            # Build scopes config from repository
+            for group_name in groups_dict.keys():
+                # Get full group details
+                group_data = await scope_repo.get_group(group_name)
+                if not group_data:
+                    continue
+
+                # Group mappings: Keycloak group → list of scope names
+                keycloak_groups = group_data.get("group_mappings", [])
+                for keycloak_group in keycloak_groups:
+                    if keycloak_group not in group_mappings:
+                        group_mappings[keycloak_group] = []
+                    if group_name not in group_mappings[keycloak_group]:
+                        group_mappings[keycloak_group].append(group_name)
+
+                # Server access scopes: scope_name → server_access list
+                server_access = group_data.get("server_access", [])
+                if server_access:
+                    scopes_config[group_name] = server_access
+
+                # UI permissions: scope_name → ui_permissions dict
+                ui_permissions = group_data.get("ui_permissions", {})
+                if ui_permissions:
+                    ui_scopes[group_name] = ui_permissions
+
+            if not group_mappings:
+                # An empty scopes collection means every authenticated user
+                # falls back to read-only access regardless of group membership.
+                # Scopes are not auto-seeded; this is almost always a skipped
+                # post-deployment step rather than an intentional empty config.
+                logger.warning(
+                    "Loaded from repository: 0 group mappings, "
+                    f"{len(scopes_config)} scope definitions, {len(ui_scopes)} UI scopes. "
+                    "The scopes collection is EMPTY — all users will be read-only. "
+                    "Seed scopes via the post-deployment init (run-documentdb-init.sh) "
+                    "or the scope management API."
+                )
+            else:
+                logger.info(
+                    f"Loaded from repository: {len(group_mappings)} group mappings, "
+                    f"{len(scopes_config)} scope definitions, {len(ui_scopes)} UI scopes"
+                )
+
+            # Build the complete config structure
+            config = {"group_mappings": group_mappings, "UI-Scopes": ui_scopes}
+            config.update(scopes_config)
+
+            return config
+
+        except (ConnectionRefusedError, OSError) as e:
+            last_exception = e
+            if attempt < max_retries - 1:
+                delay = initial_delay * (2**attempt)
+                logger.warning(
+                    f"Repository not ready (attempt {attempt + 1}/{max_retries}), "
+                    f"retrying in {delay}s: {e}"
+                )
+                await asyncio.sleep(delay)
+            else:
+                logger.error(
+                    f"Failed to connect to repository after {max_retries} attempts: {e}",
+                    exc_info=True,
+                )
+        except Exception as e:
+            # Other exceptions should also be retried (might be transient repository errors)
+            last_exception = e
+            if attempt < max_retries - 1:
+                delay = initial_delay * (2**attempt)
+                logger.warning(
+                    f"Error loading scopes (attempt {attempt + 1}/{max_retries}), "
+                    f"retrying in {delay}s: {e}"
+                )
+                await asyncio.sleep(delay)
+            else:
+                logger.error(
+                    f"Failed to load scopes after {max_retries} attempts: {e}", exc_info=True
+                )
+
+    # If we get here, all retries failed
+    logger.error("Returning empty scopes configuration due to failures")
+    return {"group_mappings": {}}
+
+
+async def reload_scopes_config(storage_backend: str | None = None) -> dict[str, Any]:
+    """
+    Reload scopes configuration from the repository.
+
+    Args:
+        storage_backend: Ignored (retained for call-site compatibility).
+
+    Returns:
+        Dict with scopes configuration
+    """
+    logger.info("Reloading scopes from repository")
+    return await load_scopes_from_repository()

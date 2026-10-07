@@ -1,0 +1,252 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mcp-registry"
+version = "0.1.0"
+description = "A registry for MCP servers"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "aiofiles>=24.1.0",
+    "fastapi>=0.115.12",
+    "itsdangerous>=2.2.0",
+    "jinja2>=3.1.6",
+    "mcp>=1.9.3",
+    "pydantic>=2.11.3",
+    "pydantic-settings>=2.14.2",
+    "packaging>=23.0",
+    "httpx>=0.27.0",
+    "python-dotenv>=1.2.2",
+    "python-multipart>=0.0.27",
+    "uvicorn[standard]>=0.34.2",
+    "sentence-transformers>=3.0.0",
+    "websockets>=15.0.1",
+    "scikit-learn>=1.3.0",
+    "torch>=2.13.0",
+    "huggingface-hub>=0.31.1",
+    "bandit>=1.8.3",
+    "langchain-core>=1.3.3",
+    "langchain-mcp-adapters>=0.0.11",
+    "langgraph>=0.4.3",
+    "langchain-aws>=0.2.23",
+    "pytz>=2025.2",
+    "strands-agents>=0.1.6",
+    "strands-agents-tools>=0.1.4",
+    "pyjwt>=2.12.0",
+    "typing-extensions>=4.8.0",
+    "httpcore[asyncio]>=1.0.9",
+    "pyyaml>=6.0.0",
+    "langchain-anthropic>=1.4.6",
+    "matplotlib>=3.10.5",
+    "psutil>=6.1.0",
+    "email-validator>=2.2.0",
+    "aiohttp>=3.11.12",
+    "rich>=13.0.0",
+    "requests>=2.32.4",
+    "cisco-ai-a2a-scanner @ git+https://github.com/cisco-ai-defense/a2a-scanner.git@8f6e27f",
+    "cisco-ai-skill-scanner>=1.0.0",
+    "cisco-ai-mcp-scanner>=3.0.1",
+    "awscli>=1.36.0",
+    "boto3>=1.42.87",
+    "motor>=3.3.0",
+    "pymongo>=4.6.3",
+    "dnspython>=2.4.0",
+    "litellm>=1.88.0",
+    "cryptography>=48.0.1",
+    "prometheus-client>=0.20.0",
+    "opentelemetry-api>=1.41.1",
+    "opentelemetry-sdk>=1.41.1",
+    "opentelemetry-exporter-prometheus>=0.64b0",
+    "opentelemetry-exporter-otlp>=1.41.1",
+    "opentelemetry-distro[otlp]>=0.64b0",
+    # 0.64b0 fixes the AttributeError on FastAPI 0.137+ routes added via
+    # include_router (otel-python-contrib PR #4700) -- the egress-auth router
+    # crashed the OTel ASGI middleware before this. Keep the instrumentation
+    # set on the same release (they pin each other ==).
+    "opentelemetry-instrumentation>=0.64b0",
+    "opentelemetry-instrumentation-fastapi>=0.64b0",
+    "opentelemetry-instrumentation-httpx>=0.64b0",
+    "opentelemetry-instrumentation-asyncio>=0.64b0",
+    "opentelemetry-instrumentation-logging>=0.64b0",
+    "opentelemetry-instrumentation-pymongo>=0.64b0",
+    "opentelemetry-propagator-b3>=1.41.1",
+    "hvac>=2.0.0",  # OpenBao/Vault client for the egress credential vault  # pragma: allowlist secret
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.0.3",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.1.0",
+    "pytest-mock>=3.12.0",
+    "pytest-xdist>=3.5.0",
+    "coverage[toml]>=7.4.0",
+    "httpx>=0.27.0",  # For testing HTTP clients
+    "pytest-html>=4.1.1",
+    "pytest-json-report>=1.5.0",
+    "factory-boy>=3.3.0",
+    "faker>=24.0.0",
+    "freezegun>=1.4.0",
+    "hypothesis>=6.100.0",
+    "moto[secretsmanager]>=5.0.0",  # mock AWS Secrets Manager for egress vault tests
+]
+docs = [
+    # The docs site is a single landing page generated from README.md by
+    # scripts/build_landing_page.py. Only a Markdown renderer is required.
+    "markdown>=3.7",
+]
+
+[tool.setuptools]
+packages = ["registry"]
+
+# Pytest Configuration
+[tool.pytest.ini_options]
+minversion = "8.0"
+addopts = [
+    "--strict-markers",
+    "--strict-config",
+    "--cov=registry",
+    "--cov-report=term-missing",
+    "--cov-report=html:htmlcov",
+    "--cov-report=xml:coverage.xml",
+    "--cov-fail-under=35",
+    "--html=tests/reports/report.html",
+    "--self-contained-html",
+    "--json-report",
+    "--json-report-file=tests/reports/report.json",
+    # Memory management for EC2 instances
+    # By default, run tests serially to avoid OOM crashes
+    # Use -n 2 or -n auto explicitly if you have enough memory
+]
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "unit: Unit tests",
+    "integration: Integration tests",
+    "e2e: End-to-end tests",
+    "auth: Authentication tests",
+    "servers: Server management tests",
+    "search: Search and AI tests",
+    "health: Health monitoring tests",
+    "core: Core infrastructure tests",
+    "repositories: Repository layer tests",
+    "slow: Slow running tests",
+    "requires_models: Tests that require real ML models (will load heavy dependencies)",
+    "live: Tests that require live AWS infrastructure (collector endpoint, CloudWatch)",
+    "api: API route tests",
+]
+
+# Coverage Configuration
+[tool.coverage.run]
+source = ["registry"]
+branch = true
+parallel = true
+omit = [
+    "*/tests/*",
+    "*/test_*",
+    "*/__pycache__/*",
+    "*/migrations/*",
+    "*/venv/*",
+    "*/.venv/*",
+    "registry/main_old.py",
+]
+
+[tool.coverage.paths]
+source = [
+    "registry/",
+    "*/site-packages/registry/",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+skip_empty = true
+sort = "cover"
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "if self.debug:",
+    "if settings.DEBUG",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if 0:",
+    "if __name__ == .__main__.:",
+    "class .*\\bProtocol\\):",
+    "@(abc\\.)?abstractmethod",
+]
+
+[tool.coverage.html]
+directory = "htmlcov"
+title = "MCP Registry Coverage Report"
+
+[tool.uv]
+# Local-only project - never resolve from PyPI
+package = false
+
+# Resolve torch from the PyTorch CPU wheel index so the lockfile pins the
+# CPU-only wheels (vs. the default CUDA-enabled wheels from PyPI). This
+# lets Docker builds install torch via `uv sync --locked` without any
+# special pre-install step or --extra-index-url flag.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
+# Bandit Configuration
+# B101 (assert_used): exclude test directories where assert is expected
+# Requires: bandit -c pyproject.toml -r .
+# See: https://bandit.readthedocs.io/en/latest/plugins/b101_assert_used.html
+# NOTE: cli/ and scripts/ are NOT excluded - they contain operational code that should be scanned
+[tool.bandit]
+exclude_dirs = ["tests", "*/test/*", "*/tests/*", ".venv"]
+
+# MyPy Configuration
+# `registry` is a namespace package (no registry/__init__.py), so when mypy is
+# handed both a package __init__ and a sibling module that imports it as
+# `registry.<pkg>.<mod>`, it can resolve the same file under two module names
+# ("Source file found twice"). explicit_package_bases + mypy_path="." pins the
+# repo root as the single package base so the canonical `registry.*` name wins.
+[tool.mypy]
+explicit_package_bases = true
+mypy_path = "."
+# The Pydantic plugin teaches mypy about model __init__ signatures, including
+# populate_by_name aliases, so constructing a model by its snake_case field
+# name (not just the camelCase alias) type-checks correctly.
+plugins = ["pydantic.mypy"]
+
+# Ruff Configuration
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "C4", "UP"]
+# F821 (undefined name) is intentionally NOT ignored: it catches type names used
+# in annotations but never imported, which break typing.get_type_hints(), mypy,
+# and IDE navigation even when they do not crash at runtime (see #1654).
+ignore = ["E501", "B008", "B904", "B019", "C401", "B007", "E402", "F841", "F823", "E722", "F811", "W293", "W291"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[dependency-groups]
+dev = [
+    "factory-boy>=3.3.3",
+    "hypothesis>=6.151.4",
+    "pytest-asyncio>=1.3.0",
+    "pytest-cov>=7.0.0",
+    "pytest-html>=4.1.1",
+    "pytest-json-report>=1.5.0",
+    "pytest-xdist>=3.8.0",
+    "qrcode[pil]>=8.2",
+]

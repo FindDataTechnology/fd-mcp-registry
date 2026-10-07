@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="refresh" content="3">
+    <title>MCP Gateway Registry - Starting Up</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #e4e4e7;
+        }
+
+        .container {
+            text-align: center;
+            padding: 2rem;
+            max-width: 500px;
+        }
+
+        .logo {
+            font-size: 3rem;
+            margin-bottom: 1.5rem;
+            color: #60a5fa;
+        }
+
+        .title {
+            font-size: 1.75rem;
+            font-weight: 600;
+            margin-bottom: 0.75rem;
+            color: #f4f4f5;
+        }
+
+        .subtitle {
+            font-size: 1rem;
+            color: #a1a1aa;
+            margin-bottom: 2rem;
+            line-height: 1.6;
+        }
+
+        .spinner-container {
+            display: flex;
+            justify-content: center;
+            margin-bottom: 2rem;
+        }
+
+        .spinner {
+            width: 48px;
+            height: 48px;
+            border: 4px solid rgba(96, 165, 250, 0.2);
+            border-top-color: #60a5fa;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
+        .status {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+            font-size: 0.875rem;
+            color: #71717a;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            background-color: #fbbf24;
+            border-radius: 50%;
+            animation: pulse 1.5s ease-in-out infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% {
+                opacity: 1;
+            }
+            50% {
+                opacity: 0.4;
+            }
+        }
+
+        .info {
+            margin-top: 2rem;
+            padding: 1rem;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 8px;
+            font-size: 0.8rem;
+            color: #71717a;
+        }
+
+        .info p {
+            margin-bottom: 0.5rem;
+        }
+
+        .info p:last-child {
+            margin-bottom: 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="logo">
+            <svg width="72" height="72" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="10"/>
+                <path d="M12 6v6l4 2"/>
+            </svg>
+        </div>
+        <h1 class="title">MCP Gateway Registry</h1>
+        <p class="subtitle">
+            The registry is starting up and will be available momentarily.
+            This page will automatically refresh.
+        </p>
+
+        <div class="spinner-container">
+            <div class="spinner"></div>
+        </div>
+
+        <div class="status">
+            <span class="status-dot"></span>
+            <span>Initializing services...</span>
+        </div>
+
+        <div class="info">
+            <p>The backend services are warming up.</p>
+            <p>This typically completes within 30-60 seconds.</p>
+        </div>
+    </div>
+
+    <script>
+        // Fallback auto-refresh in case meta refresh doesn't work
+        setTimeout(function() {
+            window.location.reload();
+        }, 3000);
+    </script>
+</body>
+</html>

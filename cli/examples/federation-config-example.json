@@ -1,0 +1,22 @@
+{
+  "anthropic": {
+    "enabled": true,
+    "endpoint": "https://registry.modelcontextprotocol.io",
+    "sync_on_startup": true,
+    "servers": [
+      {"name": "com.hydrata/hydrata-mcp-server"},
+      {"name": "io.github.OneNicolas/mcp-service-public"},
+      {"name": "ai.exa/exa"}
+    ]
+  },
+  "asor": {
+    "enabled": false,
+    "endpoint": "https://your-asor-endpoint.example.com/api/asor/v1/your-tenant",
+    "auth_env_var": "ASOR_ACCESS_TOKEN",
+    "sync_on_startup": false,
+    "agents": [
+      {"id": "agent_1"},
+      {"id": "agent_2"}
+    ]
+  }
+}

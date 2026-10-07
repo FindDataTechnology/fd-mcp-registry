@@ -1,0 +1,36 @@
+{
+  "path": "/virtual/scoped-tools",
+  "server_name": "Scoped Documentation and Time Tools",
+  "description": "Virtual server with scope-based access control combining cloudflare-docs and currenttime tools",
+  "tool_mappings": [
+    {
+      "tool_name": "search_cloudflare_documentation",
+      "backend_server_path": "/cloudflare-docs"
+    },
+    {
+      "tool_name": "current_time_by_timezone",
+      "alias": "get-time",
+      "backend_server_path": "/currenttime/"
+    }
+  ],
+  "required_scopes": [
+    "virtual-scoped-tools/access"
+  ],
+  "tool_scope_overrides": [
+    {
+      "tool_alias": "get-time",
+      "required_scopes": ["virtual-scoped-tools/time-access"]
+    }
+  ],
+  "tags": [
+    "documentation",
+    "cloudflare",
+    "time",
+    "scoped",
+    "access-control"
+  ],
+  "supported_transports": [
+    "streamable-http"
+  ],
+  "is_enabled": true
+}

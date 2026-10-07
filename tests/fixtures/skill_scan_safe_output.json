@@ -1,0 +1,11 @@
+{
+  "findings": [],
+  "summary": {
+    "total_findings": 0,
+    "critical": 0,
+    "high": 0,
+    "medium": 0,
+    "low": 0
+  },
+  "scan_status": "completed"
+}

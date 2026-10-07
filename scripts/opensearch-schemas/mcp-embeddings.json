@@ -1,0 +1,54 @@
+{
+  "settings": {
+    "index": {
+      "knn": true,
+      "knn.algo_param.ef_search": 100
+    },
+    "number_of_shards": 1,
+    "number_of_replicas": 1
+  },
+  "mappings": {
+    "properties": {
+      "entity_type": {"type": "keyword"},
+      "path": {"type": "keyword"},
+      "name": {
+        "type": "text",
+        "fields": {"keyword": {"type": "keyword"}}
+      },
+      "description": {"type": "text"},
+      "tags": {"type": "keyword"},
+      "is_enabled": {"type": "boolean"},
+      "text_for_embedding": {"type": "text"},
+      "embedding": {
+        "type": "knn_vector",
+        "dimension": 384,
+        "method": {
+          "name": "hnsw",
+          "space_type": "cosinesimil",
+          "engine": "lucene",
+          "parameters": {
+            "ef_construction": 128,
+            "m": 16
+          }
+        }
+      },
+      "tools": {
+        "type": "nested",
+        "properties": {
+          "name": {"type": "keyword"},
+          "description": {"type": "text"}
+        }
+      },
+      "skills": {
+        "type": "nested",
+        "properties": {
+          "id": {"type": "keyword"},
+          "name": {"type": "text"},
+          "description": {"type": "text"}
+        }
+      },
+      "metadata": {"type": "object", "enabled": false},
+      "indexed_at": {"type": "date"}
+    }
+  }
+}

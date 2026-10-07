@@ -1,0 +1,687 @@
+import React from 'react';
+import LocalRuntimeFormPanel from '../../LocalRuntimeFormPanel';
+import type { LocalRuntimeFormData } from '../../../utils/localRuntime';
+import {
+  FormField,
+  TagsField,
+  StatusField,
+  MetadataField,
+  AuthSchemeFields,
+  OAuthClientCredentialsFields,
+  DiscoveryIdentityFields,
+  type AuthScheme,
+  FIELD,
+  LABEL,
+} from '../../formFields';
+import Button from '../../Button';
+
+/**
+ * Shape of the server edit form state. Owned by the Dashboard (kept as state
+ * there); this modal is a controlled, presentational view over it.
+ */
+export interface ServerEditForm {
+  name: string;
+  path: string;
+  proxyPass: string;
+  description: string;
+  tags: string[];
+  license: string;
+  num_tools: number;
+  mcp_endpoint: string;
+  metadata: string;
+  auth_scheme: AuthScheme;
+  auth_credential: string;
+  auth_header_name: string;
+  // Backend OAuth (client_credentials) config, used when auth_scheme === 'oauth'.
+  // The registry acquires a token from these and injects it on health/tool-list.
+  oauth_token_url: string;
+  oauth_client_id: string;
+  oauth_client_secret: string; // write-only; blank on edit keeps the stored one
+  oauth_scopes: string; // comma/space separated
+  oauth_token_auth_style: string; // 'post_body' | 'basic_header' | 'none'
+  oauth_resource: string; // RFC 8707 resource indicator (optional)
+  status: 'active' | 'draft' | 'deprecated' | 'beta';
+  deployment: 'remote' | 'local';
+  local_runtime: LocalRuntimeFormData;
+  custom_headers: Array<{ name: string; value: string }>;
+  // Egress auth to the upstream (admin config). 'none' | 'oauth_user' | 'obo_exchange' | 'pat'.
+  egress_auth_mode: 'none' | 'oauth_user' | 'obo_exchange' | 'pat';
+  // oauth_user (3LO vault) fields:
+  egress_provider: string;
+  egress_client_id: string;
+  egress_client_secret: string; // write-only; blank on edit keeps the stored one
+  egress_scopes: string; // comma/space separated
+  egress_custom_authorize_url: string;
+  egress_custom_token_url: string;
+  // 'post_body' | 'basic_header' | 'none' — 'none' is a public client (no secret, PKCE only)
+  egress_custom_token_auth_style: string;
+  egress_custom_resource: string; // RFC 8707 resource indicator (optional)
+  // obo_exchange (same-IdP OBO hop 1) field:
+  egress_target_audience: string;
+  // Discovery Identity (OAuth 2.1): the registry borrows a connected admin
+  // account for its OWN headless health checks / tool discovery against an
+  // OAuth 2.1 server. An INDEPENDENT flag, orthogonal to auth_scheme (a server
+  // may carry both). Saved via PUT/DELETE /servers/{path}/oauth-discovery.
+  oauth_discovery_enabled: boolean;
+  oauth_discovery_provider: string; // provider key; 'custom' for OAuth 2.1 servers
+  oauth_discovery_client_id: string;
+  oauth_discovery_client_secret: string; // write-only; blank on edit keeps the stored one
+  oauth_discovery_scopes: string; // comma/space separated
+  oauth_discovery_custom_authorize_url: string;
+  oauth_discovery_custom_token_url: string;
+  oauth_discovery_custom_scope_separator: string;
+  // 'post_body' | 'basic_header' | 'none' — 'none' is a public client (PKCE only)
+  oauth_discovery_custom_token_auth_style: string;
+  oauth_discovery_custom_resource: string; // RFC 8707 resource indicator (optional)
+  // pat inject header config (admin). Blank = server defaults (Authorization / Bearer).
+}
+
+interface ServerEditModalProps {
+  /** Server display name shown in the header. */
+  serverName: string;
+  form: ServerEditForm;
+  setForm: React.Dispatch<React.SetStateAction<ServerEditForm>>;
+  loading: boolean;
+  /** Whether the per-user egress credential vault feature is enabled (gates the egress section). */
+  egressEnabled: boolean;
+  /** True only in with-gateway deployment mode; egress auth requires a gateway. */
+  withGateway: boolean;
+  onSave: () => Promise<void> | void;
+  onClose: () => void;
+}
+
+/**
+ * Edit form for a registered MCP server. Controlled by the Dashboard's editForm
+ * state via setForm; all server-edit fields (name, deployment, auth, custom
+ * headers, local-runtime panel) live here instead of inline in Dashboard.
+ */
+const ServerEditModal: React.FC<ServerEditModalProps> = ({
+  serverName,
+  form,
+  setForm,
+  loading,
+  egressEnabled,
+  withGateway,
+  onSave,
+  onClose,
+}) => {
+  // The "Connect account for discovery" flow runs against the SERVER-SIDE saved
+  // oauth-discovery config (the backend reads the stored provider/client, not
+  // this form). So Connect is only safe once the shown config is persisted:
+  // snapshot it at open and disable Connect while there are unsaved discovery
+  // edits — covers a freshly-enabled discovery identity (nothing saved yet, would
+  // 400) and an edited existing config (would silently consent against the stale
+  // saved client). The modal closes on save, so a reopen re-snapshots the saved
+  // state and re-enables Connect.
+  const discoverySnapshot = (f: ServerEditForm): string =>
+    JSON.stringify([
+      f.oauth_discovery_enabled,
+      f.oauth_discovery_provider,
+      f.oauth_discovery_client_id,
+      f.oauth_discovery_client_secret,
+      f.oauth_discovery_scopes,
+      f.oauth_discovery_custom_authorize_url,
+      f.oauth_discovery_custom_token_url,
+      f.oauth_discovery_custom_scope_separator,
+      f.oauth_discovery_custom_token_auth_style,
+      f.oauth_discovery_custom_resource,
+    ]);
+  const [savedDiscoverySnapshot] = React.useState(() => discoverySnapshot(form));
+  const discoveryDirty = discoverySnapshot(form) !== savedDiscoverySnapshot;
+  const discoveryConnectable = !discoveryDirty && !!form.oauth_discovery_provider;
+  // Discovery identity and per-user egress are both gated on the egress feature:
+  // the backend serves a borrowed discovery token only when EGRESS_AUTH_ENABLED,
+  // which requires a gateway, and local (stdio) servers have no HTTP egress.
+  const egressFeatureAvailable = egressEnabled && withGateway && form.deployment !== 'local';
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+      <div className="bg-white dark:bg-gray-800 rounded-lg p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+        <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">
+          Edit Server: {serverName}
+        </h3>
+
+        <form
+          onSubmit={async (e) => {
+            e.preventDefault();
+            await onSave();
+          }}
+          className="space-y-4"
+        >
+          <div>
+            <label className={LABEL}>Server Name *</label>
+            <input
+              type="text"
+              value={form.name}
+              onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))}
+              className={FIELD}
+              required
+            />
+          </div>
+
+          {/* Deployment type indicator (read-only — switching types is unusual
+              enough to require re-registration). */}
+          <div>
+            <label className={LABEL}>Deployment</label>
+            <div className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-gray-50 dark:bg-gray-900 text-gray-700 dark:text-gray-300">
+              {form.deployment === 'local' ? 'Local (stdio)' : 'Remote (HTTP)'}
+            </div>
+          </div>
+
+          {form.deployment === 'remote' && (
+            <div>
+              <label className={LABEL}>Proxy Pass URL *</label>
+              <input
+                type="url"
+                value={form.proxyPass}
+                onChange={(e) => setForm((prev) => ({ ...prev, proxyPass: e.target.value }))}
+                className={FIELD}
+                placeholder="http://localhost:8080"
+                required
+              />
+            </div>
+          )}
+
+          {form.deployment === 'local' && (
+            <LocalRuntimeFormPanel
+              runtime={form.local_runtime}
+              onChange={(next) => setForm((prev) => ({ ...prev, local_runtime: next }))}
+            />
+          )}
+
+          <div>
+            <label className={LABEL}>Description</label>
+            <textarea
+              value={form.description}
+              onChange={(e) => setForm((prev) => ({ ...prev, description: e.target.value }))}
+              className={FIELD}
+              rows={3}
+              placeholder="Brief description of the server"
+            />
+          </div>
+
+          <StatusField
+            value={form.status}
+            onChange={(status) => setForm((prev) => ({ ...prev, status }))}
+          />
+
+          <TagsField
+            value={form.tags}
+            onChange={(tags) => setForm((prev) => ({ ...prev, tags }))}
+          />
+
+          <div className="grid grid-cols-2 gap-4">
+            <FormField label="Number of Tools">
+              <input
+                type="number"
+                value={form.num_tools}
+                onChange={(e) =>
+                  setForm((prev) => ({ ...prev, num_tools: parseInt(e.target.value) || 0 }))
+                }
+                className={FIELD}
+                min="0"
+              />
+            </FormField>
+          </div>
+
+          <FormField label="License">
+            <input
+              type="text"
+              value={form.license}
+              onChange={(e) => setForm((prev) => ({ ...prev, license: e.target.value }))}
+              className={FIELD}
+              placeholder="MIT, Apache-2.0, etc."
+            />
+          </FormField>
+
+          {form.deployment === 'remote' && (
+            <FormField label="MCP Endpoint (optional)">
+              <input
+                type="url"
+                value={form.mcp_endpoint}
+                onChange={(e) => setForm((prev) => ({ ...prev, mcp_endpoint: e.target.value }))}
+                className={FIELD}
+                placeholder="Custom MCP endpoint URL (overrides default)"
+              />
+            </FormField>
+          )}
+
+          <MetadataField
+            value={form.metadata}
+            onChange={(metadata) => setForm((prev) => ({ ...prev, metadata }))}
+          />
+
+          {/* Backend Authentication — only meaningful for remote servers.
+              Local servers handle auth via env vars on the user's machine. */}
+          {form.deployment === 'remote' && (
+            <AuthSchemeFields
+              scheme={form.auth_scheme}
+              credential={form.auth_credential}
+              headerName={form.auth_header_name}
+              editing
+              oboDiscoveryActive={form.egress_auth_mode === 'obo_exchange'}
+              oboTargetAudience={form.egress_target_audience}
+              showDiscoveryToggle={egressFeatureAvailable}
+              discoveryEnabled={form.oauth_discovery_enabled}
+              onDiscoveryEnabledChange={(enabled) =>
+                setForm((prev) => ({ ...prev, oauth_discovery_enabled: enabled }))
+              }
+              onSchemeChange={(newScheme) =>
+                setForm((prev) => ({
+                  ...prev,
+                  auth_scheme: newScheme,
+                  auth_credential: newScheme === 'none' ? '' : prev.auth_credential,
+                  auth_header_name:
+                    newScheme === 'api_key' ? prev.auth_header_name : 'X-API-Key',
+                }))
+              }
+              onCredentialChange={(v) =>
+                setForm((prev) => ({ ...prev, auth_credential: v }))
+              }
+              onHeaderNameChange={(v) =>
+                setForm((prev) => ({ ...prev, auth_header_name: v }))
+              }
+            />
+          )}
+
+          {/* Backend OAuth 2.0 (client_credentials) config — shown when the scheme
+              is `oauth`. Saved via PUT /servers/{path}/oauth-config. */}
+          {form.deployment === 'remote' && form.auth_scheme === 'oauth' && (
+            <OAuthClientCredentialsFields
+              values={form}
+              onChange={(patch) => setForm((prev) => ({ ...prev, ...patch }))}
+              editing
+            />
+          )}
+          {/* Discovery Identity (OAuth 2.1) — an independent flag, not a scheme.
+              Requires the egress feature (the backend only vends a borrowed
+              discovery token when EGRESS_AUTH_ENABLED). Saved via PUT/DELETE
+              /servers/{path}/oauth-discovery. */}
+          {egressFeatureAvailable && form.oauth_discovery_enabled && (
+            <DiscoveryIdentityFields
+              values={form}
+              onChange={(patch) => setForm((prev) => ({ ...prev, ...patch }))}
+              editing
+              footer={
+                <div>
+                  <button
+                    type="button"
+                    disabled={!discoveryConnectable}
+                    onClick={() => {
+                      if (!discoveryConnectable) return;
+                      window.open(
+                        `${window.location.origin}/oauth2/egress/connect?server=${encodeURIComponent(form.path)}&purpose=discovery`,
+                        '_blank',
+                        'noopener,noreferrer'
+                      );
+                    }}
+                    className={`text-sm ${
+                      discoveryConnectable
+                        ? 'text-purple-600 hover:text-purple-800 dark:text-purple-400'
+                        : 'text-gray-400 cursor-not-allowed dark:text-gray-500'
+                    }`}
+                  >
+                    Connect account for discovery
+                  </button>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                    {discoveryDirty
+                      ? 'Save your changes first — Connect uses the saved configuration.'
+                      : !form.oauth_discovery_provider
+                        ? 'Select a provider and save before connecting.'
+                        : 'One-time consent that vaults your token for this server.'}
+                  </p>
+                </div>
+              }
+            />
+          )}
+          {/* Stranded config. When the egress feature is off (or this became a local
+              server) both the toggle and the fields above are hidden, but a stored
+              designation still exists and the backend now refuses to PUT it. Without
+              this the record is invisible AND unremovable from the UI. Unchecking here
+              clears the flag, and save DELETEs it -- the one action still available. */}
+          {!egressFeatureAvailable && form.oauth_discovery_enabled && (
+            <div className="rounded-md border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 p-3 text-xs text-amber-800 dark:text-amber-300">
+              <p className="font-semibold mb-1">
+                Discovery identity configured, but not usable here
+              </p>
+              <p>
+                This server has an OAuth 2.1 discovery identity designated
+                {form.oauth_discovery_provider
+                  ? ` (${form.oauth_discovery_provider})`
+                  : ''}
+                , but it requires the per-user egress feature
+                {form.deployment === 'local' ? ' and a remote server' : ''}. Health
+                checks and tool discovery will not use it, and the configuration cannot
+                be changed while that is the case.
+              </p>
+              <label className="mt-2 flex items-center gap-2 cursor-pointer font-medium">
+                <input
+                  type="checkbox"
+                  checked={!form.oauth_discovery_enabled}
+                  onChange={() =>
+                    setForm((prev) => ({ ...prev, oauth_discovery_enabled: false }))
+                  }
+                  className="h-4 w-4 rounded border-amber-400"
+                />
+                Remove the discovery identity when I save
+              </label>
+            </div>
+          )}
+          {/* Per-user egress credential vault (admin config) */}
+          {egressFeatureAvailable && (
+            <div className="border-t border-gray-200 dark:border-gray-700 pt-4 mt-4">
+              <h4 className="text-sm font-semibold text-gray-900 dark:text-white mb-2">
+                Egress Auth
+              </h4>
+              <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
+                How the gateway authenticates to this upstream on the user&apos;s behalf.
+                <strong> Per-user OAuth (3LO)</strong> has each user connect a third-party
+                account (GitHub, Slack, …) whose token the gateway injects.
+                <strong> OBO exchange</strong> re-audiences the user&apos;s gateway token to an
+                internal server&apos;s app via the same IdP (no per-user login).
+              </p>
+              <div className="space-y-3">
+                <div>
+                  <label className={LABEL}>Mode</label>
+                  <select
+                    value={form.egress_auth_mode}
+                    onChange={(e) =>
+                      setForm((prev) => ({
+                        ...prev,
+                        egress_auth_mode: e.target.value as ServerEditForm['egress_auth_mode'],
+                      }))
+                    }
+                    className={FIELD}
+                  >
+                    <option value="none">Disabled</option>
+                    <option value="oauth_user">Per-user OAuth (3LO)</option>
+                    <option value="obo_exchange">OBO exchange (same IdP)</option>
+                    <option value="pat">Per-user PAT / API key</option>
+                  </select>
+                </div>
+                {form.egress_auth_mode === 'obo_exchange' && (
+                  <div>
+                    <label className={LABEL}>Target Audience</label>
+                    <input
+                      type="text"
+                      value={form.egress_target_audience}
+                      onChange={(e) =>
+                        setForm((prev) => ({ ...prev, egress_target_audience: e.target.value }))
+                      }
+                      placeholder="api://your-mcp-server-app"
+                      className={FIELD}
+                    />
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                      The internal MCP server&apos;s App ID URI (Entra) or client id (Keycloak).
+                      Must differ from the gateway&apos;s own IdP client id.
+                    </p>
+                  </div>
+                )}
+                {form.egress_auth_mode === 'pat' && (
+                  <div>
+                    <label className={LABEL}>Provider (vault key)</label>
+                    <input
+                      type="text"
+                      value={form.egress_provider}
+                      onChange={(e) =>
+                        setForm((prev) => ({ ...prev, egress_provider: e.target.value }))
+                      }
+                      placeholder="github"
+                      className={FIELD}
+                    />
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                      A short namespace/display key that identifies this credential in the
+                      vault (lowercase letters, digits, hyphen, underscore). This is NOT the
+                      token: each user submits their own PAT on the Connected Accounts page.
+                    </p>
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
+                      The PAT is injected into the same header as Backend Authentication
+                      above ({form.auth_scheme === 'api_key'
+                        ? `${form.auth_header_name || 'X-API-Key'}: <token>`
+                        : `${form.auth_header_name || 'Authorization'}: Bearer <token>`}).
+                      Set the header there.
+                    </p>
+                  </div>
+                )}
+                {form.egress_auth_mode === 'oauth_user' && (
+                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                    Register this callback URL in your OAuth app:{' '}
+                    <code className="text-purple-600 dark:text-purple-400">
+                      {`${window.location.origin}/oauth2/egress/callback`}
+                    </code>
+                  </p>
+                )}
+                {form.egress_auth_mode === 'oauth_user' && (
+                  <div>
+                    <label className={LABEL}>Provider</label>
+                    <select
+                      value={form.egress_provider}
+                      onChange={(e) =>
+                        setForm((prev) => ({ ...prev, egress_provider: e.target.value }))
+                      }
+                      className={FIELD}
+                    >
+                      <option value="">Select…</option>
+                      <option value="github">GitHub</option>
+                      <option value="google">Google</option>
+                      <option value="atlassian">Atlassian</option>
+                      <option value="microsoft">Microsoft</option>
+                      <option value="slack">Slack</option>
+                      <option value="custom">Custom OIDC</option>
+                    </select>
+                  </div>
+                )}
+                {form.egress_auth_mode === 'oauth_user' && form.egress_provider && (
+                  <>
+                    <div>
+                      <label className={LABEL}>Client ID</label>
+                      <input
+                        type="text"
+                        value={form.egress_client_id}
+                        onChange={(e) =>
+                          setForm((prev) => ({ ...prev, egress_client_id: e.target.value }))
+                        }
+                        className={FIELD}
+                      />
+                    </div>
+                    {/* A public client (custom provider, token auth 'none') has no
+                        secret by design — hide the field so nothing stale is sent. */}
+                    {!(
+                      form.egress_provider === 'custom' &&
+                      form.egress_custom_token_auth_style === 'none'
+                    ) && (
+                      <div>
+                        <label className={LABEL}>Client Secret</label>
+                        <input
+                          type="password"
+                          value={form.egress_client_secret}
+                          onChange={(e) =>
+                            setForm((prev) => ({ ...prev, egress_client_secret: e.target.value }))
+                          }
+                          placeholder="leave blank to keep current"
+                          autoComplete="new-password"
+                          className={FIELD}
+                        />
+                      </div>
+                    )}
+                    <div>
+                      <label className={LABEL}>Scopes</label>
+                      <input
+                        type="text"
+                        value={form.egress_scopes}
+                        onChange={(e) =>
+                          setForm((prev) => ({ ...prev, egress_scopes: e.target.value }))
+                        }
+                        placeholder="repo, read:user"
+                        className={FIELD}
+                      />
+                    </div>
+                    {form.egress_provider === 'custom' && (
+                      <>
+                        <div>
+                          <label className={LABEL}>Authorize URL</label>
+                          <input
+                            type="text"
+                            value={form.egress_custom_authorize_url}
+                            onChange={(e) =>
+                              setForm((prev) => ({
+                                ...prev,
+                                egress_custom_authorize_url: e.target.value,
+                              }))
+                            }
+                            placeholder="https://idp.example/authorize"
+                            className={FIELD}
+                          />
+                        </div>
+                        <div>
+                          <label className={LABEL}>Token URL</label>
+                          <input
+                            type="text"
+                            value={form.egress_custom_token_url}
+                            onChange={(e) =>
+                              setForm((prev) => ({
+                                ...prev,
+                                egress_custom_token_url: e.target.value,
+                              }))
+                            }
+                            placeholder="https://idp.example/token"
+                            className={FIELD}
+                          />
+                        </div>
+                        <div>
+                          <label className={LABEL}>Token Endpoint Authentication</label>
+                          <select
+                            value={form.egress_custom_token_auth_style || 'post_body'}
+                            onChange={(e) =>
+                              setForm((prev) => ({
+                                ...prev,
+                                egress_custom_token_auth_style: e.target.value,
+                              }))
+                            }
+                            className={FIELD}
+                          >
+                            <option value="post_body">Client secret in POST body</option>
+                            <option value="basic_header">Client secret in Basic header</option>
+                            <option value="none">None — public client (PKCE only)</option>
+                          </select>
+                          {form.egress_custom_token_auth_style === 'none' && (
+                            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                              For providers that register public OAuth clients via Dynamic
+                              Client Registration (e.g. Datadog MCP). No client secret is
+                              stored or sent; PKCE proves possession.
+                            </p>
+                          )}
+                        </div>
+                        <div>
+                          <label className={LABEL}>Resource (RFC 8707, optional)</label>
+                          <input
+                            type="text"
+                            value={form.egress_custom_resource}
+                            onChange={(e) =>
+                              setForm((prev) => ({
+                                ...prev,
+                                egress_custom_resource: e.target.value,
+                              }))
+                            }
+                            placeholder="https://mcp.example.com/mcp"
+                            className={FIELD}
+                          />
+                          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                            Binds issued tokens to one protected resource. Required by some
+                            MCP servers (Atlassian Rovo, Datadog); sent on authorize, token
+                            exchange, and refresh.
+                          </p>
+                        </div>
+                      </>
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Custom Headers */}
+          <div className="border-t border-gray-200 dark:border-gray-700 pt-4 mt-4">
+            <h4 className="text-sm font-semibold text-gray-900 dark:text-white mb-2">
+              Additional Headers
+            </h4>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
+              Fixed HTTP headers your MCP server requires beyond authentication. Leave value
+              blank to keep existing encrypted value.
+            </p>
+            {form.custom_headers.map((h, idx) => (
+              <div key={idx} className="flex gap-2 mb-2">
+                <input
+                  type="text"
+                  placeholder="X-My-Header"
+                  value={h.name}
+                  onChange={(e) => {
+                    const updated = [...form.custom_headers];
+                    updated[idx] = { ...updated[idx], name: e.target.value };
+                    setForm((prev) => ({ ...prev, custom_headers: updated }));
+                  }}
+                  className={`flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-purple-500 focus:border-purple-500 text-sm`}
+                />
+                <input
+                  type="text"
+                  placeholder="header value (blank = keep existing)"
+                  value={h.value}
+                  onChange={(e) => {
+                    const updated = [...form.custom_headers];
+                    updated[idx] = { ...updated[idx], value: e.target.value };
+                    setForm((prev) => ({ ...prev, custom_headers: updated }));
+                  }}
+                  className={`flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-purple-500 focus:border-purple-500 text-sm`}
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    const updated = form.custom_headers.filter((_, i) => i !== idx);
+                    setForm((prev) => ({ ...prev, custom_headers: updated }));
+                  }}
+                  className="px-3 py-2 text-sm text-red-600 hover:text-red-800 dark:text-red-400"
+                >
+                  Remove
+                </button>
+              </div>
+            ))}
+            {form.custom_headers.length < 10 && (
+              <button
+                type="button"
+                onClick={() => {
+                  setForm((prev) => ({
+                    ...prev,
+                    custom_headers: [...prev.custom_headers, { name: '', value: '' }],
+                  }));
+                }}
+                className="text-sm text-purple-600 hover:text-purple-800 dark:text-purple-400"
+              >
+                + Add header
+              </button>
+            )}
+          </div>
+
+          <div>
+            <label className={LABEL}>Path (read-only)</label>
+            <input
+              type="text"
+              value={form.path}
+              className="block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-300"
+              disabled
+            />
+          </div>
+
+          <div className="flex space-x-3 pt-4">
+            <Button variant="primary" type="submit" disabled={loading} fullWidth>
+              {loading ? 'Saving...' : 'Save Changes'}
+            </Button>
+            <Button variant="secondary" onClick={onClose} fullWidth>
+              Cancel
+            </Button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+};
+
+export default ServerEditModal;

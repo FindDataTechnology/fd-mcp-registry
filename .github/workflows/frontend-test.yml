@@ -1,0 +1,77 @@
+name: Frontend Test Suite
+
+# Gates the console build and the i18n layer. Historically nothing in CI built
+# or linted frontend/, so lockfile rot and i18n drift could only be caught by a
+# release-time image build; this job closes that gap.
+#
+# The jest step intentionally runs the i18n/mechanism suites only: several
+# legacy suites (IAM*, Dashboard, cardSnapshots) fail in this environment for
+# reasons tracked separately and would make the job permanently red.
+
+on:
+  push:
+    branches: [main, develop, 'fd-*']
+  pull_request:
+    branches: [main, develop, 'fd-*']
+    paths:
+      - 'frontend/**'
+      - '.github/workflows/frontend-test.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    name: "Frontend (Node 26)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+
+    - name: Set up Node.js
+      uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      with:
+        node-version: "26"
+        cache: npm
+        cache-dependency-path: frontend/package-lock.json
+
+    - name: Install dependencies
+      run: npm ci --legacy-peer-deps
+
+    - name: Lint
+      run: npm run lint
+
+    - name: Build
+      run: npm run build
+
+    - name: Unit tests (i18n and shared helpers)
+      run: >
+        npx jest
+        src/i18n
+        src/contexts/__tests__/I18nContext.test.tsx
+        src/components/__tests__/LanguageSwitcher.test.tsx
+        src/utils/__tests__/apiError.test.ts
+        --ci
+
+    - name: Translation coverage scan
+      run: npm run i18n:scan -- --max-missing 5 | tee i18n-scan-report.txt
+
+    - name: Upload translation coverage report
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      if: always()
+      with:
+        name: i18n-scan-report
+        path: frontend/i18n-scan-report.txt
+        retention-days: 14

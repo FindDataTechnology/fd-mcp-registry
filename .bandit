@@ -1,0 +1,10 @@
+# Exclude test directories and virtual environment from Bandit scans
+# B101 (assert_used) only appears in test code; excluding test dirs resolves it
+# For pyproject.toml config (used by pre-commit), see [tool.bandit] in pyproject.toml
+# NOTE: cli/ and scripts/ are NOT excluded - they contain operational code that should be scanned
+
+exclude_dirs:
+  - ./tests
+  - ./agents/a2a/test
+  - ./metrics-service/tests
+  - ./.venv

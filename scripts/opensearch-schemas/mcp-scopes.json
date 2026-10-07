@@ -1,0 +1,24 @@
+{
+  "settings": {
+    "number_of_shards": 1,
+    "number_of_replicas": 1
+  },
+  "mappings": {
+    "properties": {
+      "scope_type": {"type": "keyword"},
+      "scope_name": {"type": "keyword"},
+      "group_name": {"type": "keyword"},
+      "ui_permissions": {"type": "object", "enabled": false},
+      "server_access": {
+        "type": "nested",
+        "properties": {
+          "server": {"type": "keyword"},
+          "methods": {"type": "keyword"},
+          "tools": {"type": "keyword"}
+        }
+      },
+      "group_mappings": {"type": "keyword"},
+      "updated_at": {"type": "date"}
+    }
+  }
+}

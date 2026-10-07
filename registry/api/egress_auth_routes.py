@@ -1,0 +1,1621 @@
+"""Egress credential vault API routes.
+
+- POST /internal/egress-token: internal vend endpoint for auth_server's
+  mcp_proxy hop.
+- POST/GET /servers/{path}/egress-auth: operator config (admin-only).
+- POST /egress-auth/initiate, GET /oauth2/egress/callback,
+  GET/DELETE /egress-auth/connections/...: end-user consent + management.
+
+Security model for POST /internal/egress-token:
+- validate_internal_auth gates the caller (auth_server presents a fresh
+  mcp-registry-audience service token) -- bound to the internal network.
+- The forwarded X-Internal-Token (the mcp-proxy token /validate minted) is
+  RE-VERIFIED here; sub + auth_method are taken from the verified claims,
+  never from the request body.
+- Non-per-user auth_method is rejected so a static-key/federation caller
+  can never address a per-user vault bucket.
+- claims["upstream_url"] is cross-checked against the server's registered
+  proxy_pass_url union so a forged X-Resolved-Upstream (minted via a
+  direct /validate call) cannot vend a token to an attacker-controlled host.
+"""
+
+import logging
+import re
+import secrets
+from datetime import UTC, datetime, timedelta
+from html import escape
+from typing import Annotated
+from urllib.parse import urlencode, urlparse
+
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi.responses import HTMLResponse
+from pydantic import BaseModel, Field
+
+from registry.auth.csrf import verify_csrf_token_flexible
+from registry.auth.dependencies import nginx_proxied_auth
+from registry.auth.internal import validate_internal_auth
+from registry.auth.proxied_token import verify_generic_proxy_token, verify_mcp_proxy_token
+from registry.common.log_redaction import redact_url
+from registry.core.config import settings
+from registry.core.schemas import _validate_obo_egress_config
+from registry.egress_auth.factory import get_egress_auth_service
+from registry.egress_auth.providers import list_provider_names, resolve_provider
+from registry.egress_auth.schemas import StoredToken
+from registry.egress_auth.service import (
+    EgressAuthError,
+    EgressAuthService,
+    is_per_user_auth_method,
+)
+from registry.egress_auth.upstream_binding import (
+    base_url,
+    bound_upstreams,
+    registered_upstreams,
+)
+from registry.exceptions import UrlValidationError
+from registry.repositories.factory import (
+    get_agent_repository,
+    get_custom_entity_repository,
+    get_server_repository,
+    get_skill_repository,
+)
+from registry.schemas.proxy_mixin import resolve_proxy_target
+from registry.secrets import keys
+from registry.secrets.factory import get_secret_store
+from registry.secrets.interfaces import SecretStoreError
+from registry.services.server_service import server_service
+from registry.utils.credential_encryption import (
+    decrypt_custom_headers,
+    encrypt_credential,
+    validate_custom_header_name,
+)
+from registry.utils.url_guard import (
+    CREDENTIALED_OAUTH_PROFILE,
+    PROXY_PROFILE,
+    normalize_url_identity,
+    validate_url,
+)
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter()
+
+# pat provider is a vault-key segment + display key (never resolved against the
+# OAuth provider registry), so it is constrained to a short slug so a junk or
+# oversized value cannot bloat the key.
+_PAT_PROVIDER_RE = re.compile(r"^[a-z0-9_-]{1,64}$")
+
+# pat lifetime is mandatory and bounded: no "never expires", capped at 30 days.
+_PAT_MAX_TTL_SECONDS: int = 30 * 24 * 3600
+_TTL_UNIT_SECONDS: dict[str, int] = {"minutes": 60, "hours": 3600, "days": 86400}
+
+
+def _derive_pat_inject_header(server: dict) -> tuple[str, str]:
+    """Derive the (header_name, value_prefix) the PAT is injected with.
+
+    The PAT is injected into the SAME header the server's Backend Authentication
+    uses -- it is the same upstream, so the header contract is one thing. This
+    mirrors the registry's own health-check / tool-listing inject in
+    ``registry/core/mcp_client.py``:
+
+      - ``bearer``  -> ``<auth_header_name or "Authorization">: Bearer <PAT>``
+      - ``api_key`` -> ``<auth_header_name or "X-API-Key">: <PAT>`` (bare, no prefix)
+      - anything else (``none``/unset) -> ``Authorization: Bearer <PAT>`` (safe default)
+
+    So an operator configures the header ONCE, in Backend Authentication, and
+    ``pat`` egress inherits it; there is no separate egress header config.
+
+    Args:
+        server: The server dict (carries ``auth_scheme`` / ``auth_header_name``).
+
+    Returns:
+        ``(header_name, value_prefix)`` for the inject.
+    """
+    scheme = server.get("auth_scheme") or "none"
+    if scheme == "bearer":
+        return server.get("auth_header_name") or "Authorization", "Bearer "
+    if scheme == "api_key":
+        return server.get("auth_header_name") or "X-API-Key", ""
+    # Backend Auth is none/unset: nothing to inherit -> safe default.
+    return "Authorization", "Bearer "
+
+
+def _resolve_pat_ttl_seconds(
+    ttl_value: int,
+    ttl_unit: str,
+) -> int:
+    """Validate a user-supplied PAT lifetime and return it in seconds.
+
+    Rejects a non-positive value, an unknown unit, and any window over 30 days.
+    Infinite lifetime is not representable (there is no 'never' unit).
+
+    Args:
+        ttl_value: Positive integer amount of the validity window.
+        ttl_unit: One of ``minutes`` | ``hours`` | ``days``.
+
+    Returns:
+        The lifetime in seconds (1 .. ``_PAT_MAX_TTL_SECONDS``).
+
+    Raises:
+        ValueError: If the unit is unknown, the value is non-positive, or the
+            resulting window exceeds 30 days.
+    """
+    if ttl_unit not in _TTL_UNIT_SECONDS:
+        raise ValueError("ttl_unit must be one of: minutes, hours, days")
+    if ttl_value <= 0:
+        raise ValueError("ttl_value must be a positive integer")
+    seconds = ttl_value * _TTL_UNIT_SECONDS[ttl_unit]
+    if seconds > _PAT_MAX_TTL_SECONDS:
+        raise ValueError("PAT lifetime may not exceed 30 days")
+    return seconds
+
+
+def _resolve_target_principal(
+    body_sub: str | None,
+    body_auth_method: str | None,
+    user_context: dict,
+) -> tuple[str, str]:
+    """Resolve the vault principal ``(auth_method, sub)`` for a PAT mutation.
+
+    The vault key is partitioned by ``(auth_method, sub, provider, server_path)``,
+    where ``auth_method`` is the INGRESS auth method the target user logs in with
+    (e.g. ``oauth2``), NOT the egress mode. The vend path reads the target's own
+    ``auth_method`` from their verified claims, so a mutation MUST write to that
+    same partition or the credential silently never vends.
+
+    Self (no override): both ``auth_method`` and ``sub`` come from the caller's
+    verified identity. Admin on-behalf (``body_sub`` supplied): admin-gated, and
+    the admin MUST also state the target's ``auth_method`` -- the caller's own
+    (admin's) method is NOT assumed, because it may differ from the target's and
+    would land the PAT in a bucket the target never reads. Fail closed: a
+    non-admin override is 403, and an on-behalf write missing the target
+    ``auth_method`` is 400.
+
+    Args:
+        body_sub: Optional ``sub`` override from the request body / query.
+        body_auth_method: Optional target ``auth_method`` (required with a
+            ``sub`` override; ignored for self-submit).
+        user_context: The verified ``nginx_proxied_auth`` context.
+
+    Returns:
+        The resolved ``(auth_method, sub)`` vault principal.
+
+    Raises:
+        HTTPException: 403 if a non-admin supplied ``sub``; 400 if an admin
+            override omits ``auth_method``; 401 if there is no verified identity.
+    """
+    verified_sub = user_context.get("egress_user") or user_context.get("username") or ""
+    verified_auth_method = user_context.get("auth_method") or ""
+    if body_sub:
+        if not user_context.get("is_admin"):
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                detail="only an admin may submit a PAT on another user's behalf",
+            )
+        if not body_auth_method:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "auth_method is required when submitting a PAT on another "
+                    "user's behalf (the target's ingress auth method, e.g. oauth2)"
+                ),
+            )
+        return body_auth_method, body_sub
+    if not verified_sub:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="no verified identity")
+    return verified_auth_method, verified_sub
+
+
+def _feature_enabled_or_404() -> None:
+    if not settings.egress_auth_enabled:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="egress auth disabled")
+
+
+def _callback_url() -> str:
+    return settings.egress_oauth_callback_base.rstrip("/") + "/oauth2/egress/callback"
+
+
+def _build_connect_url(server_path: str) -> str:
+    """Build the session-verified elicitation front-door URL for a server.
+
+    This is the ``url`` the MCP client opens for URL-mode elicitation. It points
+    at the gateway's own ``/oauth2/egress/connect`` (mounted at the registry
+    root, with ROOT_PATH), which verifies the opener's session before starting
+    the provider consent -- so the client itself performs NO OAuth/DCR.
+    """
+    base = settings.registry_url.rstrip("/")
+    path = server_path if server_path.startswith("/") else "/" + server_path
+    return f"{base}/oauth2/egress/connect?{urlencode({'server': path})}"
+
+
+def _build_request_state(
+    user_id: str,
+    auth_method: str,
+    provider: str,
+    server_path: str,
+    client_id_audit: str,
+) -> str | None:
+    """Build the MRTR ``requestState`` blob the client echoes on retry.
+
+    Reuses the egress AEAD ``OAuthState`` codec: the blob is integrity-protected
+    and carries the principal + server + issue time, satisfying the MRTR
+    requirement to reject tampered, replayed, or cross-user retries. It carries
+    no ``pkce_verifier`` (this is the client<->gateway retry binding, not a
+    provider-leg state). Returns None if state cannot be built (non-fatal: the
+    elicitation still works via the unchanged bearer + vault re-check on retry).
+    """
+    from datetime import UTC, datetime
+
+    from registry.egress_auth.schemas import OAuthState
+    from registry.egress_auth.state_codec import encode_state
+
+    try:
+        state = OAuthState(
+            user_id=user_id,
+            auth_method=auth_method,
+            client_id=client_id_audit,
+            provider=provider,
+            server_path=server_path,
+            session_id="",
+            pkce_verifier=None,
+            nonce=secrets.token_urlsafe(16),
+            issued_at=datetime.now(UTC).isoformat(),
+        )
+        return encode_state(state)
+    except Exception as exc:
+        logger.warning(f"egress vend: could not build request_state type={type(exc).__name__}")
+        return None
+
+
+class EgressTokenRequest(BaseModel):
+    """Body for POST /internal/egress-token.
+
+    server_path identifies the registered server whose egress config + upstream
+    allowlist the vend is checked against. Identity (sub/auth_method) is NOT in
+    the body -- it is re-derived from the forwarded mcp-proxy token.
+    """
+
+    server_path: str
+
+
+class EgressTokenResponse(BaseModel):
+    """Vend result. ``access_token`` is None on a clean miss (consent required).
+
+    On a consent-required miss for a properly egress-configured server, the
+    registry builds the provider ``authorize_url`` so mcp_proxy can return it to
+    the caller (the user clicks it to connect). ``authorize_url`` is None when
+    the server isn't egress-configured / the caller isn't a per-user principal
+    (nothing to connect)."""
+
+    access_token: str | None = None
+    consent_required: bool = False
+    authorize_url: str | None = None
+    connect_url: str | None = Field(
+        default=None,
+        description="Session-verified gateway front door for MCP URL-mode "
+        "elicitation (``GET /oauth2/egress/connect?server=<path>``). The mcp_proxy "
+        "hop puts this in the ``elicitation/create`` ``url`` field. Unlike "
+        "``authorize_url`` (the provider-direct URL), this route re-verifies the "
+        "opener's gateway session against the elicited principal (anti-phishing) "
+        "and needs NO client-side OAuth/DCR -- so it works with providers like "
+        "Entra that do not support RFC 7591 DCR.",
+    )
+    request_state: str | None = Field(
+        default=None,
+        description="Opaque AEAD blob the MCP client echoes back on retry "
+        "(MRTR ``requestState``). Binds the principal + server + issue time so a "
+        "tampered/replayed/cross-user retry is rejected. Built with the egress "
+        "OAuth state codec.",
+    )
+    provider: str | None = Field(
+        default=None,
+        description="Provider key (github/google/entra/...) for the human-readable "
+        "elicitation message.",
+    )
+    # obo_exchange directive (returned instead of a token; the exchange runs in
+    # auth_server, which holds the gateway's IdP creds and the raw ingress JWT).
+    mode: str | None = Field(
+        default=None,
+        description="Egress mode for this server: 'obo_exchange' when the caller "
+        "should perform a same-IdP OBO token exchange instead of a vault vend.",
+    )
+    obo_target_audience: str | None = Field(
+        default=None,
+        description="obo_exchange: the 'aud' the auth_server requests in the OBO exchange.",
+    )
+    obo_scopes: list[str] | None = Field(
+        default=None,
+        description="obo_exchange: audience-scoped scopes for the exchange request.",
+    )
+    # pat: the header the vended PAT is injected into and its value prefix,
+    # derived at vend time from the server's Backend Auth scheme, so mcp_proxy
+    # can build "<pat_header_name>: <pat_value_prefix><PAT>" instead of the
+    # hard-coded "Authorization: Bearer". Only set on a pat hit.
+    pat_header_name: str | None = Field(
+        default=None,
+        description="pat: HTTP header to inject the PAT into (e.g. Authorization, PRIVATE-TOKEN).",
+    )
+    pat_value_prefix: str | None = Field(
+        default=None,
+        description="pat: value prefix before the PAT (e.g. 'Bearer ' or '' for a bare token).",
+    )
+
+
+def _base_url(url: str) -> str:
+    """scheme://host[:port] of a URL, lowercased -- the comparison surface for the upstream cross-check.
+
+    The mcp_proxy sub-path append is confined to the bound host, so the cross-check
+    compares the BASE (scheme+host+port), not the full post-append path.
+    """
+    p = urlparse(url)
+    return f"{(p.scheme or '').lower()}://{(p.netloc or '').lower()}"
+
+
+def _registered_upstreams(server: dict) -> set[str]:
+    """The legal upstream base-URL set for a server: proxy_pass_url ∪ versions[*]."""
+    bases: set[str] = set()
+    if server.get("proxy_pass_url"):
+        bases.add(_base_url(server["proxy_pass_url"]))
+    for ver in server.get("versions") or []:
+        ppu = (
+            ver.get("proxy_pass_url")
+            if isinstance(ver, dict)
+            else getattr(ver, "proxy_pass_url", None)
+        )
+        if ppu:
+            bases.add(_base_url(ppu))
+    return bases
+
+
+class GenericUpstreamHeadersRequest(BaseModel):
+    """Body for POST /internal/generic-upstream-headers.
+
+    entity_type + registered_path identify the proxied entity whose stored
+    upstream headers are vended. Identity and the pinned upstream are NOT trusted
+    from the body -- they are re-derived from the forwarded generic-proxy token.
+    """
+
+    entity_type: str
+    registered_path: str
+
+
+class GenericUpstreamHeadersResponse(BaseModel):
+    """Decrypted upstream auth headers for the generic hop to inject on egress.
+
+    ``headers`` is empty only when the live, exactly matched entity has no stored
+    operator defaults (for example, it has only valid caller-overridable slots
+    on HTTPS, or has no credential-header configuration at all).
+    Missing/inactive/targetless entities and credential failures are errors,
+    never empty successful responses.
+
+    ``overridable_names`` is the caller passthrough allowlist (the entity's
+    ``custom_header_overridable_names``): on egress the hop forwards a
+    caller-supplied header ONLY if its name is in this set, and lets the caller's
+    value win over an operator default of the same name. Names only, no secret --
+    they gate which caller headers survive; they never carry a value.
+    """
+
+    headers: dict[str, str] = Field(default_factory=dict)
+    overridable_names: list[str] = Field(default_factory=list)
+
+
+def _proxyable_repo_for(entity_type: str):
+    """Return the repository that owns an entity type, or None for unknown types.
+
+    a2a_agent/skill/mcp_server map to their dedicated repos; every other token is
+    a custom-entity descriptor name and lives in the custom-entity repo.
+    """
+    if entity_type == "a2a_agent":
+        return get_agent_repository()
+    if entity_type == "skill":
+        return get_skill_repository()
+    if entity_type == "mcp_server":
+        return get_server_repository()
+    # Custom entities carry their descriptor name as the type token.
+    return get_custom_entity_repository()
+
+
+@router.post(
+    "/internal/generic-upstream-headers",
+    response_model=GenericUpstreamHeadersResponse,
+)
+async def vend_generic_upstream_headers(
+    body: GenericUpstreamHeadersRequest,
+    _caller: Annotated[str, Depends(validate_internal_auth)],
+    x_internal_token: Annotated[str | None, Header(alias="X-Internal-Token-Generic")] = None,
+) -> GenericUpstreamHeadersResponse:
+    """Vend an entity's decrypted static upstream headers for the generic hop.
+
+    Security model (mirrors POST /internal/egress-token):
+    - validate_internal_auth gates the caller (auth_server presents a fresh
+      internal service token) -- bound to the internal network.
+    - The forwarded X-Internal-Token-Generic is RE-VERIFIED here; the entity
+      identity (entity_type/server) and the pinned upstream come from the
+      verified claims, never from the request body.
+    - The token's upstream_url is cross-checked against the entity's registered
+      effective target, so a forged X-Resolved-Generic-Upstream (minted via a
+      direct /validate call) cannot cause headers to be vended for an
+      attacker-controlled host.
+    - The plaintext header VALUES leave the registry ONLY over this internal,
+      service-token-gated hop; they are never rendered into nginx or logged.
+
+    Missing, inactive, targetless, mismatched, or undecryptable entities fail
+    closed with a non-2xx response. An empty 200 is reserved for a live entity
+    that genuinely has no configured upstream credential headers.
+    """
+    if not x_internal_token:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="missing X-Internal-Token-Generic")
+
+    # Independently re-verify the generic-proxy token; identity + pinned upstream
+    # are the verified claims, never asserted body fields.
+    claims = verify_generic_proxy_token(x_internal_token)
+    entity_type = claims.get("entity_type") or ""
+    registered_path = claims.get("server") or ""
+    token_upstream = claims.get("upstream_url") or ""
+
+    # The body must agree with the signed claims (defence-in-depth; the claims win).
+    if body.entity_type != entity_type or body.registered_path != registered_path:
+        logger.warning(
+            "generic upstream-headers: body/token mismatch (body=%s/%s token=%s/%s); refusing",
+            body.entity_type,
+            body.registered_path,
+            entity_type,
+            registered_path,
+        )
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="entity mismatch")
+
+    # Registered path is the entity's stored id (skills/custom/agents key on it).
+    path = registered_path if registered_path.startswith("/") else "/" + registered_path
+
+    repo = _proxyable_repo_for(entity_type)
+    entity = await repo.get(path)
+    if entity is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="proxied entity not found")
+
+    doc = entity.model_dump() if hasattr(entity, "model_dump") else dict(entity)
+
+    # Must still be a live proxied entity resolving to a target (not disabled,
+    # auto-disabled, federated, or targetless). An empty 200 here would make the
+    # proxy forward without credentials, silently downgrading authentication.
+    effective_target = resolve_proxy_target(entity_type, doc)
+    if not effective_target:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, detail="proxied entity is inactive or has no target"
+        )
+
+    # Compare the complete canonical target (scheme, host, effective port, path,
+    # and query), not only the origin. Credentials registered for /v1 or one
+    # tenant query must never be vended to /v2 or another tenant on the same host.
+    try:
+        token_target = normalize_url_identity(token_upstream)
+        registered_target = normalize_url_identity(effective_target)
+    except Exception as exc:
+        logger.warning(
+            "generic upstream-headers REFUSED: invalid target identity for %s/%s: %s",
+            entity_type,
+            registered_path,
+            type(exc).__name__,
+        )
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, detail="upstream not registered for this entity"
+        ) from exc
+    if token_target != registered_target:
+        logger.warning(
+            "generic upstream-headers REFUSED: token target %r does not exactly match "
+            "registered target %r for %s/%s",
+            redact_url(token_upstream),
+            redact_url(effective_target),
+            entity_type,
+            registered_path,
+        )
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, detail="upstream not registered for this entity"
+        )
+
+    # Backstop the stored set against the never-forward gateway-cred/internal
+    # denylist (registration validation already blocks these, but a bypass-written
+    # doc -- direct DB write, migration -- must not slip one through). Applies to
+    # BOTH the operator DEFAULTS and the overridable allowlist: only
+    # ``Authorization`` is allowed among reserved names (its fixed form is rejected
+    # at validation and its bearer is guarded by the equal-token check at the hop);
+    # every other reserved name is dropped so the hop can never inject / forward a
+    # gateway-internal header (X-Internal-Token*, X-User, ...) to the backend.
+    from registry.constants import (
+        CALLER_OVERRIDABLE_RESERVED_HEADER_NAMES,
+        RESERVED_CUSTOM_HEADER_NAMES,
+    )
+
+    def _allowed_upstream_name(name: str) -> bool:
+        lower = name.lower()
+        return (
+            lower not in RESERVED_CUSTOM_HEADER_NAMES
+            or lower in CALLER_OVERRIDABLE_RESERVED_HEADER_NAMES
+        )
+
+    raw_registered = doc.get("custom_header_names") or []
+    raw_overridable = doc.get("custom_header_overridable_names") or []
+    raw_encrypted = doc.get("custom_headers_encrypted") or []
+    if not isinstance(raw_registered, list) or not isinstance(raw_overridable, list):
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="stored upstream credential metadata is invalid",
+        )
+    try:
+        registered_names = [validate_custom_header_name(name) for name in raw_registered]
+        overridable_names = [validate_custom_header_name(name) for name in raw_overridable]
+    except ValueError as exc:
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="stored upstream credential metadata is invalid",
+        ) from exc
+
+    registered_names = [name for name in registered_names if _allowed_upstream_name(name)]
+    overridable_names = [name for name in overridable_names if _allowed_upstream_name(name)]
+    registered_lower = [name.lower() for name in registered_names]
+    overridable_lower_list = [name.lower() for name in overridable_names]
+    if (
+        len(set(registered_lower)) != len(registered_lower)
+        or len(set(overridable_lower_list)) != len(overridable_lower_list)
+        or not set(overridable_lower_list).issubset(registered_lower)
+    ):
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="stored upstream credential metadata is invalid",
+        )
+
+    # Never vend a stored secret OR permit a caller credential passthrough to a
+    # cleartext target. Check storage presence before decryption so corrupted
+    # ciphertext cannot bypass the transport requirement.
+    has_credential_headers = bool(raw_encrypted or registered_names or overridable_names)
+    if has_credential_headers and urlparse(registered_target).scheme != "https":
+        logger.warning(
+            "generic upstream-headers REFUSED: credential headers configured for non-HTTPS "
+            "target on %s/%s",
+            entity_type,
+            registered_path,
+        )
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            detail="upstream credential headers require an HTTPS target",
+        )
+
+    try:
+        decrypted = decrypt_custom_headers(raw_encrypted, strict=True)
+    except ValueError as exc:
+        logger.error(
+            "generic upstream-headers REFUSED: stored credential decryption failed for %s/%s: %s",
+            entity_type,
+            registered_path,
+            exc,
+        )
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="stored upstream credentials are unavailable",
+        ) from exc
+
+    allowed_decrypted = [header for header in decrypted if _allowed_upstream_name(header["name"])]
+    decrypted_lower_list = [header["name"].lower() for header in allowed_decrypted]
+    if len(set(decrypted_lower_list)) != len(decrypted_lower_list):
+        logger.error(
+            "generic upstream-headers REFUSED: duplicate stored credential names for %s/%s",
+            entity_type,
+            registered_path,
+        )
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="stored upstream credential metadata is invalid",
+        )
+
+    headers = {header["name"]: header["value"] for header in allowed_decrypted}
+    unexpected_headers = sorted(
+        name for name in headers if name.lower() not in set(registered_lower)
+    )
+    if unexpected_headers:
+        logger.error(
+            "generic upstream-headers REFUSED: inconsistent stored credential names for %s/%s",
+            entity_type,
+            registered_path,
+        )
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="stored upstream credential metadata is invalid",
+        )
+
+    # Every non-overridable registered name is a fixed operator header and must
+    # have produced a plaintext value. Overridable names with no encrypted row
+    # are legitimate caller-only slots and therefore are intentionally excluded
+    # from this expectation.
+    overridable_lower = {name.lower() for name in overridable_names}
+    expected_fixed = {
+        name.lower(): name for name in registered_names if name.lower() not in overridable_lower
+    }
+    decrypted_lower = {name.lower() for name in headers}
+    missing_fixed = [name for lower, name in expected_fixed.items() if lower not in decrypted_lower]
+    if missing_fixed:
+        logger.error(
+            "generic upstream-headers REFUSED: missing stored fixed header values for %s/%s: %s",
+            entity_type,
+            registered_path,
+            sorted(missing_fixed),
+        )
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="stored upstream credentials are incomplete",
+        )
+
+    # Log names + count only -- never the header values.
+    logger.info(
+        "generic upstream-headers vended for %s/%s: defaults=%s overridable=%s",
+        entity_type,
+        registered_path,
+        sorted(headers.keys()),
+        sorted(overridable_names),
+    )
+    return GenericUpstreamHeadersResponse(headers=headers, overridable_names=overridable_names)
+
+
+@router.post("/internal/egress-token", response_model=EgressTokenResponse)
+async def vend_egress_token(
+    body: EgressTokenRequest,
+    _caller: Annotated[str, Depends(validate_internal_auth)],
+    x_internal_token: Annotated[str | None, Header(alias="X-Internal-Token")] = None,
+) -> EgressTokenResponse:
+    """Vend a per-user egress access token for the mcp_proxy hop.
+
+    Returns 401 if the feature is off or the forwarded mcp-proxy token is
+    missing/invalid; a clean miss (no connection, non-per-user caller, upstream
+    mismatch, etc.) returns ``consent_required=True`` with no token.
+    """
+    if not settings.egress_auth_enabled:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="egress auth disabled")
+
+    if not x_internal_token:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="missing X-Internal-Token")
+
+    # Independently re-verify the mcp-proxy token; identity is the verified
+    # claim, never an asserted body field.
+    claims = verify_mcp_proxy_token(x_internal_token)
+    # Egress vault user id: the canonical OIDC-sub-based ``egress_user`` claim,
+    # which /validate stamps identically into the consent-write and vend tokens
+    # so one human maps to one bucket across providers (see _canonical_egress_user
+    # in auth_server; the browser-consent and bearer-vend paths otherwise diverged
+    # when an IdP omits preferred_username from access tokens, e.g. Entra). There
+    # is deliberately NO fallback to ``sub``: the mcp-proxy token's ``sub`` is the
+    # login username, a different identifier namespace from the OIDC sub the
+    # consent path wrote, so falling back would key the vault on a second identity
+    # for the same human (silent miss, 0 tools). A per-user caller without the
+    # claim fails closed and is logged below.
+    sub = claims.get("egress_user") or ""
+    auth_method = claims.get("auth_method") or ""
+    token_upstream = claims.get("upstream_url") or ""
+
+    # Only real per-user principals may vend.
+    if not is_per_user_auth_method(auth_method):
+        logger.info("egress vend: non-per-user auth_method %r -> consent", auth_method)
+        return EgressTokenResponse(consent_required=True)
+
+    # Normalize the server path: mcp_proxy passes the first path segment without a
+    # leading slash ("github"), but server entries, the vault key, and the consent
+    # state all use the slash-prefixed path ("/github"). Without this, the lookup
+    # misses and consent loops forever. Use the canonical form everywhere below.
+    server_path = body.server_path if body.server_path.startswith("/") else "/" + body.server_path
+
+    server = await get_server_repository().get(server_path)
+    if server is None:
+        return EgressTokenResponse(consent_required=True)
+
+    # Per-server enablement: a misconfigured/half-deleted server never vends.
+    egress_mode = server.get("egress_auth_mode")
+    if egress_mode not in ("oauth_user", "obo_exchange", "pat") or not server.get("egress_oauth"):
+        return EgressTokenResponse(consent_required=True)
+
+    # The bound upstream MUST match a registered upstream for this server. This
+    # cross-check applies to BOTH egress modes: an OBO directive must only be
+    # handed out for a legitimately-bound upstream, same as a vault vend.
+    legal = registered_upstreams(server)
+    requested_upstream = base_url(token_upstream)
+    if requested_upstream not in legal:
+        logger.warning(
+            "egress vend REFUSED: upstream %r not in registered set %r for %s",
+            requested_upstream,
+            legal,
+            server_path,
+        )
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, detail="upstream not registered for this server"
+        )
+
+    egress_oauth = server["egress_oauth"]
+
+    # A per-user principal with no resolved vault id: refuse rather than guess.
+    # Reachable for tokens minted before the ``egress_user`` claim existed; those
+    # expire within one short token TTL, and the next mint carries the claim, so
+    # this is self-healing. Log it -- the previous cross-namespace fallback made
+    # this failure completely invisible. obo_exchange is exempt: it is stateless,
+    # never reads the vault, and the exchange keys on the raw ingress JWT.
+    if not sub and egress_mode != "obo_exchange":
+        logger.warning(
+            "egress vend: per-user auth_method %r with no egress_user claim for %s "
+            "-> consent (refusing to key the vault on the token's username sub)",
+            auth_method,
+            server_path,
+        )
+        return EgressTokenResponse(consent_required=True)
+
+    # pat: vend the stored per-user PAT. This branch runs BEFORE oauth_user so a
+    # pat server is never routed through svc.get_valid_token (which resolves an
+    # OAuth provider and rejects a token stored with client_id=None). A miss
+    # (never submitted OR expired) is TERMINAL: set mode="pat" so auth_server
+    # emits the PAT-missing message; NO authorize_url/connect_url (not interactive).
+    if egress_mode == "pat":
+        provider = egress_oauth.get("provider")
+        token = await get_egress_auth_service().get_pat(
+            auth_method=auth_method,
+            user_id=sub,
+            provider=provider,
+            server_path=server_path,
+            requested_upstream=requested_upstream,
+        )
+        if token is not None:
+            # The PAT is injected into the SAME header the server's Backend
+            # Authentication uses (same upstream, one header contract). Derived
+            # from auth_scheme/auth_header_name; no separate egress header config.
+            header_name, value_prefix = _derive_pat_inject_header(server)
+            return EgressTokenResponse(
+                access_token=token,
+                pat_header_name=header_name,
+                pat_value_prefix=value_prefix,
+            )
+        return EgressTokenResponse(consent_required=True, mode="pat")
+
+    # obo_exchange: return the exchange DIRECTIVE, not a token. The actual IdP
+    # token exchange runs in auth_server (which holds the gateway's own IdP
+    # credentials and the raw ingress JWT); the registry never sees the JWT and
+    # holds no per-user token for this mode. Stateless -- no vault lookup.
+    if egress_mode == "obo_exchange":
+        # Defense in depth: re-validate the STORED directive before vending it to
+        # the exchange engine. The write path validates on persist, but a directive
+        # written before that enforcement existed (or by any other mutation path)
+        # must never be exchanged for a delegated token to a disallowed audience.
+        # Fail closed: a stored directive that no longer passes the floor is a
+        # refusal, never a silent passthrough.
+        try:
+            _validate_obo_egress_config(
+                egress_oauth.get("target_audience"), egress_oauth.get("scopes")
+            )
+        except ValueError as exc:
+            logger.warning(
+                "egress vend REFUSED: stored obo_exchange directive for %s is not allowlisted: %s",
+                server_path,
+                exc,
+            )
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                detail="obo_exchange target audience is not allowed for this server",
+            ) from exc
+        return EgressTokenResponse(
+            mode="obo_exchange",
+            obo_target_audience=egress_oauth.get("target_audience"),
+            obo_scopes=egress_oauth.get("scopes") or [],
+        )
+
+    svc = get_egress_auth_service()
+    try:
+        access_token = await svc.get_valid_token(
+            auth_method=auth_method,
+            user_id=sub,
+            server_path=server_path,
+            egress_oauth=egress_oauth,
+            requested_upstream=requested_upstream,
+            # This is the END-USER runtime hop, so it may only vend an entry a user
+            # consented for egress -- never the identity the registry borrows.
+            purpose=keys.EGRESS_PURPOSE,
+        )
+    except SecretStoreError as exc:
+        # The store already rode out a bounded backoff (transient Vault/OpenBao
+        # blip during an HA leader election / pod restart) and still failed. This
+        # is NOT a miss: the user may well have a vaulted token we just can't read
+        # right now. Returning consent_required here would wrongly tell them to
+        # reconnect; a 500 would surface to the caller as an opaque tokenless
+        # upstream 401. Instead fail closed with a retryable 503, mirroring the
+        # consent-callback write path, so the vend hop can hand back a clear
+        # "temporarily unavailable, retry" signal instead of a silent failure.
+        logger.warning(
+            "egress vend: token store temporarily unavailable for %s: %s", server_path, exc
+        )
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="egress credential store temporarily unavailable",
+        ) from exc
+    if access_token is not None:
+        return EgressTokenResponse(access_token=access_token)
+
+    # Miss: no usable token (never connected, or refresh dead). Build the consent
+    # URL so mcp_proxy can hand it back to the user to self-serve (the gateway
+    # triggers consent automatically rather than forwarding unauthenticated).
+    try:
+        authorize_url = svc.build_consent_url(
+            auth_method=auth_method,
+            user_id=sub,
+            client_id_audit=claims.get("client_id") or "",
+            session_id="",
+            server_path=server_path,
+            egress_oauth=egress_oauth,
+        )
+    except Exception as exc:  # bad provider config etc. -- still a clean miss
+        logger.warning(f"egress vend: could not build consent URL type={type(exc).__name__}")
+        authorize_url = None
+
+    # MCP URL-mode elicitation: a session-verified gateway front door the client
+    # opens verbatim (no client-side OAuth/DCR -- works with Entra). The matching
+    # ``request_state`` is an AEAD blob the client echoes back on retry; it binds
+    # the principal + server + issue time so a tampered/replayed/cross-user retry
+    # is rejected (MRTR requestState integrity requirement).
+    provider = egress_oauth.get("provider")
+    connect_url = _build_connect_url(server_path)
+    request_state = _build_request_state(
+        user_id=sub,
+        auth_method=auth_method,
+        provider=provider or "",
+        server_path=server_path,
+        client_id_audit=claims.get("client_id") or "",
+    )
+
+    return EgressTokenResponse(
+        consent_required=True,
+        authorize_url=authorize_url,
+        connect_url=connect_url,
+        request_state=request_state,
+        provider=provider,
+    )
+
+
+# ---------------------------------------------------------------------------- #
+# Public endpoints. Operator config + end-user consent/connections.
+# ---------------------------------------------------------------------------- #
+
+
+class EgressConfigRequest(BaseModel):
+    """Configure egress auth on a server (admin/registrant)."""
+
+    egress_auth_mode: str = "oauth_user"  # "none" | "oauth_user" | "obo_exchange" | "pat"
+    egress_provider: str = ""
+    client_id: str = ""
+    client_secret: str | None = None  # write-only; encrypted, never echoed
+    scopes: list[str] = []
+    custom_authorize_url: str | None = None
+    custom_token_url: str | None = None
+    custom_scope_separator: str | None = None
+    custom_token_auth_style: str | None = None
+    custom_resource: str | None = None  # RFC 8707 resource indicator (custom only)
+    # obo_exchange only: the internal MCP server's audience (IdP-shaped).
+    target_audience: str | None = None
+
+
+def _egress_config_view(server: dict) -> dict:
+    """Non-secret view of a server's egress config + the callback URL to register."""
+    eo = server.get("egress_oauth") or {}
+    return {
+        "path": server.get("path"),
+        "egress_auth_mode": server.get("egress_auth_mode", "none"),
+        "egress_provider": eo.get("provider"),
+        "scopes": eo.get("scopes", []),
+        "target_audience": eo.get("target_audience"),
+        "callback_url": _callback_url(),
+        "custom_authorize_url": eo.get("custom_authorize_url"),
+        "custom_token_url": eo.get("custom_token_url"),
+        "custom_scope_separator": eo.get("custom_scope_separator"),
+        "custom_token_auth_style": eo.get("custom_token_auth_style"),
+        "custom_resource": eo.get("custom_resource"),
+    }
+
+
+def _require_admin(user_context: dict) -> None:
+    if not user_context.get("is_admin"):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="admin required")
+
+
+def build_oauth_provider_config(
+    *,
+    provider: str,
+    client_id: str,
+    client_secret: str | None,
+    scopes: list[str],
+    custom_authorize_url: str | None = None,
+    custom_token_url: str | None = None,
+    custom_scope_separator: str | None = None,
+    custom_token_auth_style: str | None = None,
+    custom_resource: str | None = None,
+    prior_secret_encrypted: str | None = None,
+) -> dict:
+    """Validate and build a provider OAuth config (the ``EgressOAuthConfig`` shape)
+    with the client_secret encrypted. Shared by per-user egress (``oauth_user``)
+    and backend-auth discovery so the SSRF/validation stays in one place.
+
+    Raises ``HTTPException(400)`` on invalid input. ``client_secret`` blank keeps
+    ``prior_secret_encrypted`` (edit); a custom public client (token_auth_style
+    'none') carries no secret.
+    """
+    if provider not in list_provider_names():
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            detail=f"unknown provider; valid: {list_provider_names()}",
+        )
+    eo: dict = {
+        "provider": provider,
+        "client_id": client_id,
+        "scopes": scopes,
+        "custom_authorize_url": custom_authorize_url,
+        "custom_token_url": custom_token_url,
+        "custom_scope_separator": custom_scope_separator,
+        "custom_token_auth_style": custom_token_auth_style,
+        "custom_resource": custom_resource,
+    }
+    if provider == "custom":
+        for field, url, profile in (
+            ("custom_authorize_url", custom_authorize_url, PROXY_PROFILE),
+            ("custom_token_url", custom_token_url, CREDENTIALED_OAUTH_PROFILE),
+        ):
+            try:
+                validate_url(url or "", profile=profile, require_https=True, resolve=False)
+            except UrlValidationError as exc:
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST, detail=f"{field} rejected: {exc}"
+                ) from exc
+        if custom_resource:
+            pr = urlparse(custom_resource)
+            if pr.scheme != "https" or not pr.netloc or pr.fragment:
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST,
+                    detail="custom_resource rejected: must be an absolute https "
+                    "URI without a fragment",
+                )
+    try:
+        resolve_provider(eo)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    is_public_client = provider == "custom" and custom_token_auth_style == "none"  # nosec B105 - auth style enum value, not a credential
+    if is_public_client:
+        if not (client_id or "").strip():
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                detail="client_id required when custom_token_auth_style is 'none'",
+            )
+        eo["client_secret_encrypted"] = None
+    else:
+        if client_secret:
+            eo["client_secret_encrypted"] = encrypt_credential(client_secret)
+        else:
+            eo["client_secret_encrypted"] = prior_secret_encrypted
+        if not eo["client_secret_encrypted"]:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="client_secret required")
+    return eo
+
+
+@router.post("/servers/{server_path:path}/egress-auth")
+async def configure_egress_auth(
+    request: Request,
+    server_path: str,
+    body: EgressConfigRequest,
+    user_context: Annotated[dict, Depends(nginx_proxied_auth)],
+    _csrf: Annotated[None, Depends(verify_csrf_token_flexible)] = None,
+):
+    """Configure (or disable) per-user egress OAuth on a server. Admin only.
+
+    The client_secret is Fernet-encrypted and never returned. Returns the
+    callback URL the operator must register in the provider's OAuth app.
+    """
+    _feature_enabled_or_404()
+    _require_admin(user_context)
+
+    if not server_path.startswith("/"):
+        server_path = "/" + server_path
+
+    server = await server_service.get_server_info(server_path, include_credentials=True)
+    if not server:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="server not found")
+
+    if body.egress_auth_mode == "none":
+        server["egress_auth_mode"] = "none"
+        server["egress_oauth"] = None
+    elif body.egress_auth_mode == "oauth_user":
+        eo = build_oauth_provider_config(
+            provider=body.egress_provider,
+            client_id=body.client_id,
+            client_secret=body.client_secret,
+            scopes=body.scopes,
+            custom_authorize_url=body.custom_authorize_url,
+            custom_token_url=body.custom_token_url,
+            custom_scope_separator=body.custom_scope_separator,
+            custom_token_auth_style=body.custom_token_auth_style,
+            custom_resource=body.custom_resource,
+            prior_secret_encrypted=(server.get("egress_oauth") or {}).get(
+                "client_secret_encrypted"
+            ),
+        )
+        server["egress_auth_mode"] = "oauth_user"
+        server["egress_oauth"] = eo
+    elif body.egress_auth_mode == "obo_exchange":
+        target = (body.target_audience or "").strip()
+        # Enforce the always-on obo target-audience/scope floor on the live write
+        # path (the ServerInfo model validator is never instantiated in prod, so
+        # this is the only enforcement point). Fail closed: any malformed,
+        # gateway-own, first-party, or scope-mismatched audience is rejected
+        # before it can be persisted and later vended to the exchange engine.
+        try:
+            _validate_obo_egress_config(target, body.scopes)
+        except ValueError as exc:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        # Same-IdP exchange: no per-server provider/client_id/secret. Only the
+        # target audience and (optional) audience-scoped scopes are stored.
+        server["egress_auth_mode"] = "obo_exchange"
+        server["egress_oauth"] = {
+            "target_audience": target,
+            "scopes": body.scopes,
+        }
+    elif body.egress_auth_mode == "pat":
+        # pat needs only a provider slug as the vault-namespace/display key. No
+        # SSRF check, no client_secret, no resolve_provider (there is no OAuth
+        # endpoint). The provider is slug-constrained because it becomes a
+        # vault-key segment.
+        provider = (body.egress_provider or "").strip()
+        if not _PAT_PROVIDER_RE.fullmatch(provider):
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                detail="pat mode requires a provider slug matching ^[a-z0-9_-]{1,64}$ "
+                "(namespace/display key)",
+            )
+        # The PAT inject header is NOT configured here: it is inherited from the
+        # server's Backend Authentication (auth_scheme/auth_header_name) at vend
+        # time (see _derive_pat_inject_header), since it is the same upstream.
+        server["egress_auth_mode"] = "pat"
+        server["egress_oauth"] = {"provider": provider, "scopes": body.scopes or []}
+    else:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="invalid egress_auth_mode")
+
+    if not await server_service.update_server(server_path, server):
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail="update failed")
+    return _egress_config_view(server)
+
+
+@router.get("/servers/{server_path:path}/egress-auth")
+async def get_egress_auth_config(
+    server_path: str,
+    user_context: Annotated[dict, Depends(nginx_proxied_auth)],
+):
+    """Read a server's egress config (secret stripped). Admin only."""
+    _feature_enabled_or_404()
+    _require_admin(user_context)
+    if not server_path.startswith("/"):
+        server_path = "/" + server_path
+    server = await server_service.get_server_info(server_path, include_credentials=False)
+    if not server:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="server not found")
+    return _egress_config_view(server)
+
+
+class EgressPatSetRequest(BaseModel):
+    """Body for PUT /servers/{path}/egress-pat. Write-only secret.
+
+    There is intentionally NO ``expires_at`` field and NO "never" option: the
+    caller states a duration (``ttl_value`` + ``ttl_unit``) and the gateway
+    computes the absolute ``expires_at``.
+    """
+
+    secret: str  # the PAT / API key; required, non-empty
+    ttl_value: int  # REQUIRED positive integer validity amount
+    ttl_unit: str  # REQUIRED: "minutes" | "hours" | "days"
+    sub: str | None = None  # admin-only: submit on another user's behalf
+    # admin-only, REQUIRED with sub: the target's ingress auth method (the vault
+    # partition the target vends from, e.g. oauth2). Ignored for self-submit.
+    auth_method: str | None = None
+
+
+def _pat_status_view(
+    server_path: str,
+    token: StoredToken | None,
+) -> dict:
+    """Presence-only status for a stored PAT (the secret is NEVER included).
+
+    Args:
+        server_path: The slash-prefixed server path.
+        token: The stored entry, or None on a miss.
+
+    Returns:
+        ``configured``/``expires_at``/``expired`` only. ``expired`` is computed
+        from ``expires_at`` vs now so the UI can prompt a re-submit before a tool
+        call fails.
+    """
+    if token is None:
+        return {"path": server_path, "configured": False, "expires_at": None, "expired": False}
+    expired = bool(token.expires_at) and EgressAuthService._is_expired(token.expires_at)
+    return {
+        "path": server_path,
+        "configured": True,
+        "expires_at": token.expires_at,
+        "expired": expired,
+    }
+
+
+async def _resolve_pat_server(
+    server_path: str,
+) -> tuple[str, dict]:
+    """Fetch a server and confirm it is configured for ``pat``.
+
+    Args:
+        server_path: The (possibly slash-less) server path.
+
+    Returns:
+        A tuple of the normalized ``server_path`` and the server dict.
+
+    Raises:
+        HTTPException: 404 if the server does not exist; 409 if it is not in
+            ``pat`` mode.
+    """
+    if not server_path.startswith("/"):
+        server_path = "/" + server_path
+    server = await server_service.get_server_info(server_path, include_credentials=True)
+    if not server:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="server not found")
+    if server.get("egress_auth_mode") != "pat" or not server.get("egress_oauth"):
+        raise HTTPException(status.HTTP_409_CONFLICT, detail="server is not configured for pat")
+    return server_path, server
+
+
+@router.put("/servers/{server_path:path}/egress-pat")
+async def set_egress_pat(
+    request: Request,
+    server_path: str,
+    body: EgressPatSetRequest,
+    user_context: Annotated[dict, Depends(nginx_proxied_auth)],
+    _csrf: Annotated[None, Depends(verify_csrf_token_flexible)] = None,
+):
+    """Submit (or replace) the caller's per-user PAT for a ``pat`` server.
+
+    The PAT is write-only: it is stored, never returned. ``sub`` comes from the
+    verified ingress identity; only an admin may override it via ``body.sub``.
+    A mandatory, bounded lifetime (``ttl_value`` + ``ttl_unit``, capped at 30
+    days) is enforced here and re-checked at vend.
+    """
+    _feature_enabled_or_404()
+    if not body.secret:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="secret is required")
+    # sub override is admin-only (403 for a non-admin, 400 if it omits the target
+    # auth_method); self-submit derives both from the verified identity.
+    auth_method, sub = _resolve_target_principal(body.sub, body.auth_method, user_context)
+    try:
+        ttl_seconds = _resolve_pat_ttl_seconds(body.ttl_value, body.ttl_unit)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    server_path, server = await _resolve_pat_server(server_path)
+
+    # The resolved auth_method is the vault partition (the target's for an
+    # on-behalf write); a non-per-user method can never own a per-user PAT.
+    if not is_per_user_auth_method(auth_method):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, detail="this caller cannot store a per-user PAT"
+        )
+
+    provider = server["egress_oauth"]["provider"]
+    now = datetime.now(UTC)
+    token = StoredToken(
+        access_token=body.secret,
+        token_type="Bearer",  # nosec B106 - token type label, not a credential
+        created_at=now.isoformat(),
+        expires_at=(now + timedelta(seconds=ttl_seconds)).isoformat(),
+        bound_upstreams=bound_upstreams(server),
+    )
+    # A PAT is the user's own runtime credential, so it is written to the egress address
+    # space. It cannot land on a discovery entry: those have their own addresses.
+    try:
+        await get_secret_store().put_token(
+            auth_method, sub, provider, server_path, token, purpose=keys.EGRESS_PURPOSE
+        )
+    except SecretStoreError as exc:
+        # Fail closed: nothing partially written.
+        logger.error("egress pat submit: secret store write failed for %s", server_path)
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, detail="secret store unavailable"
+        ) from exc
+    logger.info(
+        "egress pat submit: stored PAT for server=%s provider=%s (expires_at=%s)",
+        server_path,
+        provider,
+        token.expires_at,
+    )
+    return {
+        "path": server_path,
+        "configured": True,
+        "sub": sub,
+        "updated_at": now.isoformat(),
+        "expires_at": token.expires_at,
+    }
+
+
+@router.get("/servers/{server_path:path}/egress-pat")
+async def get_egress_pat_status(
+    server_path: str,
+    user_context: Annotated[dict, Depends(nginx_proxied_auth)],
+    sub: str | None = None,
+    auth_method: str | None = None,
+):
+    """Report whether the caller has a stored PAT and when it expires.
+
+    Never returns the secret. A non-admin passing ``?sub=`` is rejected 403; an
+    admin passing ``?sub=`` must also pass ``?auth_method=`` (the target's).
+    """
+    _feature_enabled_or_404()
+    target_auth_method, target_sub = _resolve_target_principal(sub, auth_method, user_context)
+    server_path, server = await _resolve_pat_server(server_path)
+    if not is_per_user_auth_method(target_auth_method):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, detail="this caller cannot own a per-user PAT"
+        )
+    provider = server["egress_oauth"]["provider"]
+    try:
+        token = await get_egress_auth_service().get_pat_status(
+            auth_method=target_auth_method,
+            user_id=target_sub,
+            provider=provider,
+            server_path=server_path,
+        )
+    except SecretStoreError as exc:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, detail="secret store unavailable"
+        ) from exc
+    return _pat_status_view(server_path, token)
+
+
+@router.delete("/servers/{server_path:path}/egress-pat")
+async def delete_egress_pat(
+    request: Request,
+    server_path: str,
+    user_context: Annotated[dict, Depends(nginx_proxied_auth)],
+    sub: str | None = None,
+    auth_method: str | None = None,
+    _csrf: Annotated[None, Depends(verify_csrf_token_flexible)] = None,
+):
+    """Delete the caller's stored PAT. Idempotent.
+
+    An admin may target another user via ``?sub=`` + ``?auth_method=`` (the
+    target's ingress auth method); a non-admin passing ``?sub=`` is rejected 403.
+    """
+    _feature_enabled_or_404()
+    target_auth_method, target_sub = _resolve_target_principal(sub, auth_method, user_context)
+    server_path, server = await _resolve_pat_server(server_path)
+    if not is_per_user_auth_method(target_auth_method):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, detail="this caller cannot own a per-user PAT"
+        )
+    provider = server["egress_oauth"]["provider"]
+    try:
+        await get_egress_auth_service().delete_pat(
+            auth_method=target_auth_method,
+            user_id=target_sub,
+            provider=provider,
+            server_path=server_path,
+        )
+    except SecretStoreError as exc:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, detail="secret store unavailable"
+        ) from exc
+    return {"path": server_path, "configured": False}
+
+
+@router.get("/egress-auth/available-servers")
+async def list_available_egress_servers(
+    user_context: Annotated[dict, Depends(nginx_proxied_auth)],
+):
+    """List egress-enabled servers the current user can access (for the
+    Connected Accounts dropdown).
+
+    Returns servers with ``egress_auth_mode`` in (``oauth_user``, ``pat``) AND a
+    valid ``egress_oauth`` config, intersected with the user's accessible
+    servers, so a user is never offered a server they cannot reach. A ``pat``
+    server is offered so the UI can present a "Submit token" affordance.
+    Tokens/secrets are never included -- only path, display name, provider, and
+    the egress mode.
+    """
+    _feature_enabled_or_404()
+
+    # Only per-user principals can connect an account; non-per-user callers
+    # (e.g. federation/network-trusted) get an empty list rather than an error.
+    auth_method = user_context.get("auth_method") or ""
+    if not is_per_user_auth_method(auth_method):
+        return []
+
+    # "*" in accessible_servers = unrestricted (admin); otherwise the user only
+    # sees servers whose path is explicitly granted. accessible_servers stores
+    # names WITHOUT a leading slash (e.g. "slack") while server paths carry one
+    # (e.g. "/slack"), so compare on the slash-stripped form.
+    accessible = user_context.get("accessible_servers") or []
+    unrestricted = "*" in accessible
+    accessible_norm = {s.lstrip("/") for s in accessible}
+    all_servers = await server_service.get_all_servers()
+    results: list[dict] = []
+    for path, server in all_servers.items():
+        mode = server.get("egress_auth_mode")
+        if mode not in ("oauth_user", "pat") or not server.get("egress_oauth"):
+            continue
+        if not unrestricted and str(path).lstrip("/") not in accessible_norm:
+            continue
+        eo = server.get("egress_oauth") or {}
+        results.append(
+            {
+                "server_path": path,
+                "server_name": server.get("server_name") or path,
+                "provider": eo.get("provider") or "custom",
+                "egress_auth_mode": mode,
+                # Server-built gateway front door, using settings.registry_url so
+                # the browser never guesses the base URL (correct on all deploy
+                # surfaces). Only oauth_user can use /oauth2/egress/connect; a pat
+                # server 400s there, so its connect_url is None (the UI routes pat
+                # to the Connected Accounts token form instead).
+                "connect_url": _build_connect_url(path) if mode == "oauth_user" else None,
+            }
+        )
+    results.sort(key=lambda r: r["server_name"].lower())
+    return results
+
+
+@router.get("/egress/obo-identifier-uris")
+async def get_obo_identifier_uris(
+    user_context: Annotated[dict, Depends(nginx_proxied_auth)],
+):
+    """List the Entra Application ID URIs the operator must register.
+
+    Each server that logs the client in at the gateway via a per-server PRM has a
+    per-server resource URL -- the value the gateway advertises in its PRM and
+    validates as the ingress ``aud``. On Entra this is EVERY server (issue #990),
+    plus ``obo_exchange`` / the 3LO ``oauth_user`` ingress leg on any provider.
+    On Entra, every one of those URLs must be present in the gateway app's
+    ``identifierUris`` list. This endpoint returns the exact set so the operator
+    can keep Entra in sync as servers are added/removed -- the registry side is
+    automatic; only this list is manual.
+
+    NOT gated on egress being enabled: on an Entra ingress-only deployment
+    (egress off -- the default) plain servers still need per-server App ID URIs,
+    and the operator needs this list to register them. Available whenever a
+    per-server PRM is advertised, i.e. on Entra OR when egress auth is enabled;
+    otherwise (lenient IdP + egress off, no per-server PRMs) it returns an empty
+    list rather than 404, so the caller always gets a definitive answer.
+
+    Admin only. Returns ``{"identifier_uris": [...], "count": N}``.
+    """
+    _require_admin(user_context)
+
+    from registry.api.wellknown_routes import server_needs_per_server_prm
+    from registry.auth.oauth_metadata import build_per_server_resource_url
+    from registry.core.config import settings
+
+    servers = await server_service.get_all_servers(include_inactive=True)
+    uris: list[str] = []
+    for path, info in (servers or {}).items():
+        if not server_needs_per_server_prm((info or {}).get("egress_auth_mode")):
+            continue
+        append_mcp = info.get("append_mcp_path") is not False
+        uris.append(
+            build_per_server_resource_url(settings.registry_url, path, append_mcp=append_mcp)
+        )
+    uris = sorted(set(uris))
+    return {"identifier_uris": uris, "count": len(uris)}
+
+
+class InitiateRequest(BaseModel):
+    server_path: str
+
+
+@router.post("/egress-auth/initiate")
+async def initiate_consent(
+    request: Request,
+    body: InitiateRequest,
+    user_context: Annotated[dict, Depends(nginx_proxied_auth)],
+    _csrf: Annotated[None, Depends(verify_csrf_token_flexible)] = None,
+):
+    """Begin the OAuth consent for the current user; returns the authorize URL."""
+    _feature_enabled_or_404()
+    server_path = body.server_path
+    if not server_path.startswith("/"):
+        server_path = "/" + server_path
+    server = await server_service.get_server_info(server_path, include_credentials=True)
+    if (
+        not server
+        or server.get("egress_auth_mode") != "oauth_user"
+        or not server.get("egress_oauth")
+    ):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, detail="server has no per-user egress auth configured"
+        )
+
+    auth_method = user_context.get("auth_method") or ""
+    if not is_per_user_auth_method(auth_method):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, detail="this caller cannot connect a per-user account"
+        )
+
+    try:
+        url = get_egress_auth_service().build_consent_url(
+            auth_method=auth_method,
+            # Canonical egress user (OIDC sub, else username): must match the id the
+            # vend path derives from the mcp-proxy token so one human maps to one
+            # vault bucket regardless of token type / provider. See #933.
+            user_id=user_context.get("egress_user") or user_context.get("username") or "",
+            client_id_audit=user_context.get("client_id") or "",
+            session_id=user_context.get("session_id") or "",
+            server_path=server_path,
+            egress_oauth=server["egress_oauth"],
+        )
+    except EgressAuthError as exc:
+        # build_consent_url now validates the client secret before redirecting, so a
+        # server missing it fails here instead of after a pointless round trip to
+        # the provider. Same redaction rule as the callback: the exception text can
+        # embed SECRET_KEY hints, so log the type and return a fixed message.
+        logger.warning(f"egress consent refused server={server_path} type={type(exc).__name__}")
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "server's egress OAuth configuration is incomplete: the client "
+                "secret is missing or unreadable. Set it on the server's egress "
+                "auth config and try again."
+            ),
+        ) from exc
+    return {"authorize_url": url}
+
+
+@router.get("/oauth2/egress/callback")
+async def egress_callback(
+    request: Request,
+    code: str = "",
+    state: str = "",
+):
+    """Provider redirect target. No ingress auth -- the signed+encrypted state is
+    the authority. Verifies state (TTL + single-use + account-swap), exchanges the
+    code, and stores the token. Reached via nginx -> registry (no /validate)."""
+    if not code or not state:
+        return HTMLResponse("<h3>Connection failed: missing code/state.</h3>", status_code=400)
+
+    # The provider+server are bound in the signed state; we resolve the server's
+    # egress config to get client_id/secret for the code exchange. We decode the
+    # state-bound server_path indirectly via handle_callback, so fetch by the
+    # state after a light pre-decode is avoided -- instead the service needs the
+    # egress_oauth; resolve it from the state's server_path.
+    from registry.egress_auth.state_codec import InvalidState, decode_state
+
+    try:
+        st = decode_state(state)
+    except InvalidState:
+        return HTMLResponse("<h3>Connection failed: invalid state.</h3>", status_code=400)
+
+    # Feature gate applies to BOTH purposes. Discovery borrows a vaulted per-user
+    # token, so EGRESS_AUTH_ENABLED is a hard requirement for it too; exempting it
+    # here previously let a discovery consent write into the egress vault on a
+    # deployment whose vend path was switched off.
+    _feature_enabled_or_404()
+
+    server = await server_service.get_server_info(st.server_path, include_credentials=True)
+    if not server:
+        return HTMLResponse("<h3>Connection failed: server not configured.</h3>", status_code=400)
+    # Resolve the code-exchange config from the state-bound purpose: discovery
+    # uses the server's own backend-auth oauth config, egress uses egress_oauth.
+    if st.purpose == "discovery":
+        oauth_cfg = (server.get("oauth_discovery") or {}).get("oauth")
+    else:
+        oauth_cfg = server.get("egress_oauth")
+    if not oauth_cfg:
+        return HTMLResponse("<h3>Connection failed: server not configured.</h3>", status_code=400)
+
+    # Account-swap guard: cross-check the live session principal when present.
+    # The provider redirect often lands in a fresh tab with a valid session
+    # cookie (same browser), in which case we enforce it; if there is no live
+    # session, the signed+single-use state remains the authority (handle_callback
+    # still enforces TTL + replay + the state-bound (user, auth_method)).
+    current_user = None
+    current_method = None
+    session_cookie = request.cookies.get(settings.session_cookie_name)
+    if session_cookie:
+        try:
+            # Pass the cookie explicitly: nginx_proxied_auth's `session` is a
+            # FastAPI Cookie(...) param only populated by dependency injection, so
+            # a direct call without it always sees session=None (the account-swap
+            # guard would silently never engage).
+            ctx = await nginx_proxied_auth(request, session=session_cookie)
+            # Compare on the canonical egress user (OIDC sub, else username) so the
+            # account-swap guard matches the id the consent state was built with.
+            current_user = ctx.get("egress_user") or ctx.get("username")
+            current_method = ctx.get("auth_method")
+        except Exception:  # nosec B110 - best-effort auth context for account-swap guard
+            pass
+
+    try:
+        conn = await get_egress_auth_service().handle_callback(
+            code=code,
+            state_blob=state,
+            egress_oauth=oauth_cfg,
+            current_user_id=current_user,
+            current_auth_method=current_method,
+            bound_upstreams=bound_upstreams(server),
+        )
+    except EgressAuthError as exc:
+        # Detail to server logs only. Do NOT reflect the exception text into the
+        # browser response: EgressAuthError messages embed internal state (e.g.
+        # decryption / SECRET_KEY hints, wrapped upstream errors) -- a
+        # stack-trace/internal-detail exposure. Show a generic message.
+        #
+        # "Connection failed" was that generic message, and it cost real debugging
+        # time: it reads as a network fault, so the first place people look is DNS,
+        # TLS and firewalls, none of which are ever the cause here. By this point
+        # the request has arrived and been processed. Name the two things an
+        # operator can act on, and say where the reason is, without reproducing it.
+        logger.warning(f"egress callback failed type={type(exc).__name__}")
+        return HTMLResponse(
+            "<h3>Could not complete the connection.</h3>"
+            "<p>The request reached the registry, so this is not a network problem. "
+            "Either the sign-in took too long and the request expired, or this "
+            "server's egress OAuth configuration is incomplete.</p>"
+            "<p>Close this tab and try connecting again. If it fails a second time, "
+            "check the server's egress OAuth client ID and client secret. An "
+            "administrator can find the specific reason in the registry logs.</p>",
+            status_code=400,
+        )
+    except SecretStoreError as exc:
+        # The code exchange SUCCEEDED but persisting the token to the secret store
+        # (Vault/OpenBao) failed — the store already retried transient blips (HA
+        # leader election / pod restart), so landing here means the write did not
+        # persist. Critically, DO NOT fall through to the success page: that would
+        # tell the user they are "Connected" while no token was vaulted, leaving
+        # them with a silent "0 tools" and no signal to retry. Surface a clear,
+        # retryable error instead. Detail to logs only (may wrap internal store
+        # addresses). 503 == transient/backing-store issue, please retry.
+        logger.error("egress callback: code exchange ok but secret store write failed: %s", exc)
+        return HTMLResponse(
+            "<h3>Connection not saved.</h3>"
+            "<p>We couldn't store your connection because of a temporary storage "
+            "issue. Please close this tab and try connecting again in a minute.</p>",
+            status_code=503,
+        )
+
+    # The egress consent is the web Connected-Accounts / MCP URL-mode elicitation
+    # flow: the token is now vaulted, so show the close-tab page and let the user
+    # retry their original request. HTML-escape the interpolated values: the
+    # server_path is admin-registrant-supplied and validate_server_path blocks
+    # nginx metacharacters but not '<'/'>' (a different sink), so escape here to
+    # keep a crafted path (e.g. /<svg onload=...>) from executing in the browser.
+    return HTMLResponse(
+        f"<h3>Connected {escape(conn.provider)} for {escape(conn.server_path)}.</h3>"
+        "<p>You can close this tab and retry your request.</p>"
+    )
+
+
+@router.get("/egress-auth/connections")
+async def list_connections(
+    user_context: Annotated[dict, Depends(nginx_proxied_auth)],
+):
+    """List the current user's egress connections (tokens stripped)."""
+    _feature_enabled_or_404()
+    conns = await get_egress_auth_service().list_connections(
+        auth_method=user_context.get("auth_method") or "",
+        user_id=user_context.get("egress_user") or user_context.get("username") or "",
+    )
+    return [c.model_dump() for c in conns]
+
+
+@router.delete("/egress-auth/connections/{provider}/{server_path:path}")
+async def disconnect(
+    request: Request,
+    provider: str,
+    server_path: str,
+    user_context: Annotated[dict, Depends(nginx_proxied_auth)],
+    _csrf: Annotated[None, Depends(verify_csrf_token_flexible)] = None,
+):
+    """Delete the current user's vault entry for (provider, server_path)."""
+    _feature_enabled_or_404()
+    if not server_path.startswith("/"):
+        server_path = "/" + server_path
+    await get_egress_auth_service().disconnect(
+        auth_method=user_context.get("auth_method") or "",
+        user_id=user_context.get("egress_user") or user_context.get("username") or "",
+        provider=provider,
+        server_path=server_path,
+        purpose=keys.EGRESS_PURPOSE,
+    )
+    return {"status": "revoked"}

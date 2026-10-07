@@ -1,0 +1,10 @@
+{
+  "server_name": "Context7 MCP Server",
+  "description": "Up-to-date Docs for LLMs and AI code editors (Version 2 - Beta)",
+  "path": "/context7",
+  "version": "v2.0.0",
+  "status": "beta",
+  "proxy_pass_url": "https://mcp-v2.context7.com/mcp",
+  "supported_transports": ["streamable-http"],
+  "tags": ["documentation", "search", "libraries", "packages", "api-reference", "code-examples"]
+}

@@ -1,0 +1,423 @@
+"""
+System information and operational API routes.
+
+These endpoints provide system-level information for monitoring and display.
+"""
+
+import logging
+import os
+from datetime import UTC, datetime
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, HTTPException, status
+
+from ..auth.dependencies import nginx_proxied_auth
+from ..core.config import settings
+from ..core.update_check import get_state as get_update_check_state
+from ..version import __version__
+
+logger = logging.getLogger(__name__)
+router = APIRouter()
+
+
+# Global variables for server start time and stats caching
+_server_start_time: datetime | None = None
+_stats_cache: dict | None = None
+_stats_cache_time: datetime | None = None
+STATS_CACHE_TTL_SECONDS = 30  # Cache stats for 30 seconds
+
+
+def set_server_start_time(
+    start_time: datetime,
+) -> None:
+    """Set the server start time (called from main.py lifespan)."""
+    global _server_start_time
+    _server_start_time = start_time
+    logger.info(f"System routes: Server start time set to {start_time.isoformat()}")
+
+
+def get_server_start_time() -> datetime | None:
+    """Get the server start time.
+
+    Returns:
+        Server start time if set, None otherwise
+    """
+    return _server_start_time
+
+
+def _detect_deployment_type() -> str:
+    """Auto-detect deployment environment based on environment variables.
+
+    Detection order:
+    1. Kubernetes - Check for KUBERNETES_SERVICE_HOST
+    2. ECS - Check for ECS_CONTAINER_METADATA_URI
+    3. EC2 - Check for AWS_EXECUTION_ENV
+    4. Local - Default fallback
+
+    Returns:
+        Deployment type: "Kubernetes", "ECS", "EC2", or "Local"
+    """
+    # Check for Kubernetes
+    if os.getenv("KUBERNETES_SERVICE_HOST"):
+        return "Kubernetes"
+
+    # Check for ECS
+    if os.getenv("ECS_CONTAINER_METADATA_URI") or os.getenv("ECS_CONTAINER_METADATA_URI_V4"):
+        return "ECS"
+
+    # Check for EC2
+    if os.getenv("AWS_EXECUTION_ENV") == "AWS_ECS_EC2":
+        return "EC2"
+
+    # Default to Local
+    return "Local"
+
+
+async def _get_registry_stats() -> dict:
+    """Get current registry statistics (servers, agents, skills counts).
+
+    Uses efficient count() methods instead of loading all resources.
+
+    Returns:
+        Dictionary with servers, agents, skills counts
+    """
+    try:
+        # Import repositories
+        from registry.repositories.factory import (
+            get_agent_repository,
+            get_server_repository,
+            get_skill_repository,
+        )
+
+        # Get repository instances
+        server_repo = get_server_repository()
+        agent_repo = get_agent_repository()
+        skill_repo = get_skill_repository()
+
+        # Count resources efficiently using count() methods
+        servers_count = await server_repo.count()
+        agents_count = await agent_repo.count()
+        skills_count = await skill_repo.count()
+
+        return {
+            "servers": servers_count,
+            "agents": agents_count,
+            "skills": skills_count,
+        }
+    except Exception as e:
+        logger.error(f"Failed to get registry stats: {e}")
+        # Return zeros on error
+        return {
+            "servers": 0,
+            "agents": 0,
+            "skills": 0,
+        }
+
+
+async def _get_auth_status() -> dict:
+    """Check authentication server health and connection status.
+
+    Returns:
+        Dictionary with provider, status, and URL information
+    """
+    provider = settings.auth_provider
+    auth_url = settings.auth_server_url
+
+    # Try to ping the auth server health endpoint
+    try:
+        import httpx
+
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            # Try common health check endpoints
+            health_endpoints = [
+                f"{auth_url}/health",
+                f"{auth_url}/healthcheck",
+                f"{auth_url}/.well-known/openid-configuration",
+            ]
+
+            for endpoint in health_endpoints:
+                try:
+                    response = await client.get(endpoint)
+                    if response.status_code < 500:  # 2xx, 3xx, 4xx are all "reachable"
+                        return {
+                            "provider": provider,
+                            "status": "Healthy",
+                            "url": auth_url,
+                        }
+                except Exception:  # nosec B112 - health probe: try next endpoint on failure
+                    continue
+
+            # If all endpoints failed, auth server is unhealthy
+            return {
+                "provider": provider,
+                "status": "Unhealthy",
+                "url": auth_url,
+            }
+
+    except Exception as e:
+        logger.error(f"Auth server health check failed: {e}")
+        return {
+            "provider": provider,
+            "status": "Unhealthy",
+            "url": auth_url,
+        }
+
+
+async def _get_database_status() -> dict:
+    """Check database health and connection status.
+
+    Returns:
+        Dictionary with backend, status, and host information
+    """
+    backend = settings.storage_backend
+
+    # File backend has no database to check
+    if backend == "file":
+        return {
+            "backend": "file",
+            "status": "N/A",
+            "host": "N/A",
+        }
+
+    # DocumentDB/MongoDB backend - check connection
+    host_str = _describe_mongo_host()
+    try:
+        from registry.repositories.documentdb.client import get_documentdb_client
+
+        db = await get_documentdb_client()
+
+        # Try to ping the database (db is AsyncIOMotorDatabase, not client)
+        await db.command("ping")
+
+        return {
+            "backend": backend,
+            "status": "Healthy",
+            "host": host_str,
+        }
+    except Exception as e:
+        logger.error(f"Database health check failed: {e}")
+        return {
+            "backend": backend,
+            "status": "Unhealthy",
+            "host": host_str,
+        }
+
+
+def _describe_mongo_host() -> str:
+    """Describe the MongoDB host for the health endpoint without leaking creds.
+
+    When a full connection-string override is in use, parse the URI with
+    ``urllib.parse.urlsplit`` to extract the hostname only — stdlib parsing
+    strips the userinfo and triggers no DNS (unlike pymongo.uri_parser.parse_uri,
+    which resolves mongodb+srv:// records live).
+    """
+    if settings.mongodb_connection_string:
+        from urllib.parse import urlsplit
+
+        try:
+            host = urlsplit(settings.mongodb_connection_string).hostname
+            if host:
+                return host
+        except ValueError:
+            pass
+        return "(connection string override)"
+    return f"{settings.documentdb_host}:{settings.documentdb_port}"
+
+
+async def _get_registry_card_status() -> dict:
+    """Get registry card initialization status.
+
+    Returns:
+        Dictionary with registry card status information
+    """
+    try:
+        from registry.repositories.factory import get_registry_card_repository
+
+        repo = get_registry_card_repository()
+        card = await repo.get()
+
+        if card:
+            return {
+                "initialized": True,
+                "registry_id": str(card.id),
+                "name": card.name,
+            }
+        else:
+            return {
+                "initialized": False,
+                "registry_id": None,
+                "name": None,
+            }
+    except Exception as e:
+        logger.error(f"Failed to get registry card status: {e}")
+        return {
+            "initialized": False,
+            "registry_id": None,
+            "name": None,
+        }
+
+
+async def _get_cached_stats() -> dict:
+    """Get system stats with caching to reduce load.
+
+    Cache TTL: 30 seconds
+
+    Returns:
+        Cached or freshly computed stats dictionary
+    """
+    global _stats_cache, _stats_cache_time
+
+    now = datetime.now(UTC)
+
+    # Check if cache is valid
+    if (
+        _stats_cache is not None
+        and _stats_cache_time is not None
+        and (now - _stats_cache_time).total_seconds() < STATS_CACHE_TTL_SECONDS
+    ):
+        return _stats_cache
+
+    # Compute fresh stats
+    registry_stats = await _get_registry_stats()
+    database_status = await _get_database_status()
+    auth_status = await _get_auth_status()
+    registry_card_status = await _get_registry_card_status()
+
+    # Calculate uptime
+    if _server_start_time:
+        uptime_seconds = int((now - _server_start_time).total_seconds())
+        started_at = _server_start_time
+    else:
+        # Fallback if start time not set (shouldn't happen)
+        uptime_seconds = 0
+        started_at = now
+
+    stats = {
+        "uptime_seconds": uptime_seconds,
+        "started_at": started_at.isoformat(),
+        "version": __version__,
+        "deployment_type": _detect_deployment_type(),
+        "deployment_mode": settings.deployment_mode.value,
+        "internal_only_deployment": settings.internal_only_deployment,
+        "internal_deployment_type": settings.internal_deployment_type.value,
+        "registry_stats": registry_stats,
+        "database_status": database_status,
+        "auth_status": auth_status,
+        "registry_card_status": registry_card_status,
+    }
+
+    # Update cache
+    _stats_cache = stats
+    _stats_cache_time = now
+
+    return stats
+
+
+@router.get("/api/version")
+async def get_version():
+    """Get application version and unauthenticated UI metadata.
+
+    Includes ``ui_title`` so pre-auth pages (Login, Logout) can
+    render the operator-configured title without exposing the full /api/config
+    payload to unauthenticated callers.
+
+    Returns:
+        Dictionary with version string and ui_title.
+    """
+    return {
+        "version": __version__,
+        "ui_title": settings.effective_ui_title,
+    }
+
+
+@router.get("/api/system/telemetry-detection")
+async def get_telemetry_detection_info(
+    # Declared for its side effects: rejects unauthenticated callers with 401
+    # and populates request.state.user_context so the audit middleware logs
+    # the caller's real username instead of "anonymous".
+    _: Annotated[dict, Depends(nginx_proxied_auth)],
+) -> dict:
+    """Return the telemetry cloud-detection result for the current process.
+
+    Reads from the cached result in the telemetry module; no additional probes
+    are triggered. Lets operators verify how their instance was classified
+    without tailing logs.
+
+    Returns:
+        Dictionary with:
+        - cloud: aws/gcp/azure/unknown
+        - cloud_detection_method: env/dmi/ecs_meta/k8s_heuristic/imds/unknown
+    """
+    from ..core.telemetry import _resolve_cloud
+
+    # Use the resolved value so the displayed cloud honors operator overrides
+    # (MCP_CLOUD_PROVIDER env var and the registry-card cloud-provider hint),
+    # matching what is actually reported in telemetry events. The raw
+    # auto-detection cascade alone would, for example, report "aws" purely
+    # because AWS_REGION is set, even on an on-premises/local install.
+    cloud, method = await _resolve_cloud()
+    return {"cloud": cloud, "cloud_detection_method": method}
+
+
+@router.get("/api/stats")
+async def get_system_stats(
+    # Declared for its side effects: rejects unauthenticated callers with 401
+    # and populates request.state.user_context so the audit middleware logs
+    # the caller's real username instead of "anonymous".
+    _: Annotated[dict, Depends(nginx_proxied_auth)],
+):
+    """Get system statistics including uptime, deployment info, and registry metrics.
+
+    This endpoint provides operational information for monitoring and display:
+    - Application uptime since last restart
+    - Deployment environment and mode
+    - Registry resource counts (servers, agents, skills)
+    - Database health status
+    - Registry card initialization status
+
+    Response is cached for 30 seconds to reduce load.
+
+    Returns:
+        System statistics dictionary with:
+        - uptime_seconds: Time since server started
+        - started_at: ISO 8601 timestamp of server start
+        - version: Application version
+        - deployment_type: Kubernetes/ECS/EC2/Local
+        - deployment_mode: with-gateway/registry-only
+        - registry_stats: Object with servers, agents, skills counts
+        - database_status: Object with backend, status, host
+        - auth_status: Object with provider, status, url
+        - registry_card_status: Object with initialized, registry_id, name
+    """
+    try:
+        stats = await _get_cached_stats()
+        return stats
+    except Exception as e:
+        logger.error(f"Failed to get system stats: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to compute system statistics")
+
+
+@router.get("/api/system/update-check")
+async def get_update_check(
+    user_context: Annotated[dict, Depends(nginx_proxied_auth)],
+) -> dict:
+    """Return cached update-check state for admins.
+
+    Reads the most recent result of the background poller defined in
+    ``registry.core.update_check``. Never makes a network call itself.
+    Non-admins receive 403 — the registry running version is admin-only
+    operational metadata, and the GitHub release tag would otherwise leak
+    to any authenticated user.
+
+    Uses ``nginx_proxied_auth`` (not ``enhanced_auth``) so the endpoint works
+    with both a browser session cookie AND a Bearer JWT (validated by nginx,
+    forwarded as identity headers). This matches the sibling ``/api/stats`` and
+    ``/api/system/telemetry-detection`` routes and lets CLI / token-file callers
+    reach it the same way they reach the rest of ``/api/*``.
+    """
+    if not user_context.get("is_admin"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Administrator permissions are required for this operation",
+        )
+    return get_update_check_state().to_dict()

@@ -1,0 +1,67 @@
+{
+  "settings": {
+    "number_of_shards": 1,
+    "number_of_replicas": 1
+  },
+  "mappings": {
+    "properties": {
+      "server_path": {
+        "type": "keyword"
+      },
+      "scan_timestamp": {
+        "type": "date"
+      },
+      "scan_status": {
+        "type": "keyword"
+      },
+      "vulnerabilities": {
+        "type": "nested",
+        "properties": {
+          "severity": {
+            "type": "keyword"
+          },
+          "title": {
+            "type": "text"
+          },
+          "description": {
+            "type": "text"
+          },
+          "cve_id": {
+            "type": "keyword"
+          },
+          "package_name": {
+            "type": "keyword"
+          },
+          "package_version": {
+            "type": "keyword"
+          },
+          "fixed_version": {
+            "type": "keyword"
+          }
+        }
+      },
+      "risk_score": {
+        "type": "float"
+      },
+      "scan_metadata": {
+        "type": "object",
+        "enabled": false
+      },
+      "total_vulnerabilities": {
+        "type": "integer"
+      },
+      "critical_count": {
+        "type": "integer"
+      },
+      "high_count": {
+        "type": "integer"
+      },
+      "medium_count": {
+        "type": "integer"
+      },
+      "low_count": {
+        "type": "integer"
+      }
+    }
+  }
+}

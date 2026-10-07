@@ -1,0 +1,514 @@
+---
+name: release-notes
+description: "Create release notes for a new version tag. Gathers all commits, PRs, issues fixed, and breaking changes since a previous release. Creates the release notes markdown file, tags the repo, and pushes. Asks the user to confirm the base version to diff against."
+license: Apache-2.0
+metadata:
+  author: mcp-gateway-registry
+  version: "1.0"
+---
+
+# Release Notes Skill
+
+Use this skill when the user wants to create release notes for a new version. This skill gathers all changes since a previous release, writes structured release notes following the project's established format, tags the repo, and pushes.
+
+## Input
+
+The skill takes a version tag as input:
+- Format: `{major}.{minor}.{patch}` (e.g., `1.24.0`) - **no `v` prefix**, semver only
+- Older releases (pre-`1.23.0`) used a `v` prefix (e.g., `v1.0.22`) - existing artifacts under `docs/release-notes/v*.md` and tags `v1.0.x` are preserved as-is, but **new releases must use the bare-semver convention**
+- If the user provides a `v`-prefixed version for a new release, strip the prefix and confirm
+
+## Output
+
+Creates a release notes file in `docs/release-notes/` and tags the repo:
+- `docs/release-notes/{version}.md` - Release notes markdown file (e.g., `docs/release-notes/1.24.0.md`)
+- Git tag `{version}` pointing to the commit that includes the release notes
+
+## Workflow
+
+### Step 0: Confirm the Pre-Release Smoke Test Was Run (Gate)
+
+Before doing any release-notes work, confirm the end-to-end release smoke test
+([tests/e2e_release_test.py](../../../tests/e2e_release_test.py)) has been run
+against a live gateway and passed. This suite exercises the surface a release
+must not break: the registry is up, the built-in `airegistry-tools` server is
+healthy and its search tool works, servers/agents/skills support full CRUD,
+semantic search returns results, security scans run, and one real external MCP
+server (AWS knowledge base) is reachable end to end through the gateway proxy.
+
+1. **Ask the user, using AskUserQuestion**, whether they have already run the
+   release smoke test and it passed. Offer these options:
+   - "Yes, it passed" (proceed to Step 1)
+   - "No, run it now" (Recommended - run it for them, see below)
+   - "Skip it" (proceed, but see the warning below)
+
+2. **If the user asks you to run it**, run against the target gateway. It needs
+   an admin/M2M bearer token file (Keycloak tokens expire in ~5 minutes, so
+   regenerate first if unsure):
+   ```bash
+   # Local gateway with an admin token at ./.token
+   uv run python tests/e2e_release_test.py --token-file .token --registry-url http://localhost
+
+   # Remote gateway
+   uv run python tests/e2e_release_test.py \
+     --registry-url https://<gateway-host> --token-file .oauth-tokens/ingress.json
+   ```
+   The runner prints a pass/fail table and exits non-zero if any test fails.
+   - **If it exits non-zero (any FAILED), STOP.** Do not proceed with the
+     release. Report which tests failed and their messages, and help the user
+     investigate. A release must not be cut with a failing smoke test.
+   - **SKIPPED is acceptable** (e.g. the external AWS test skips on a network
+     outage rather than failing) - only FAILED is a hard block.
+
+3. **If the user chooses to skip it**, warn once that the release is being cut
+   without an end-to-end verification, then proceed only if they confirm.
+
+Only after this gate is resolved do you continue to Step 1.
+
+### Step 1: Determine the New Version Tag
+
+1. Parse the version from user input. If not provided, ask the user what version to release.
+2. Normalize to **bare semver** format (e.g., `v1.24.0` becomes `1.24.0`). Never prepend `v` for new releases.
+3. Verify the tag does not already exist: `git tag -l {version}`.
+4. If it exists, ask the user if they want to move it or choose a different version.
+
+### Step 2: Determine the Base Version (Ask User to Confirm)
+
+The release notes are incremental from a previous version. Determine the base version:
+
+1. List existing release notes files (covers both old `v`-prefixed and new bare-semver names):
+   ```bash
+   ls docs/release-notes/*.md
+   ```
+2. List existing git tags (any version-shaped tag, prefixed or bare):
+   ```bash
+   git tag --sort=-v:refname | grep -E '^v?[0-9]+\.[0-9]+\.[0-9]+'
+   ```
+3. Find the most recent tag. Note that the project switched from `v`-prefixed (`v1.0.22`) to bare-semver (`1.23.0`, `1.24.0`) - the most recent bare-semver tag is the right base for a new release.
+4. **Ask the user to confirm the base version** using AskUserQuestion. Present the most recent tag as the recommended option and the 2-3 previous tags as alternatives. The user may want to skip intermediate tags (e.g., diff from `1.23.0` to `1.25.0`, skipping `1.24.0`).
+
+### Step 3: Gather All Changes Between Base and HEAD
+
+Run these commands in parallel to gather change data:
+
+```bash
+# All commits (including merges) between base and HEAD
+git log {base_tag}..HEAD --oneline
+
+# Non-merge commits only (for detailed change analysis)
+git log {base_tag}..HEAD --oneline --no-merges
+
+# PR numbers in this release.
+#
+# DO NOT derive these from commit subjects. This repo is REBASE-AND-MERGE ONLY,
+# so there are no "Merge pull request" commits and no "(#NNNN)" suffixes:
+#   git log {base_tag}..HEAD --oneline --grep="Merge pull request"   -> 0 results
+#   git log {base_tag}..HEAD --oneline | grep -oE "\(#[0-9]+\)$"     -> 0 results
+# Those are the standard idioms on a squash-merge repo and they fail SILENTLY
+# here, returning an empty list that reads like "no PRs in this release".
+#
+# Enumerate from the GitHub API by merge time instead, and see the base-window
+# note below for which timestamp to use as the floor.
+gh pr list --state merged --limit 200 \
+  --json number,title,mergedAt,author,closingIssuesReferences \
+  --jq "sort_by(.number) | reverse | .[] | select(.mergedAt > \"$BASE_WINDOW\") | \"#\(.number)|\(.author.login)|\(.title)\""
+
+# Spot-check any individual PR's membership by ancestry, which is authoritative
+# regardless of merge strategy. Find the PR's commit on main by subject, then:
+#   git merge-base --is-ancestor <commit> {base_tag} && echo "already in {base_tag}"
+# Use this whenever a contributor asks why their PR is or is not listed.
+
+# Contributors -- direct authors of commits on main
+# WARNING: this misses co-authors of squash-merged PRs (Step 4 #10 explains).
+git log {base_tag}..HEAD --format="%aN" | sort | uniq -c | sort -rn
+
+# Contributors -- per-PR commit authors (catches squash-merge co-authors)
+# Squash merges collapse N branch commits into 1 commit on main authored by
+# the merger, so `git log` above will not show the actual code authors.
+# `gh pr view --json commits` returns the original branch commits with their
+# authors intact, which is the only reliable way to credit everyone.
+# $PR_NUMBERS comes from the gh pr list call above, NOT from commit subjects.
+for pr in $PR_NUMBERS; do
+  gh pr view $pr --json number,author,commits \
+    --jq '"PR #\(.number) | opener: \(.author.login) | commit_authors: \([.commits[].authors[].name] | unique | join(", "))"' 2>/dev/null
+done
+
+# Env var changes
+git diff {base_tag}..HEAD -- .env.example
+
+# Helm chart changes (any file change inside charts/ requires
+# `helm dependency build/update` for stack-chart consumers, even if
+# Chart.yaml dependency lists are unchanged - subchart templates,
+# values, and helpers are repackaged into .tgz on dependency rebuild).
+git diff {base_tag}..HEAD -- charts/ --stat
+
+# If ANY of these report changes, the upgrade instructions MUST tell
+# Helm/EKS users to run `helm dependency build` and `helm dependency update`:
+git diff {base_tag}..HEAD --stat -- 'charts/registry/' 'charts/auth-server/' 'charts/mcpgw/' 'charts/mcp-gateway-registry-stack/' 'charts/mongodb-configure/' 'charts/keycloak-configure/'
+
+# Helm chart dependency-list changes (separate signal: added/removed deps)
+git diff {base_tag}..HEAD -- charts/registry/Chart.yaml charts/auth-server/Chart.yaml charts/mcp-gateway-registry-stack/Chart.yaml charts/mcpgw/Chart.yaml
+
+# Establish the base window ONCE, and use the EARLIER of two timestamps.
+# The tag commit can be timestamped AFTER the GitHub release was published (seen
+# on 1.31.0: tag commit 2026-09-24T00:34:45Z, release published
+# 2026-09-23T22:34:13Z), in which case the tag-commit floor silently drops PRs
+# that belong in the new release. Taking the earlier of the two is inclusive, and
+# anything wrongly included is caught by the ancestry check above.
+BASE_TAG_DATE=$(git log -1 --format=%cI {base_tag})
+RELEASE_DATE=$(gh release view {base_tag} --json publishedAt --jq .publishedAt)
+BASE_WINDOW=$(printf '%s\n%s\n' "$BASE_TAG_DATE" "$RELEASE_DATE" | sort | head -1)
+echo "base window: $BASE_WINDOW"
+gh issue list --state closed --limit 200 --json number,title,closedAt,labels \
+  --jq ".[] | select(.closedAt >= \"$BASE_WINDOW\") | \"\(.number) | \(.title) | \(.closedAt)\""
+
+# Closed issues referenced by merged PRs in this release (most reliable mapping)
+# For each PR number, the PR body usually has "Closes #N" or "Fixes #N" -- gh
+# resolves these via the closingIssuesReferences field.
+for pr in $PR_NUMBERS; do
+  gh pr view $pr --json number,title,closingIssuesReferences \
+    --jq '"\(.number) | \(.title) | closes: \(.closingIssuesReferences | map("#\(.number)") | join(","))"' 2>/dev/null
+done
+```
+
+### Step 4: Categorize Changes
+
+Analyze all commits and PRs to categorize them:
+
+1. **Major Features**: New capabilities that warrant their own section with description and PR link. Look for commits with `feat:` prefix or PRs labeled `enhancement`/`feature-request`.
+
+2. **Breaking Changes**: Changes that require user action during upgrade. Check for:
+   - Helm chart dependency additions/removals (Chart.yaml changes)
+   - Renamed or removed environment variables (.env.example diff)
+   - Auth mechanism changes
+   - API endpoint changes (removed or renamed routes)
+   - Database schema changes
+
+3. **New Environment Variables**: Extract from `.env.example` diff -- any new variables added.
+
+4. **Bug Fixes**: Commits with `fix:` prefix or PRs labeled `bug`.
+
+5. **Security Fixes**: Commits mentioning security, CVE, injection, bypass, XSS, etc.
+
+6. **Infrastructure/Helm Changes**: Changes to charts/, terraform/, docker/.
+
+7. **Dependency Updates**: Dependabot PRs and manual dependency bumps.
+
+8. **Documentation**: Commits with `docs:` prefix.
+
+9. **Closed Issues**: Issues closed in the release window. Build from the
+   `closingIssuesReferences` of every merged PR in this release (most reliable -
+   GitHub auto-closes issues referenced by `Closes #N` / `Fixes #N` in PR
+   bodies), and supplement with manually-closed issues whose `closedAt` is
+   between the base-tag commit date and HEAD. De-duplicate by issue number.
+
+10. **Contributors**: Build the union of TWO sources, because neither alone is
+    complete:
+    - **Direct authors on main**: `git log {base_tag}..HEAD --format="%aN"` --
+      catches anyone who pushed commits directly or whose PR was rebase/merge-
+      committed.
+    - **Per-PR commit authors**: for every merged PR in this release, run
+      `gh pr view <num> --json commits --jq '[.commits[].authors[].name] | unique'`
+      and union the results -- catches co-authors of **squash-merged** PRs,
+      whose branch commits get collapsed into a single commit on main authored
+      by the merger. Without this step, every contributor on a squash-merged
+      branch except the merger is silently dropped.
+
+    Then for each unique contributor name, resolve to a GitHub username by
+    looking up a PR they appeared on:
+    - If they opened a PR: `gh pr view <num> --json author --jq .author.login`.
+    - If they were a co-author only (no PR opened): `gh pr view <num> --json commits --jq '.commits[].authors[] | select(.name == "<Display Name>") | .login'`
+      (the per-commit `authors` array carries the GitHub login).
+    - As a final fallback verify with `gh api users/<candidate>`; a 404 means
+      the guess is wrong. **Never synthesize a username from a display name**
+      ("Amit Arora" -> "amitarora" was wrong; the actual login is `aarora79`).
+
+### Step 5: Write Release Notes
+
+Create the file `docs/release-notes/{version}.md` following this exact structure
+(note: bare semver, no `v` prefix, e.g. `docs/release-notes/1.24.0.md`):
+
+```markdown
+# Release {version} - {Short Title Summarizing Major Features}
+
+**{Month} {Year}**
+
+---
+
+## Upgrading from {base_version}
+
+This section covers everything you need to know to upgrade from {base_version} to {version}.
+
+### Breaking Changes
+
+{List each breaking change with clear explanation and remediation steps.
+If no breaking changes, write: "There are no breaking changes in this release."}
+
+### New Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| {VAR_NAME} | {default} | {description} |
+
+{If no new env vars, write: "No new environment variables in this release."}
+
+### Upgrade Instructions
+
+#### Docker Compose
+
+```bash
+cd mcp-gateway-registry
+git pull origin main
+git checkout {version}
+
+# Review new env vars in .env.example and update your .env if needed
+# Then rebuild and restart:
+./build_and_run.sh
+```
+
+#### Kubernetes / Helm (EKS)
+
+```bash
+cd mcp-gateway-registry
+git pull origin main
+git checkout {version}
+
+# {If helm dependency changes: "REQUIRED: Rebuild dependencies"}
+cd charts/mcp-gateway-registry-stack
+helm dependency build
+helm dependency update
+
+# Update values.yaml if needed, then upgrade:
+helm upgrade mcp-gateway . -f your-values.yaml
+```
+
+{CRITICAL: Include the `helm dependency build` and `helm dependency update`
+commands whenever ANY file under `charts/` changes between base and HEAD,
+not just Chart.yaml dependency-list changes. The packaged subchart `.tgz`
+files inside `charts/mcp-gateway-registry-stack/charts/` are gitignored
+and only get repackaged when consumers run `helm dependency build/update`.
+If subchart templates/values/helpers changed, a plain `git pull` followed
+by `helm upgrade` will use the OLD packaged subcharts, missing the changes.
+
+Only omit `helm dependency build/update` if `git diff {base_tag}..HEAD --stat -- charts/`
+shows ZERO files changed.}
+
+#### Terraform / ECS
+
+```bash
+cd mcp-gateway-registry
+git pull origin main
+git checkout {version}
+
+# Update your .tfvars with any new variables
+cd terraform/aws-ecs
+terraform plan
+terraform apply
+```
+
+---
+
+## Major Features
+
+### {Feature Name}
+
+{Description of the feature -- what it does, why it matters, key capabilities as bullet points.}
+
+[PR #{number}](https://github.com/agentic-community/mcp-gateway-registry/pull/{number})
+
+{Repeat for each major feature.}
+
+---
+
+## What's New
+
+{Group changes by category using subsections. Use bullet points with PR/commit references.}
+
+### {Category Name}
+- {Change description} (#{pr_number})
+- {Change description} (#{pr_number})
+
+{Common categories: Deployment, Helm Chart Improvements, Security Fixes,
+Authentication, Infrastructure, Frontend Improvements, Documentation.
+Only include categories that have changes.}
+
+---
+
+## Bug Fixes
+
+- {Bug fix description} (#{pr_number})
+- {Bug fix description} (#{pr_number})
+
+---
+
+## Closed Issues
+
+| Issue | Title | Closed By |
+|-------|-------|-----------|
+| #{issue_number} | {issue_title} | {PR #{pr_number} or "manual"} |
+
+{List all issues closed in the release window, sorted by issue number
+descending. "Closed By" is the PR that closed the issue (via
+`closingIssuesReferences`) or "manual" for issues closed without a PR
+reference. If no issues were closed in this window, write:
+"No issues were closed in this release window."}
+
+---
+
+## Pull Requests Included
+
+| PR | Title |
+|----|-------|
+| #{number} | {title} |
+
+{List ALL merged PRs between base and HEAD, sorted by PR number descending.}
+
+---
+
+## Security Dependency Updates
+
+| Package | Previous | Updated | Scope |
+|---------|----------|---------|-------|
+| {package} | {old_version} | {new_version} | {scope} |
+
+{Only include this section if there are dependency version bumps.}
+
+---
+
+## Contributors
+
+Thank you to all contributors for this release:
+
+- **{Full Name}** ([@{github_username}](https://github.com/{github_username}))
+
+{List all contributors from the UNION of (a) direct authors on main and
+(b) per-PR commit authors via `gh pr view --json commits` (Step 4 #10).
+Resolve every GitHub username from a real PR -- via `.author.login` if they
+opened a PR, or via `.commits[].authors[].login` if they were a co-author
+only. Never synthesize usernames from display names. Sort by commit count
+descending.}
+
+---
+
+## Support
+
+- [GitHub Issues](https://github.com/agentic-community/mcp-gateway-registry/issues)
+- [GitHub Discussions](https://github.com/agentic-community/mcp-gateway-registry/discussions)
+- [Documentation](https://github.com/agentic-community/mcp-gateway-registry/tree/main/docs)
+
+---
+
+**Full Changelog:** [{base_version}...{version}](https://github.com/agentic-community/mcp-gateway-registry/compare/{base_version}...{version})
+```
+
+### Step 6: Present Draft for User Review
+
+After writing the release notes file:
+
+1. Tell the user the file has been created at `docs/release-notes/{version}.md`
+2. Present a brief summary:
+   - Number of major features
+   - Number of PRs included
+   - Number of bug fixes
+   - Number of closed issues
+   - Any breaking changes
+   - Contributor count
+3. Ask the user to review the file and confirm it looks good, or request changes
+
+### Step 7: Commit, Tag, and Push
+
+Once the user confirms the release notes are ready:
+
+1. **No navigation file needs editing.** There is no `mkdocs.yml` at the repo root; the only
+   one in the tree is under `.scratchpad/`, which is gitignored and unrelated. The published
+   site is built by `scripts/build_landing_page.py` (see `.github/workflows/docs.yml`), driven
+   by `README.md` and `landing/`, so a new `docs/release-notes/{version}.md` is picked up with
+   no nav change. Do NOT add `mkdocs.yml` to the release commit: it does not exist and `git add`
+   will fail.
+
+2. **Add a highlight entry and rotate the README's "What's New" (regrowth prevention).** The
+   README's `## What's New` section holds **exactly the 5 most-recent highlights**; the full
+   history lives in `docs/overview/feature-release-highlights.md`. On a release with a notable
+   user-facing feature:
+   - **Prepend** one curated highlight entry (headline + 1-3 sentences + doc links) to the top of
+     `docs/overview/feature-release-highlights.md`, just under its intro, matching the existing
+     bullet format.
+   - **Rotate the README:** add that same highlight as the new first bullet under `## What's New`
+     in `README.md`, then **delete the now-sixth bullet** so exactly five remain (the dropped one
+     already lives in the archive — this is a delete, not a re-copy). Keep the
+     "Older highlights → Feature & Release Highlights" line in place.
+   - This is the ONLY change the release cut makes to `README.md`. **Never add a new `##` section,
+     never let What's New exceed 5 bullets, and never touch any other part of the README** — those
+     require their own dedicated PR. The README has a CI line-budget (350 lines) that will fail the
+     build otherwise. A patch release with no user-facing feature skips this step entirely.
+
+3. **Open a PR; do not commit to `main`.** AGENTS.md requires branching first, and a direct
+   push to `main` bypasses the ~26 CI checks that gate everything else, including the README
+   line budget and the prose linter. Those are exactly the checks a release commit should face.
+   ```bash
+   git checkout -b release/{version}
+   git add docs/release-notes/{version}.md docs/overview/feature-release-highlights.md README.md
+   git commit -m "docs: add {version} release notes"
+   git push -u origin release/{version}
+   gh pr create --base main --title "docs: add {version} release notes" --body-file <(...)
+   ```
+   Wait for CI to pass, then merge. This repo is **rebase-and-merge only**, so a branch carrying
+   a merge commit cannot be merged; rebase and force-push instead.
+
+4. **Tag only after the PR is merged**, so the tag points at a commit on `main` that contains
+   the release notes:
+   ```bash
+   # If tag already exists, delete it locally and remotely first
+   git tag -d {version} 2>/dev/null || true
+   git push origin :refs/tags/{version} 2>/dev/null || true
+
+   # Tag the merged commit on main (bare semver, no v prefix)
+   git checkout main && git pull origin main
+   git tag {version}
+
+   # Push tag
+   git push origin {version}
+   ```
+
+5. **Verify:**
+   ```bash
+   git log --oneline -1
+   git tag -l {version} --format="%(refname:short) -> %(objectname:short)"
+   ```
+
+6. Tell the user the release notes are committed and the tag is created and pushed.
+
+## Important Rules
+
+- **Always run the Step 0 smoke-test gate first.** Confirm the end-to-end release smoke test (`tests/e2e_release_test.py`) was run and passed, or offer to run it. If it reports any FAILED test, STOP and do not cut the release. Only a user's explicit decision to skip may bypass this, and it must be warned about once.
+- **Never skip the user confirmation** for base version in Step 2. The user may want to create release notes that span multiple versions.
+- **Never include emojis** in the release notes file. The project CLAUDE.md prohibits emojis in documentation.
+- **Never include Claude Code attribution** or "Co-Authored-By" lines in commits.
+- **Always use the `docs/release-notes/` directory** for the output file.
+- **Always include upgrade instructions** for all three deployment methods (Docker Compose, Helm/EKS, Terraform/ECS).
+- **Always list breaking changes first** in the upgrade section -- this is the most critical information for operators.
+- **Always verify Helm Chart.yaml diffs** to detect dependency additions/removals -- these are the most common breaking changes for EKS users.
+- **Always check the full `charts/` tree diff**, not just `Chart.yaml`. If ANY file under `charts/` changed between base and HEAD, the upgrade instructions MUST include `helm dependency build` and `helm dependency update` for stack-chart consumers. The packaged `.tgz` subcharts inside `charts/mcp-gateway-registry-stack/charts/` are gitignored and only repackage when those commands run -- a plain `git pull` + `helm upgrade` will silently use stale subcharts.
+- **Never enumerate PRs from commit subjects.** This repo is rebase-and-merge
+  only, so there are no `Merge pull request` commits and no `(#NNNN)` suffixes.
+  Both standard idioms return an EMPTY list rather than an error, which reads
+  like "no PRs in this release" and is how a whole release nearly went out
+  undercounted. Enumerate with `gh pr list --state merged` filtered on
+  `mergedAt`, and verify any individual PR with
+  `git merge-base --is-ancestor <commit> <base_tag>`.
+- **Take the earlier of the tag-commit date and the release publication date**
+  as the base window. They are not the same and the tag commit can be the later
+  of the two (1.31.0: tag commit `2026-09-24T00:34:45Z`, release published
+  `2026-09-23T22:34:13Z`), so using the tag commit alone drops PRs that belong
+  in the new release.
+- **Check whether the version already exists before planning it.** `gh release
+  list` is the source of truth, not the `v1.0.x` tags in the local repo, which
+  are from the older scheme and look like the latest when sorted naively. A
+  request to "release 1.31.0" may be a request for the version after it.
+- **Always credit squash-merge co-authors.** `git log {base}..HEAD` only sees the squashed commit's single author, so co-authors on the source branch get dropped. Always also iterate every merged PR with `gh pr view <num> --json commits --jq '[.commits[].authors[].name] | unique'` and union the results into the contributor list.
+- **Never synthesize GitHub usernames from display names.** Resolve every login from a real PR (`gh pr view <num> --json author` for openers, or `.commits[].authors[].login` for co-authors), and verify uncertain ones with `gh api users/<candidate>` (404 = wrong guess). Past mistakes: "Amit Arora" -> `amitarora` (wrong; actual: `aarora79`); "Nathan Fernandes Pedroza" -> `nathanfernandes` (wrong; actual: `nathanzilgo`).
+
+## Example Usage
+
+```
+User: /release-notes v1.0.16

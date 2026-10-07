@@ -1,0 +1,10 @@
+{
+  "peer_id": "peer-registry-lob-1",
+  "name": "LOB-1 Peer Registry",
+  "endpoint": "https://mcpregistry.ddns.net",
+  "enabled": true,
+  "sync_mode": "all",
+  "sync_interval_minutes": 60,
+  "federation_token": "your-actual-token-here"
+
+}

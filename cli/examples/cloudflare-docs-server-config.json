@@ -1,0 +1,17 @@
+{
+  "server_name": "Cloudflare Documentation MCP Server",
+  "description": "Search Cloudflare documentation and get migration guides",
+  "path": "/cloudflare-docs",
+  "proxy_pass_url": "https://docs.mcp.cloudflare.com/mcp",
+  "supported_transports": ["streamable-http"],
+  "tags": ["documentation", "cloudflare", "cdn", "workers", "pages", "migration-guide"],
+  "status": "active",
+  "provider_organization": "Cloudflare Inc.",
+  "provider_url": "https://www.cloudflare.com",
+  "visibility": "public",
+  "metadata": {
+    "category": "documentation",
+    "official": true,
+    "mcp_compatible": "1.0"
+  }
+}
