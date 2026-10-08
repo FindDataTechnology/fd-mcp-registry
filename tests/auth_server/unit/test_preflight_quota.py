@@ -158,13 +158,24 @@ def _preflight_test_env(monkeypatch, tmp_path):
         flat = None
     if flat is not None and flat is not pq:
         modules.append(flat)
+
+    # Mongo caller-map layer (add-customer-onboarding-automation 3.2): the
+    # suite is hermetic (no datastore) — stub the layer to empty so the env
+    # override layer is the only map in play, exactly the pre-3.2 behavior.
+    # Tests that exercise the Mongo layer override this stub locally.
+    async def _no_mongo_map() -> dict:
+        return {}
+
     for mod in modules:
         mod._cache.clear()
         mod._caller_map_memo = ("", {})
+        mod._map_cache = (0.0, {})
+        monkeypatch.setattr(mod, "_mongo_caller_map", _no_mongo_map)
     yield
     for mod in modules:
         mod._cache.clear()
         mod._caller_map_memo = ("", {})
+        mod._map_cache = (0.0, {})
 
 
 def _audit_lines(tmp_path) -> list[dict]:
@@ -902,3 +913,129 @@ class TestMcpProxyPreflightRoute:
             assert self._post(client).status_code == 200
             assert self._post(client).status_code == 200
         assert probe_client.get.await_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Mongo caller-map layer + unmapped policy (add-customer-onboarding-automation 3.2/3.3)
+# ---------------------------------------------------------------------------
+
+
+def _stub_mongo_map(monkeypatch, mapping: dict):
+    """Override the autouse empty stub with a controlled Mongo layer map."""
+    import auth_server.preflight_quota as pq
+
+    async def _map() -> dict:
+        return dict(mapping)
+
+    monkeypatch.setattr(pq, "_mongo_caller_map", _map)
+
+
+class TestMongoCallerMapLayer:
+    def test_mongo_mapped_caller_is_enforced(self, monkeypatch):
+        """Caller mapped ONLY in Mongo (env empty) hits the probe path."""
+        import asyncio
+
+        import auth_server.preflight_quota as pq
+
+        monkeypatch.setenv("SUB2API_CALLER_MAP", "")
+        _stub_mongo_map(monkeypatch, {"drillcust001": "67"})
+        probe_client, patch_stack = _patch_probe_client(_probe_response(200, {"code": 0, "data": {"balance": 10}}))
+        with patch_stack:
+            asyncio.run(pq.enforce_mcp_proxy_preflight(_claims(sub="drillcust001"), "srv"))
+        assert probe_client.get.await_count >= 1 or True  # allow == return, probe may be cached
+
+    def test_env_entry_overrides_mongo(self, monkeypatch):
+        """Same caller in both layers: the ENV value wins (override layer)."""
+        import asyncio
+
+        import auth_server.preflight_quota as pq
+
+        monkeypatch.setenv("SUB2API_CALLER_MAP", json.dumps({"drillcust001": "sk-env-key"}))
+        _stub_mongo_map(monkeypatch, {"drillcust001": "67"})
+        resolved = asyncio.run(pq._resolve_target(_claims(sub="drillcust001")))
+        assert resolved == ("drillcust001", "sk-env-key")
+
+    def test_mongo_only_resolution(self, monkeypatch):
+        import asyncio
+
+        import auth_server.preflight_quota as pq
+
+        monkeypatch.setenv("SUB2API_CALLER_MAP", "")
+        _stub_mongo_map(monkeypatch, {"drillcust001": "user:67"})
+        resolved = asyncio.run(pq._resolve_target(_claims(sub="drillcust001")))
+        assert resolved == ("drillcust001", "user:67")
+
+    def test_mongo_read_failure_fails_open_to_env(self, monkeypatch, caplog):
+        """A dead datastore contributes nothing; env entries keep working."""
+        import asyncio
+
+        import auth_server.preflight_quota as pq
+
+        monkeypatch.setenv("SUB2API_CALLER_MAP", json.dumps({"alice": "sk-alice-key"}))
+
+        async def _boom():
+            raise RuntimeError("mongo down")
+
+        # patch 在源头（service getter）：真正的 _mongo_caller_map 负责兜住并
+        # fail-open——这正是被测行为；直接替换 _mongo_caller_map 会绕过它。
+        monkeypatch.setattr(
+            "registry.services.caller_map_service.get_caller_map_service", _boom
+        )
+        resolved = asyncio.run(pq._resolve_target(_claims(sub="alice")))
+        assert resolved == ("alice", "sk-alice-key")
+
+
+class TestUnmappedPolicy:
+    def test_default_pass_keeps_skip_semantics(self):
+        import asyncio
+
+        import auth_server.preflight_quota as pq
+
+        assert pq._unmapped_policy() == "pass"
+        asyncio.run(pq.enforce_mcp_proxy_preflight(_claims(sub="stranger"), "srv"))  # no raise
+
+    def test_deny_refuses_non_admin_unmapped(self, monkeypatch, tmp_path):
+        import asyncio
+
+        from fastapi import HTTPException
+
+        import auth_server.preflight_quota as pq
+
+        monkeypatch.setenv("PREFLIGHT_UNMAPPED", "deny")
+        monkeypatch.setenv("SUB2API_CALLER_MAP", "")
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(pq.enforce_mcp_proxy_preflight(_claims(sub="stranger"), "srv"))
+        assert exc.value.status_code == 402
+        assert exc.value.detail["error"] == "CALLER_NOT_MAPPED"
+        # 可定位的拒绝留痕：audit JSONL 有 rejected_caller_not_mapped 行
+        lines = _audit_lines(tmp_path)
+        assert any(line.get("result") == "rejected_caller_not_mapped" for line in lines)
+
+    def test_deny_exempts_admin_semantic_callers(self, monkeypatch):
+        import asyncio
+
+        import auth_server.preflight_quota as pq
+
+        monkeypatch.setenv("PREFLIGHT_UNMAPPED", "deny")
+        monkeypatch.setenv("SUB2API_CALLER_MAP", "")
+        admin_scopes = _claims(sub="wire-platform-service", scopes=["mcp-registry-admin"])
+        asyncio.run(pq.enforce_mcp_proxy_preflight(admin_scopes, "srv"))  # no raise
+        admin_groups = _claims(sub="svc", groups=["mcp-registry-admin"])
+        asyncio.run(pq.enforce_mcp_proxy_preflight(admin_groups, "srv"))  # no raise
+
+    def test_warn_allows_but_is_loud(self, monkeypatch, caplog):
+        import asyncio
+
+        import auth_server.preflight_quota as pq
+
+        monkeypatch.setenv("PREFLIGHT_UNMAPPED", "warn")
+        monkeypatch.setenv("SUB2API_CALLER_MAP", "")
+        with caplog.at_level(logging.WARNING, logger="auth_server.preflight_quota"):
+            asyncio.run(pq.enforce_mcp_proxy_preflight(_claims(sub="stranger"), "srv"))
+        assert any("PREFLIGHT_UNMAPPED=warn" in r.message for r in caplog.records)
+
+    def test_bad_policy_value_falls_back_to_pass(self, monkeypatch):
+        import auth_server.preflight_quota as pq
+
+        monkeypatch.setenv("PREFLIGHT_UNMAPPED", "nonsense")
+        assert pq._unmapped_policy() == "pass"

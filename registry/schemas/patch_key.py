@@ -14,7 +14,7 @@ mappings are resolved per request so scope changes take effect immediately.
 
 from datetime import datetime
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 # Key lifecycle states. Revocation is one-way: there is no transition back to
 # active (the API exposes no un-revoke).
@@ -25,13 +25,41 @@ _KEY_NAME_PATTERN_MAX: int = 128
 
 
 class PatchKeyCreate(BaseModel):
-    """Request body for POST /api/patch-keys."""
+    """Request body for POST /api/patch-keys.
+
+    ``username``/``groups`` are the admin-only mint-on-behalf-of fields
+    (add-customer-onboarding-automation 4.1): when EITHER is present the
+    route requires an admin caller and the minted key is owned by ``username``
+    with exactly the given groups snapshot — never the caller's own. They are
+    designed as a pair: minting with custom groups but the caller's username
+    (or vice versa) is the mis-shaped half that produces keys with the wrong
+    owner or an accidental privilege copy, so the fields are validated to be
+    both-or-neither.
+    """
 
     name: str = Field(
         ...,
         min_length=1,
         max_length=_KEY_NAME_PATTERN_MAX,
         description="Human-readable label for the key (e.g. 'ci-runner')",
+    )
+    username: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=256,
+        description=(
+            "ADMIN ONLY: mint on behalf of this user (the key's owner/sub). "
+            "Must be set together with groups."
+        ),
+    )
+    groups: list[str] | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "ADMIN ONLY: exact groups snapshot for the minted key (e.g. "
+            '["wire-customers", "wire-cust-<cid>"]). Must be set together '
+            "with username."
+        ),
     )
 
     @field_validator("name")
@@ -41,6 +69,35 @@ class PatchKeyCreate(BaseModel):
         if not v:
             raise ValueError("name must not be blank")
         return v
+
+    @field_validator("username")
+    @classmethod
+    def _strip_username(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip()
+        if not v:
+            raise ValueError("username must not be blank")
+        return v
+
+    @field_validator("groups")
+    @classmethod
+    def _clean_groups(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return None
+        cleaned = sorted({g.strip() for g in v if g.strip()})
+        if not cleaned:
+            raise ValueError("groups must contain at least one non-blank name")
+        return cleaned
+
+    @model_validator(mode="after")
+    def _pair_username_groups(self) -> "PatchKeyCreate":
+        if (self.username is None) != (self.groups is None):
+            raise ValueError(
+                "username and groups are admin mint-on-behalf-of fields and "
+                "must be provided together (owner + exact snapshot, as a pair)"
+            )
+        return self
 
 
 class PatchKeyInfo(BaseModel):

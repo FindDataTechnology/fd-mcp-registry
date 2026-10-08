@@ -240,28 +240,45 @@ class PatchKeyService:
         docs = await cursor.to_list(length=None)
         return [_doc_to_info(d) for d in docs]
 
-    async def revoke_key(self, *, key_id: str, username: str) -> PatchKeyInfo:
-        """Revoke one of the user's keys. One-way: no un-revoke exists.
+    async def revoke_key(
+        self, *, key_id: str, username: str | None = None
+    ) -> PatchKeyInfo:
+        """Revoke a key. One-way: no un-revoke exists.
+
+        ``username`` scopes the revoke to the OWNER (the console API's
+        default: a cross-user revoke reports "not found", no existence
+        oracle). ``username=None`` is the admin path
+        (add-customer-onboarding-automation 4.2): any key by key_id — the
+        route layer gates it on an admin caller; deprovision automation uses
+        it to revoke customer keys without impersonating the owner.
 
         Raises:
-            PatchKeyNotFound: no key with this key_id belongs to this user.
+            PatchKeyNotFound: no key with this key_id (for the owner, when
+                username is given).
             PatchKeyAlreadyRevoked: the key was already revoked.
         """
-        doc = await self._collection.find_one({"key_id": key_id, "username": username})
+        query: dict = {"key_id": key_id}
+        if username is not None:
+            query["username"] = username
+        doc = await self._collection.find_one(query)
         if doc is None:
             raise PatchKeyNotFound(key_id)
         if doc.get("status") != PATCH_KEY_STATUS_ACTIVE:
             raise PatchKeyAlreadyRevoked(key_id)
 
         now = datetime.utcnow()
+        update_query: dict = {"key_id": key_id, "status": PATCH_KEY_STATUS_ACTIVE}
+        if username is not None:
+            update_query["username"] = username
         await self._collection.update_one(
-            {"key_id": key_id, "username": username, "status": PATCH_KEY_STATUS_ACTIVE},
+            update_query,
             {"$set": {"status": PATCH_KEY_STATUS_REVOKED, "revoked_at": now}},
         )
         logger.info(
-            "Revoked patch key key_id=%s for username=%s (irreversible)",
+            "Revoked patch key key_id=%s for username=%s (irreversible%s)",
             key_id,
-            username,
+            doc.get("username"),
+            ", admin path" if username is None else "",
         )
         updated = await self._collection.find_one({"key_id": key_id})
         return _doc_to_info(updated if updated is not None else doc)

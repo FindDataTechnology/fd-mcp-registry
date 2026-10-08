@@ -74,7 +74,18 @@ and is gray-released by the deploy switches (task 2.3's A/B requirement):
 - ``PREFLIGHT_ENABLED``       (default false)
 - ``SUB2API_BASE``            (e.g. https://router.finddatatech.cloud)
 - ``SUB2API_ADMIN_KEY``       admin API key (``x-api-key``), user-id probes
-- ``SUB2API_CALLER_MAP``      JSON object, see above
+- ``SUB2API_CALLER_MAP``      JSON object, see above — **override layer**: entries
+                               here win over the ``sub2api_caller_map`` Mongo
+                               collection (add-customer-onboarding-automation
+                               3.2; retires once every live caller is in Mongo)
+- ``PREFLIGHT_MAP_TTL``       seconds, default 30; Mongo map re-read cadence
+- ``PREFLIGHT_UNMAPPED``      ``pass`` (default) | ``warn`` | ``deny`` — what
+                               happens to a caller found in NEITHER layer.
+                               ``deny`` fails closed EXCEPT for admin-semantic
+                               callers (``mcp-registry-admin`` scope/group:
+                               platform credentials bill to the platform
+                               account, not a customer balance), which keep
+                               the skip-and-pass behavior.
 - ``PREFLIGHT_MODE``          ``strict`` (default) | ``postpaid``
 - ``PREFLIGHT_CACHE_TTL``     seconds, default 30; 0 disables caching
 - ``PREFLIGHT_AUDIT_PATH``    JSONL sink, default logs/audit/preflight_quota.jsonl
@@ -194,6 +205,98 @@ def _cache_ttl() -> float:
         return 30.0
 
 
+def _map_ttl() -> float:
+    """Mongo caller-map re-read cadence (add-customer-onboarding-automation 3.2).
+
+    Same parsing discipline as ``_cache_ttl``: an onboarding write becomes
+    effective within this bounded window (default 30s), no restart, no reload.
+    """
+    try:
+        raw = os.getenv("PREFLIGHT_MAP_TTL")
+        if raw is None or raw.strip() == "":
+            return 30.0
+        return max(0.0, float(raw))
+    except (TypeError, ValueError):
+        return 30.0
+
+
+def _unmapped_policy() -> str:
+    """pass | warn | deny for callers absent from BOTH map layers (3.3)."""
+    policy = (os.getenv("PREFLIGHT_UNMAPPED") or "pass").strip().lower()
+    return policy if policy in ("pass", "warn", "deny") else "pass"
+
+
+def _is_admin_caller(claims: dict) -> bool:
+    """Admin-semantic caller (platform credential): exempt from the customer
+    balance gate — its metering attributes to the platform track (dual-
+    credential attribution), so the unmapped-deny policy never bites it."""
+    if not isinstance(claims, dict):
+        return False
+    marker = "mcp-registry-admin"
+    scopes = claims.get("scopes")
+    groups = claims.get("groups")
+    if isinstance(scopes, list) and marker in scopes:
+        return True
+    if isinstance(groups, list) and marker in groups:
+        return True
+    return False
+
+
+#: Hard ceiling on one Mongo map refresh. A datastore that cannot answer in
+#: two seconds is DOWN for our purposes; the env override layer carries the
+#: request and the error-cache window throttles retries.
+_MAP_READ_TIMEOUT = 2.0
+
+
+# Mongo caller-map snapshot cache (3.2): {expiry-monotonic, map}. Refreshed at
+# _map_ttl cadence; a read error is cached as empty for a SHORT window so a
+# flapping datastore does not hammer the collection, and the env override
+# layer keeps the last-known rows usable in the meantime.
+_map_cache: tuple[float, dict[str, str]] = (0.0, {})
+
+
+async def _mongo_caller_map() -> dict[str, str]:
+    """Read the ``sub2api_caller_map`` collection behind the TTL cache.
+
+    Fail-open by design (mirrors the env map's philosophy): on datastore
+    error/timeout the layer contributes nothing and the ERROR line surfaces
+    it — ``PREFLIGHT_ENABLED`` remains the kill switch and mapped-in-env
+    callers keep working. The read is bounded by ``_MAP_READ_TIMEOUT`` so a
+    down datastore costs at most a couple of seconds on one request per
+    short error-cache window, never the motor client's default 30s
+    server-selection wait on every refresh.
+    """
+    global _map_cache
+    now = time.monotonic()
+    if now < _map_cache[0]:
+        return _map_cache[1]
+    mapping: dict[str, str] = {}
+    try:
+        import asyncio
+
+        from registry.services.caller_map_service import get_caller_map_service
+
+        service = await get_caller_map_service()
+        mapping = await asyncio.wait_for(service.get_map(), timeout=_MAP_READ_TIMEOUT)
+        _map_cache = (now + _map_ttl(), mapping)
+        return mapping
+    except Exception as exc:  # noqa: BLE001 - fail-open to env-only layer
+        logger.error(
+            "sub2api_caller_map read failed (%s); falling back to env-only "
+            "caller map for up to %.0fs",
+            type(exc).__name__,
+            min(_map_ttl(), 5.0),
+        )
+        _map_cache = (now + min(_map_ttl(), 5.0), {})
+        return {}
+
+
+def _reset_caller_map_cache() -> None:
+    """Test hook: drop the Mongo map snapshot so the next read re-fetches."""
+    global _map_cache
+    _map_cache = (0.0, {})
+
+
 def _audit_path() -> str:
     return (os.getenv("PREFLIGHT_AUDIT_PATH") or "logs/audit/preflight_quota.jsonl").strip()
 
@@ -247,12 +350,15 @@ def _caller_map() -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 
-def _resolve_target(claims: dict) -> tuple[str, str] | None:
+async def _resolve_target(claims: dict) -> tuple[str, str] | None:
     """Resolve the verified proxy-token claims to a (caller, map-value) pair.
 
-    Returns ``None`` when the caller is not in the map (skip -> pass).
+    Two-layer map (3.2): the ``sub2api_caller_map`` Mongo collection is the
+    system of record (written by onboarding); ``SUB2API_CALLER_MAP`` env
+    entries OVERRIDE it per-key during the migration. Returns ``None`` when
+    the caller is in neither layer (-> the unmapped policy).
     """
-    caller_map = _caller_map()
+    caller_map = {**await _mongo_caller_map(), **_caller_map()}
     if not caller_map:
         return None
     # Claim precedence: `sub` is the username for JWT AND patch-key callers
@@ -330,8 +436,9 @@ async def _cache_put(key: str, verdict: str, reason: str, ttl: float) -> None:
 
 
 def reset_preflight_cache() -> None:
-    """Test/ops helper: drop all cached verdicts."""
+    """Test/ops helper: drop all cached verdicts and the Mongo map snapshot."""
     _cache.clear()
+    _reset_caller_map_cache()
 
 
 # ---------------------------------------------------------------------------
@@ -510,22 +617,61 @@ async def enforce_mcp_proxy_preflight(
     """Pre-forward quota preflight for the /mcp-proxy hop.
 
     Returns silently when the forward may proceed; raises ``HTTPException``
-    (402 ``INSUFFICIENT_BALANCE`` / 503 ``BILLING_UNAVAILABLE``) when it must
-    not. Call this AFTER scope authorization so a genuine 403 can never be
-    masked by a billing verdict, and BEFORE any egress/upstream work so a
-    refused request costs nothing.
+    (402 ``INSUFFICIENT_BALANCE`` / 503 ``BILLING_UNAVAILABLE`` / 402
+    ``CALLER_NOT_MAPPED`` under the deny policy) when it must not. Call this
+    AFTER scope authorization so a genuine 403 can never be masked by a
+    billing verdict, and BEFORE any egress/upstream work so a refused request
+    costs nothing.
 
-    Fast no-op paths (no I/O, no log spam): feature disabled; caller not in
-    SUB2API_CALLER_MAP (internal users are unaffected by design).
+    Fast no-op paths (no I/O, no log spam): feature disabled; unmapped caller
+    under the default ``pass`` policy (internal users are unaffected by design).
     """
     if not _preflight_enabled():
         return
 
-    resolved = _resolve_target(claims)
+    resolved = await _resolve_target(claims)
     if resolved is None:
-        # Unmapped caller: v1 has no sub2api identity for it — skip (pass).
+        # Unmapped caller: neither the Mongo map nor the env override knows a
+        # sub2api identity for them (add-customer-onboarding-automation 3.3).
+        # Platform credentials (admin semantics) always pass — their metering
+        # attributes to the platform track, not a customer balance.
+        if _is_admin_caller(claims):
+            logger.debug(
+                "preflight: unmapped admin-semantic caller; skipping (server=%s)",
+                server_name,
+            )
+            return
+        policy = _unmapped_policy()
+        if policy == "deny":
+            _write_audit_event(
+                caller=(claims.get("sub") or claims.get("egress_user") or "unknown"),
+                server=server_name,
+                result="rejected_caller_not_mapped",
+                reason="no sub2api identity in either map layer",
+                mode=_preflight_mode(),
+                target_kind="none",
+            )
+            logger.warning(
+                "preflight: refusing unmapped caller=%s server=%s "
+                "(PREFLIGHT_UNMAPPED=deny — onboarding gap, not a balance issue)",
+                claims.get("sub") or claims.get("egress_user"),
+                server_name,
+            )
+            raise _reject(
+                402,
+                "CALLER_NOT_MAPPED",
+                "该调用者未完成计费开户映射（配置缺口），请联系平台完成开户",
+            )
+        if policy == "warn":
+            logger.warning(
+                "preflight: unmapped caller=%s server=%s (PREFLIGHT_UNMAPPED=warn; "
+                "allowing — fix the onboarding gap)",
+                claims.get("sub") or claims.get("egress_user"),
+                server_name,
+            )
+            return
         logger.debug(
-            "preflight: caller not in SUB2API_CALLER_MAP; skipping (server=%s)",
+            "preflight: caller not in caller map; skipping (server=%s)",
             server_name,
         )
         return
