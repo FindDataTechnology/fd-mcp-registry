@@ -4743,19 +4743,19 @@ async def validate_request(request: Request):
                 _tier = is_tier_gated(validation_result, server_name)
                 if _tier:
                     logger.info(
-                        "Tier gate: %s -> %s requires tier '%s' (402)",
+                        "Tier gate: %s -> %s requires tier '%s' (403 marker; nginx rewrites to 402)",
                         hash_username(validation_result.get("username", "")),
                         server_name,
                         _tier,
                     )
-                    raise HTTPException(
-                        status_code=402,
-                        detail={
-                            "error": "TIER_REQUIRED",
-                            "tier": _tier,
-                            "message": f"该服务属「{_tier}」档；当前免费档不可用，升级后即可调用。",
-                        },
-                        headers={"Connection": "close"},
+                    # nginx auth_request only forwards 401/403 (anything else
+                    # becomes a 500 at the client). Same pattern as the rate
+                    # limiter: answer 403 with a marker header; the data-plane
+                    # location captures it via auth_request_set and
+                    # @forbidden_error rewrites it into the real 402 + body.
+                    return JSONResponse(
+                        status_code=403,
+                        headers={"X-Tier-Required": _tier, "Connection": "close"},
                     )
 
             # Check if user has any scopes - if not, deny access (fail closed)

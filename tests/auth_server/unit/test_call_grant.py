@@ -269,10 +269,11 @@ class TestTierGateOnValidate:
                     "X-Original-URL": "https://example.com/law-bench/mcp",
                 },
             )
-        assert response.status_code == 402, response.text
-        body = response.json()
-        assert body["detail"]["error"] == "TIER_REQUIRED"
-        assert body["detail"]["tier"] == "paid"
+        # nginx auth_request only forwards 401/403: the gate answers 403 with
+        # an X-Tier-Required marker; the data-plane location rewrites it to
+        # 402 + body (mirrors the rate limiter's 403->429 pattern).
+        assert response.status_code == 403, response.text
+        assert response.headers.get("x-tier-required") == "paid"
 
     def test_open_data_server_not_gated(self, monkeypatch, tmp_path):
         import auth_server.server as server_module
