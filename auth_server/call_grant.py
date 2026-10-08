@@ -134,7 +134,15 @@ def _body_counts(body: bytes | None) -> bool:
 def _is_patch_key_caller(claims: dict[str, Any]) -> bool:
     auth_method = str(claims.get("auth_method") or claims.get("method") or "").lower()
     client_id = str(claims.get("client_id") or "").lower()
-    return any(marker in (auth_method, client_id) for marker in _PATCH_KEY_MARKERS)
+    if any(marker in (auth_method, client_id) for marker in _PATCH_KEY_MARKERS):
+        return True
+    # Proxy-token form (ecosystem-bridge 3.3): /validate folds patch-key into
+    # the canonical "oauth2" method, so the mcp_proxy hop cannot see the
+    # marker — but it now carries the RESOLVED groups claim. Treat a caller
+    # whose groups ride the groups claim (non-empty) as the free-tier
+    # population; wire customers and internal users never reach here (their
+    # groups don't intersect the grant set, checked by the caller).
+    return bool(claims.get("groups"))
 
 
 async def enforce_call_grant(claims: dict[str, Any], request_body: bytes | None) -> None:

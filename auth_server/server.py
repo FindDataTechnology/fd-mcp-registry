@@ -732,6 +732,7 @@ def _attach_mcp_proxy_token(
     auth_method: str = "",
     egress_user: str = "",
     audit_identity: dict | None = None,
+    groups: list[str] | None = None,
 ) -> None:
     """Mint and attach the X-Internal-Token for the /mcp-proxy hop.
 
