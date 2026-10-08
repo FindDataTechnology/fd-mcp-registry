@@ -151,6 +151,10 @@ _BLOCKED_USER_STATUSES = frozenset(
 _ALLOW = "allow"
 _INSUFFICIENT = "insufficient"
 _UNAVAILABLE = "unavailable"
+#: Mapped caller whose sub2api ACCOUNT does not exist (readUser 404) —
+#: an onboarding gap, NOT a balance verdict (R6, 2026-10-09: 误分类会让客户
+#: 去充值而真相是配置缺口).
+_MISSING = "missing"
 
 _INSUFFICIENT_ERROR_CODE = "INSUFFICIENT_BALANCE"
 _UNAVAILABLE_ERROR_CODE = "BILLING_UNAVAILABLE"
@@ -568,6 +572,11 @@ async def _probe_user(base: str, target: str) -> tuple[str, str]:
     # account verdict — route it to the mode switch, not to 402.
     if response.status_code in (401, 403):
         return _UNAVAILABLE, f"admin credential rejected (HTTP {response.status_code})"
+    # Mapped caller but the account itself does not exist: an onboarding gap
+    # (miss-created account / wrong user id in the map), distinct from both
+    # "no money" and "plane down" — surfaces as BILLING_ACCOUNT_MISSING (R6).
+    if response.status_code == 404:
+        return _MISSING, f"readUser 404: billing account not found"
     try:
         doc = response.json()
     except ValueError:
@@ -687,6 +696,12 @@ async def enforce_mcp_proxy_preflight(
             return
         if verdict == _INSUFFICIENT:
             raise _reject(402, _INSUFFICIENT_ERROR_CODE, _INSUFFICIENT_MESSAGE_ZH)
+        if verdict == _MISSING:
+            raise _reject(
+                402,
+                "BILLING_ACCOUNT_MISSING",
+                "该调用者的计费账户不存在（开户配置缺口），请联系平台核对开户映射",
+            )
         # Unavailable verdict: same mode switch as a fresh probe.
         if mode == "postpaid":
             logger.warning(
@@ -707,6 +722,29 @@ async def enforce_mcp_proxy_preflight(
     if verdict == _ALLOW:
         await _cache_put(cache_key, verdict, reason, _cache_ttl())
         return
+
+    if verdict == _MISSING:
+        await _cache_put(cache_key, verdict, reason, NEGATIVE_CACHE_TTL_SECONDS)
+        _write_audit_event(
+            caller=caller,
+            server=server_name,
+            result="rejected_billing_account_missing",
+            reason=reason,
+            mode=mode,
+            target_kind=target_kind,
+        )
+        logger.warning(
+            "preflight: caller=%s mapped to a billing account that does not exist "
+            "server=%s (%s) — onboarding gap, not a balance issue",
+            caller,
+            server_name,
+            reason,
+        )
+        raise _reject(
+            402,
+            "BILLING_ACCOUNT_MISSING",
+            "该调用者的计费账户不存在（开户配置缺口），请联系平台核对开户映射",
+        )
 
     if verdict == _INSUFFICIENT:
         await _cache_put(cache_key, verdict, reason, NEGATIVE_CACHE_TTL_SECONDS)

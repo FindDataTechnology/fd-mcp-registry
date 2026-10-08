@@ -1039,3 +1039,80 @@ class TestUnmappedPolicy:
 
         monkeypatch.setenv("PREFLIGHT_UNMAPPED", "nonsense")
         assert pq._unmapped_policy() == "pass"
+
+
+# ---------------------------------------------------------------------------
+# R6: mapped caller whose billing account does not exist (readUser 404)
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# R6: mapped caller whose billing account does not exist (readUser 404)
+# ---------------------------------------------------------------------------
+
+
+class TestBillingAccountMissing:
+    """alice -> 56（user-id 探针）为底；全部走 user 探针语义。"""
+
+    def _user_map(self, monkeypatch):
+        monkeypatch.setenv("SUB2API_CALLER_MAP", json.dumps({"alice": "56"}))
+
+    def test_readuser_404_yields_missing_verdict(self):
+        import asyncio
+
+        import auth_server.preflight_quota as pq
+
+        probe_client, patch_stack = _patch_probe_client(_probe_response(404))
+        with patch_stack:
+            verdict, reason = asyncio.run(pq._probe_user("https://s.example", "999"))
+        assert verdict == pq._MISSING
+        assert "404" in reason
+
+    def test_missing_raises_account_missing_402(self, monkeypatch, tmp_path):
+        import asyncio
+
+        from fastapi import HTTPException
+
+        import auth_server.preflight_quota as pq
+
+        self._user_map(monkeypatch)
+        probe_client, patch_stack = _patch_probe_client(_probe_response(404))
+        with patch_stack, pytest.raises(HTTPException) as exc:
+            asyncio.run(pq.enforce_mcp_proxy_preflight(_claims(), "srv"))
+        assert exc.value.status_code == 402
+        assert exc.value.detail["error"] == "BILLING_ACCOUNT_MISSING"
+        lines = _audit_lines(tmp_path)
+        assert any(line.get("result") == "rejected_billing_account_missing" for line in lines)
+
+    def test_cached_missing_verdict_also_402(self, monkeypatch):
+        import asyncio
+        import time as _t
+
+        from fastapi import HTTPException
+
+        import auth_server.preflight_quota as pq
+
+        self._user_map(monkeypatch)
+        pq._cache.clear()
+        pq._cache["alice\x00user\x0056"] = (pq._MISSING, "readUser 404", _t.monotonic() + 60)
+        try:
+            with pytest.raises(HTTPException) as exc:
+                asyncio.run(pq.enforce_mcp_proxy_preflight(_claims(), "srv"))
+            assert exc.value.detail["error"] == "BILLING_ACCOUNT_MISSING"
+        finally:
+            pq._cache.clear()
+
+    def test_true_zero_balance_still_insufficient(self, monkeypatch):
+        import asyncio
+
+        from fastapi import HTTPException
+
+        import auth_server.preflight_quota as pq
+
+        self._user_map(monkeypatch)
+        probe_client, patch_stack = _patch_probe_client(
+            _probe_response(200, {"code": 0, "data": {"balance": 0, "status": "active"}})
+        )
+        with patch_stack, pytest.raises(HTTPException) as exc:
+            asyncio.run(pq.enforce_mcp_proxy_preflight(_claims(), "srv"))
+        assert exc.value.detail["error"] == "INSUFFICIENT_BALANCE"
