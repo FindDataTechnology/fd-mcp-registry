@@ -4722,6 +4722,38 @@ async def validate_request(request: Request):
                         "Extracted actual tool name for tools/call: '%s'", actual_tool_name
                     )
 
+            # Ecosystem-bridge 3.4 (tier gate, /validate hop): a grant-group
+            # patch-key caller aiming at a paid-tier server gets 402
+            # TIER_REQUIRED naming the tier BEFORE the scope denial below.
+            # Without this the caller hits an opaque 403 here (they have no
+            # scope for the gated server by construction) and never reaches
+            # the mcp_proxy handler where the gate also lives. Non-grant
+            # callers (wire customers, internal) are untouched; inert unless
+            # CALL_GRANT_ENABLED=true.
+            try:
+                from call_grant import is_tier_gated
+            except ImportError:
+                from auth_server.call_grant import is_tier_gated
+
+            if server_name:
+                _tier = is_tier_gated(validation_result, server_name)
+                if _tier:
+                    logger.info(
+                        "Tier gate: %s -> %s requires tier '%s' (402)",
+                        hash_username(validation_result.get("username", "")),
+                        server_name,
+                        _tier,
+                    )
+                    raise HTTPException(
+                        status_code=402,
+                        detail={
+                            "error": "TIER_REQUIRED",
+                            "tier": _tier,
+                            "message": f"该服务属「{_tier}」档；当前免费档不可用，升级后即可调用。",
+                        },
+                        headers={"Connection": "close"},
+                    )
+
             # Check if user has any scopes - if not, deny access (fail closed)
             if not user_scopes:
                 logger.warning(

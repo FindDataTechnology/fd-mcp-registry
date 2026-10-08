@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from datetime import datetime
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi import HTTPException
 
+from registry.schemas.patch_key import PatchKeyInfo
 from registry.services.call_grant_service import GrantVerdict
 
 pytestmark = [pytest.mark.unit, pytest.mark.auth]
@@ -41,6 +43,26 @@ def _body(method: str = "tools/call", *, batch: list[str] | None = None) -> byte
     if batch is not None:
         return json.dumps([{"jsonrpc": "2.0", "method": m, "id": i} for i, m in enumerate(batch)]).encode()
     return json.dumps({"jsonrpc": "2.0", "method": method, "id": 1, "params": {"name": "read"}}).encode()
+
+
+
+
+# ── 自包含夹具（镜像 test_patch_key_validate 的形状）────────────────────
+_PLAINTEXT_KEY = "wgk-" + "x" * 40
+
+
+class _FakePatchKeyService:
+    def __init__(self, info, plaintext):
+        self._info = info
+        self._plaintext = plaintext
+
+    async def verify_key(self, plaintext):
+        if self._info is not None and plaintext == self._plaintext:
+            return self._info
+        return None
+
+    async def touch_last_used(self, key_id):
+        pass
 
 
 def _verdict(allowed: bool, used: int, limit: int = 5000) -> GrantVerdict:
@@ -209,3 +231,78 @@ async def test_tier_gate_inert_when_unconfigured(grant_env, monkeypatch) -> None
 
     monkeypatch.delenv("CALL_GRANT_TIER_SERVERS", raising=False)
     assert is_tier_gated(_claims(groups=["community"]), "law-bench") is None
+
+
+class TestTierGateOnValidate:
+    """ecosystem-bridge 3.4: the tier gate must fire on the /validate hop too —
+    a grant-group patch-key caller aiming at a gated server gets 402
+    TIER_REQUIRED there (nginx blocks on /validate; the mcp_proxy gate alone
+    never runs for them)."""
+
+    def test_law_bench_402_before_scope_403(self, monkeypatch, tmp_path):
+        import auth_server.server as server_module
+
+        monkeypatch.setenv("CALL_GRANT_ENABLED", "true")
+        monkeypatch.setenv("CALL_GRANT_MONTHLY_LIMIT", "5000")
+        monkeypatch.setenv("CALL_GRANT_GROUPS", "community")
+        monkeypatch.setenv("CALL_GRANT_TIER_SERVERS", "law-bench:paid")
+        monkeypatch.setenv("CALL_GRANT_AUDIT_PATH", str(tmp_path / "g.jsonl"))
+
+        info = PatchKeyInfo(
+            key_id="keyid-tier", name="tier-verify", key_prefix=_PLAINTEXT_KEY[:12],
+            username="freshuser", email="f@example.com", provider="logto",
+            groups=[], status=PATCH_KEY_STATUS_ACTIVE,
+            created_at=datetime.utcnow(), last_used_at=None, revoked_at=None,
+        )
+        service = _FakePatchKeyService(info, _PLAINTEXT_KEY)
+        enrich = AsyncMock(return_value=["community"])
+        with (
+            patch("registry.services.patch_key_service.get_patch_key_service",
+                  new=AsyncMock(return_value=service)),
+            patch("mongodb_groups_enrichment.enrich_user_groups_from_mongodb", enrich),
+        ):
+            client = TestClient(server_module.app)
+            response = client.get(
+                "/validate",
+                headers={
+                    "Authorization": f"Bearer {_PLAINTEXT_KEY}",
+                    "X-Original-URL": "https://example.com/law-bench/mcp",
+                },
+            )
+        assert response.status_code == 402, response.text
+        body = response.json()
+        assert body["detail"]["error"] == "TIER_REQUIRED"
+        assert body["detail"]["tier"] == "paid"
+
+    def test_open_data_server_not_gated(self, monkeypatch, tmp_path):
+        import auth_server.server as server_module
+
+        monkeypatch.setenv("CALL_GRANT_ENABLED", "true")
+        monkeypatch.setenv("CALL_GRANT_MONTHLY_LIMIT", "5000")
+        monkeypatch.setenv("CALL_GRANT_GROUPS", "community")
+        monkeypatch.setenv("CALL_GRANT_TIER_SERVERS", "law-bench:paid")
+        monkeypatch.setenv("CALL_GRANT_AUDIT_PATH", str(tmp_path / "g.jsonl"))
+
+        info = PatchKeyInfo(
+            key_id="keyid-tier2", name="tier-verify-2", key_prefix=_PLAINTEXT_KEY[:12],
+            username="freshuser", email="f@example.com", provider="logto",
+            groups=[], status=PATCH_KEY_STATUS_ACTIVE,
+            created_at=datetime.utcnow(), last_used_at=None, revoked_at=None,
+        )
+        service = _FakePatchKeyService(info, _PLAINTEXT_KEY)
+        enrich = AsyncMock(return_value=["community"])
+        with (
+            patch("registry.services.patch_key_service.get_patch_key_service",
+                  new=AsyncMock(return_value=service)),
+            patch("mongodb_groups_enrichment.enrich_user_groups_from_mongodb", enrich),
+        ):
+            client = TestClient(server_module.app)
+            response = client.get(
+                "/validate",
+                headers={
+                    "Authorization": f"Bearer {_PLAINTEXT_KEY}",
+                    "X-Original-URL": "https://example.com/fd-open-data-mcp/mcp",
+                },
+            )
+        # 非档位 server：不应 402（401/403 由 scope 结果决定，但绝非档位拒绝）
+        assert response.status_code != 402
