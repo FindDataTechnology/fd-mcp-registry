@@ -3682,7 +3682,11 @@ async def _validate_patch_key_token(access_token: str) -> dict:
         "email": record.email or "",
         # Non-expiring by design: no expires_at claim.
         "scopes": scopes,
-        "groups": list(record.groups),
+        # The resolved groups (fallback applied when the mint-time snapshot
+        # was empty), NOT the raw snapshot — downstream consumers (tier gate,
+        # group->scope mappings on later hops, audit) must see the same
+        # entitlement view the scope mapping just used.
+        "groups": groups,
         # Marks the caller as a per-USER credential so the M2M group
         # enrichment fallback never treats it as a service account
         # (mirrors the self-signed validator's marker).
