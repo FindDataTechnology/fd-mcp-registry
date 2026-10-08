@@ -8549,6 +8549,10 @@ async def mcp_proxy(
     # cross-resource "Protected resource ... does not match expected ..." error).
     # We drop the foreign header on this path (see the 401 handling below).
     egress_token_injected = False
+    # Vend payload from the registry (None when egress is off / unreachable).
+    # Consumed by the per-user branches below AND by the shared Backend Auth
+    # fallback right before the upstream forward.
+    vend: dict | None = None
 
     # Per-user egress credential vault. When the feature is on, ask the
     # registry to vend this user's third-party token for the resolved server. The
@@ -8823,6 +8827,30 @@ async def mcp_proxy(
                     req_id=req_id,
                     vend=vend,
                 )
+
+    # Server-level Backend Authentication fallback (shared credential, zero
+    # per-user setup). When no per-user egress token was injected and the
+    # registry vended backend-auth headers for this server (auth_scheme
+    # bearer/api_key with a stored credential), inject them so every
+    # authenticated gateway user can reach the upstream. The registry decrypts;
+    # the plaintext rides only the internal registry -> auth_server hop and is
+    # stripped from the client by the ingress header policy above. Marked as an
+    # egress injection so the guarded-client + WWW-Authenticate protections
+    # below apply identically.
+    if not egress_token_injected and vend and vend.get("backend_auth_header"):
+        inject_header = vend["backend_auth_header"]
+        forward_headers = {
+            k: v
+            for k, v in forward_headers.items()
+            if k.lower() != str(inject_header).lower()
+        }
+        forward_headers[inject_header] = vend["backend_auth_value"]
+        egress_token_injected = True
+        logger.info(
+            "mcp_proxy: server=%s injected shared backend auth credential "
+            "(server-level fallback, no per-user PAT)",
+            server_name,
+        )
 
     logger.info(
         f"mcp_proxy: server={server_name} method={incoming_method} filter_enabled={filter_enabled} timeout={proxy_timeout}"
