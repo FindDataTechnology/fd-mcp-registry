@@ -4755,6 +4755,7 @@ async def validate_request(request: Request):
                     # @forbidden_error rewrites it into the real 402 + body.
                     return JSONResponse(
                         status_code=403,
+                        content={"error": "TIER_REQUIRED", "tier": _tier},
                         headers={"X-Tier-Required": _tier, "Connection": "close"},
                     )
 
