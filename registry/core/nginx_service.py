@@ -2859,6 +2859,9 @@ map "$uri:$http_x_mcp_server_version" $versioned_backend {{
         auth_request_set $rl_limit $upstream_http_x_ratelimit_limit;
         auth_request_set $rl_reset $upstream_http_x_ratelimit_reset;
         auth_request_set $rl_retry $upstream_http_retry_after;
+        # Tier-gate passthrough (ecosystem-bridge 3.4): same 403-marker pattern,
+        # rewritten into 402 + upgrade-path body by @forbidden_error.
+        auth_request_set $tier_required $upstream_http_x_tier_required;
 {proxy_directive}
         proxy_http_version 1.1;
         proxy_ssl_server_name on;
