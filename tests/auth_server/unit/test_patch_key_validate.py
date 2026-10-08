@@ -532,3 +532,90 @@ class TestPatchKeyNonInterference:
             )
         assert response.status_code == 401
         mock_provider.validate_token.assert_called()
+
+
+class TestPatchKeyGroupFallback:
+    """ecosystem-bridge 3.4: empty group snapshots resolve via the same
+    idp_user_groups -> IDP_USER_GROUP_DEFAULTS fallback the JWT path uses, so
+    a self-service registrant's key is not scopeless forever. A non-empty
+    snapshot stays authoritative."""
+
+    @staticmethod
+    def _scopeless_info() -> PatchKeyInfo:
+        return PatchKeyInfo(
+            key_id="keyid-nogroups",
+            name="self-service",
+            key_prefix=_PLAINTEXT_KEY[:12],
+            username="freshuser",
+            email="fresh@example.com",
+            provider="logto",
+            groups=[],
+            status=PATCH_KEY_STATUS_ACTIVE,
+            created_at=datetime.utcnow(),
+            last_used_at=None,
+            revoked_at=None,
+        )
+
+    def test_empty_snapshot_takes_default_group(self, scope_repo, auth_env_vars, monkeypatch):
+        import auth_server.server as server_module
+
+        monkeypatch.setenv("IDP_USER_GROUP_DEFAULTS", "community")
+        service = _FakePatchKeyService(self._scopeless_info(), _PLAINTEXT_KEY)
+        enrich = AsyncMock(return_value=["community"])
+        with (
+            _patched_service(service),
+            patch("mongodb_groups_enrichment.enrich_user_groups_from_mongodb", enrich),
+        ):
+            client = TestClient(server_module.app)
+            response = client.get(
+                "/validate",
+                headers={
+                    "Authorization": f"Bearer {_PLAINTEXT_KEY}",
+                    "X-Original-URL": "https://example.com/api/servers",
+                },
+            )
+        assert response.status_code == 200
+        enrich.assert_awaited_once()
+        # 回退被调用时的参数：用户名 + 空组 + provider
+        assert enrich.await_args.args[0] == "freshuser"
+        assert enrich.await_args.args[1] == []
+
+    def test_nonempty_snapshot_is_not_overridden(self, scope_repo, auth_env_vars):
+        import auth_server.server as server_module
+
+        service = _FakePatchKeyService(_key_info(), _PLAINTEXT_KEY)  # groups 非空
+        enrich = AsyncMock(return_value=["community"])
+        with (
+            _patched_service(service),
+            patch("mongodb_groups_enrichment.enrich_user_groups_from_mongodb", enrich),
+        ):
+            client = TestClient(server_module.app)
+            response = client.get(
+                "/validate",
+                headers={
+                    "Authorization": f"Bearer {_PLAINTEXT_KEY}",
+                    "X-Original-URL": "https://example.com/api/servers",
+                },
+            )
+        assert response.status_code == 200
+        enrich.assert_not_awaited()
+
+    def test_fallback_failure_keeps_empty_groups_not_500(self, scope_repo, auth_env_vars):
+        import auth_server.server as server_module
+
+        service = _FakePatchKeyService(self._scopeless_info(), _PLAINTEXT_KEY)
+        enrich = AsyncMock(side_effect=RuntimeError("mongo down"))
+        with (
+            _patched_service(service),
+            patch("mongodb_groups_enrichment.enrich_user_groups_from_mongodb", enrich),
+        ):
+            client = TestClient(server_module.app)
+            response = client.get(
+                "/validate",
+                headers={
+                    "Authorization": f"Bearer {_PLAINTEXT_KEY}",
+                    "X-Original-URL": "https://example.com/api/servers",
+                },
+            )
+        # 回退失败不致命：键本身有效，只是没组（后续 scope 校验自然收紧）
+        assert response.status_code in (200, 401, 403)

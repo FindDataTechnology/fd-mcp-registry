@@ -3616,10 +3616,39 @@ async def _validate_patch_key_token(access_token: str) -> dict:
         logger.warning("Patch key rejected: unknown, revoked, or disabled")
         raise ValueError("Invalid or revoked API key")
 
+    # Group resolution for patch keys (ecosystem-bridge 3.4). The stored
+    # document snapshots the owner's groups at mint time; a key minted before
+    # the owner had any groups (self-service signup: no idp_user_groups row,
+    # no groups claim yet) would otherwise stay scopeless forever. When the
+    # snapshot is empty, run the SAME fallback the JWT path uses
+    # (idp_user_groups row -> IDP_USER_GROUP_DEFAULTS), so a fresh registrant's
+    # key picks up the community default without re-minting. A non-empty
+    # snapshot is authoritative and never overridden.
+    groups = list(record.groups)
+    if not groups:
+        try:
+            from mongodb_groups_enrichment import enrich_user_groups_from_mongodb
+
+            groups = await enrich_user_groups_from_mongodb(
+                record.username, [], record.provider or "patch-key"
+            )
+            if groups:
+                logger.info(
+                    "Patch key key_id=%s: empty group snapshot resolved to %d group(s) via fallback",
+                    record.key_id,
+                    len(groups),
+                )
+        except Exception as exc:  # noqa: BLE001 - fallback failure keeps the empty snapshot
+            logger.warning(
+                "Patch key key_id=%s: group fallback failed (%s); proceeding with empty groups",
+                record.key_id,
+                type(exc).__name__,
+            )
+
     # Resolve scope NAMES from the current mappings on every use (the stored
     # document snapshots only the owner's groups): a scope-mapping change in
     # the registry takes effect for existing keys immediately.
-    scopes = await map_groups_to_scopes(list(record.groups))
+    scopes = await map_groups_to_scopes(groups)
 
     # Best-effort metadata refresh; never blocks or fails the request.
     await service.touch_last_used(record.key_id)
