@@ -2,6 +2,7 @@
 
 from .client import (
     EmbeddingsClient,
+    FastembedClient,
     LiteLLMClient,
     SentenceTransformersClient,
     create_embeddings_client,
@@ -12,6 +13,7 @@ from .token_provider import (
 
 __all__ = [
     "EmbeddingsClient",
+    "FastembedClient",
     "SentenceTransformersClient",
     "LiteLLMClient",
     "EmbeddingsTokenProvider",

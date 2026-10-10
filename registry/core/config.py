@@ -399,7 +399,7 @@ class Settings(BaseSettings):
     )
 
     # Embeddings settings [Default]
-    embeddings_provider: str = "sentence-transformers"  # 'sentence-transformers' or 'litellm'
+    embeddings_provider: str = "fastembed"  # 'fastembed' (ONNX, default), 'sentence-transformers' (local-torch extra) or 'litellm'
     embeddings_model_name: str = "all-MiniLM-L6-v2"
     embeddings_model_dimensions: int = 384  # 384 for default and 1024 for bedrock titan v2
 

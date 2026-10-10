@@ -50,7 +50,7 @@ class TestSettingsInstantiation:
         settings = Settings()
 
         # Assert - Embeddings settings
-        assert settings.embeddings_provider == "sentence-transformers"
+        assert settings.embeddings_provider == "fastembed"
         assert settings.embeddings_model_name == "all-MiniLM-L6-v2"
         assert settings.embeddings_model_dimensions == 384
         assert settings.embeddings_api_key is None

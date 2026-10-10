@@ -18,6 +18,7 @@ import pytest
 
 from registry.embeddings.client import (
     EmbeddingsClient,
+    FastembedClient,
     LiteLLMClient,
     SentenceTransformersClient,
     create_embeddings_client,
@@ -908,7 +909,7 @@ class TestCreateEmbeddingsClient:
         assert "openai/text-embedding-3-small" in error_message
         assert "bedrock/amazon.titan-embed-text-v1" in error_message
         assert "cohere/embed-english-v3.0" in error_message
-        assert "EMBEDDINGS_PROVIDER=sentence-transformers" in error_message
+        assert "EMBEDDINGS_PROVIDER=fastembed" in error_message
 
     def test_create_unsupported_provider(self):
         """Test error with unsupported provider."""
@@ -931,3 +932,196 @@ class TestCreateEmbeddingsClient:
         error_message = str(exc_info.value)
         assert "sentence-transformers" in error_message
         assert "litellm" in error_message
+
+
+# =============================================================================
+# FASTEMBED CLIENT TESTS (slim-registry-image)
+# =============================================================================
+
+
+@pytest.fixture
+def mock_fastembed_model():
+    """
+    Create a mock fastembed TextEmbedding model.
+
+    Returns:
+        Mock TextEmbedding instance whose embed() yields 384-dim vectors.
+    """
+    model = MagicMock()
+    model.embed.side_effect = lambda *a, **k: iter(
+        [np.random.rand(384).astype(np.float32) for _ in range(3)]
+    )
+    return model
+
+
+class TestFastembedClient:
+    """Tests for FastembedClient implementation (ONNX, torch-free)."""
+
+    def test_initialization(self):
+        """Test FastembedClient initialization."""
+        # Arrange
+        model_name = "all-MiniLM-L6-v2"
+        model_dir = Path("/tmp/models")
+        cache_dir = Path("/tmp/cache")
+
+        # Act
+        client = FastembedClient(
+            model_name=model_name,
+            model_dir=model_dir,
+            cache_dir=cache_dir,
+            expected_dimension=384,
+        )
+
+        # Assert
+        assert client.model_name == model_name
+        assert client.model_dir == model_dir
+        assert client.cache_dir == cache_dir
+        assert client.expected_dimension == 384
+        assert client._model is None
+        assert client._dimension is None
+
+    def test_load_model_uses_local_dir_with_onnx(
+        self, mock_fastembed_model, tmp_path
+    ):
+        """A model_dir containing model.onnx is passed as specific_model_path."""
+        # Arrange
+        model_dir = tmp_path / "all-MiniLM-L6-v2"
+        model_dir.mkdir()
+        (model_dir / "model.onnx").write_bytes(b"fake-onnx")
+        client = FastembedClient(
+            model_name="all-MiniLM-L6-v2",
+            model_dir=model_dir,
+            expected_dimension=384,
+        )
+
+        with patch(
+            "fastembed.TextEmbedding", return_value=mock_fastembed_model
+        ) as mock_te:
+            # Act
+            client._load_model()
+
+        # Assert
+        kwargs = mock_te.call_args.kwargs
+        assert kwargs["specific_model_path"] == str(model_dir)
+
+    def test_load_model_prefers_onnx_sibling_dir(self, mock_fastembed_model, tmp_path):
+        """The '-onnx' sibling dir is found when the primary model_dir has no model.onnx."""
+        # Arrange - primary dir holds torch weights only (no model.onnx)
+        model_dir = tmp_path / "all-MiniLM-L6-v2"
+        model_dir.mkdir()
+        (model_dir / "pytorch_model.bin").write_bytes(b"torch")
+        onnx_dir = tmp_path / "all-MiniLM-L6-v2-onnx"
+        onnx_dir.mkdir()
+        (onnx_dir / "model.onnx").write_bytes(b"onnx")
+        client = FastembedClient(
+            model_name="all-MiniLM-L6-v2",
+            model_dir=model_dir,
+            expected_dimension=384,
+        )
+
+        with patch(
+            "fastembed.TextEmbedding", return_value=mock_fastembed_model
+        ) as mock_te:
+            # Act
+            client._load_model()
+
+        # Assert
+        assert mock_te.call_args.kwargs["specific_model_path"] == str(onnx_dir)
+
+    def test_load_model_normalizes_bare_model_name(
+        self, mock_fastembed_model
+    ):
+        """A bare model name is prefixed for fastembed's registry lookup."""
+        # Arrange
+        client = FastembedClient(
+            model_name="all-MiniLM-L6-v2", expected_dimension=384
+        )
+
+        with patch(
+            "fastembed.TextEmbedding", return_value=mock_fastembed_model
+        ) as mock_te:
+            # Act
+            client._load_model()
+
+        # Assert
+        assert (
+            mock_te.call_args.kwargs["model_name"]
+            == "sentence-transformers/all-MiniLM-L6-v2"
+        )
+        assert "specific_model_path" not in mock_te.call_args.kwargs
+
+    def test_load_model_dimension_mismatch_fails_and_caches(
+        self, mock_fastembed_model
+    ):
+        """A model whose dimension contradicts the config fails the load, cached."""
+        # Arrange
+        client = FastembedClient(
+            model_name="all-MiniLM-L6-v2", expected_dimension=1024
+        )
+
+        with patch(
+            "fastembed.TextEmbedding", return_value=mock_fastembed_model
+        ):
+            # Act & Assert - first call raises
+            with pytest.raises(RuntimeError, match="EMBEDDINGS_MODEL_DIMENSIONS"):
+                client._load_model()
+
+            # Second call re-raises the cached error without retrying
+            with pytest.raises(RuntimeError, match="Failed to load fastembed"):
+                client._load_model()
+
+    def test_encode(self, mock_fastembed_model):
+        """Test encode returns a 2D float32 array."""
+        # Arrange
+        client = FastembedClient(
+            model_name="all-MiniLM-L6-v2", expected_dimension=384
+        )
+        with patch(
+            "fastembed.TextEmbedding", return_value=mock_fastembed_model
+        ):
+            # Act
+            result = client.encode(["hello", "world", "again"])
+
+        # Assert
+        assert isinstance(result, np.ndarray)
+        assert result.shape == (3, 384)
+        assert result.dtype == np.float32
+
+    def test_get_embedding_dimension(self, mock_fastembed_model):
+        """Dimension comes from a probe encode."""
+        # Arrange
+        client = FastembedClient(
+            model_name="all-MiniLM-L6-v2", expected_dimension=384
+        )
+        with patch(
+            "fastembed.TextEmbedding", return_value=mock_fastembed_model
+        ):
+            # Act & Assert
+            assert client.get_embedding_dimension() == 384
+
+
+class TestFastembedFactory:
+    """Factory tests for the fastembed provider branch."""
+
+    def test_factory_creates_fastembed_client(self):
+        """create_embeddings_client('fastembed', ...) returns FastembedClient."""
+        # Act
+        client = create_embeddings_client(
+            provider="fastembed",
+            model_name="all-MiniLM-L6-v2",
+            model_dir=Path("/tmp/models"),
+            embedding_dimension=384,
+        )
+
+        # Assert
+        assert isinstance(client, FastembedClient)
+        assert client.expected_dimension == 384
+
+    def test_factory_rejects_unknown_provider_mentions_fastembed(self):
+        """The unknown-provider error lists fastembed as supported."""
+        # Act & Assert
+        with pytest.raises(ValueError, match="fastembed"):
+            create_embeddings_client(
+                provider="does-not-exist",
+                model_name="all-MiniLM-L6-v2",
+            )

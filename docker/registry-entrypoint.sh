@@ -264,7 +264,10 @@ fi
 
 # --- Embeddings Configuration ---
 # Get embeddings configuration from environment or use defaults
-EMBEDDINGS_PROVIDER="${EMBEDDINGS_PROVIDER:-sentence-transformers}"
+# fastembed (ONNX) is the default local provider — torch-free; the
+# sentence-transformers backend needs the local-torch extra which the
+# runtime image does not install (slim-registry-image).
+EMBEDDINGS_PROVIDER="${EMBEDDINGS_PROVIDER:-fastembed}"
 EMBEDDINGS_MODEL_NAME="${EMBEDDINGS_MODEL_NAME:-all-MiniLM-L6-v2}"
 EMBEDDINGS_MODEL_DIMENSIONS="${EMBEDDINGS_MODEL_DIMENSIONS:-384}"
 
@@ -273,8 +276,28 @@ echo "  Provider: $EMBEDDINGS_PROVIDER"
 echo "  Model: $EMBEDDINGS_MODEL_NAME"
 echo "  Dimensions: $EMBEDDINGS_MODEL_DIMENSIONS"
 
-# Only check for local model if using sentence-transformers
-if [ "$EMBEDDINGS_PROVIDER" = "sentence-transformers" ]; then
+# Only check for local model if using a local inference provider
+if [ "$EMBEDDINGS_PROVIDER" = "fastembed" ]; then
+    EMBEDDINGS_MODEL_DIR="/app/registry/models/$EMBEDDINGS_MODEL_NAME"
+    EMBEDDINGS_ONNX_DIR="/app/registry/models/$EMBEDDINGS_MODEL_NAME-onnx"
+
+    echo "Checking for ONNX embeddings model..."
+    if [ ! -f "$EMBEDDINGS_ONNX_DIR/model.onnx" ] && [ ! -f "$EMBEDDINGS_MODEL_DIR/model.onnx" ]; then
+        echo "=========================================="
+        echo "WARNING: ONNX embeddings model not found!"
+        echo "=========================================="
+        echo ""
+        echo "fastembed will try to download '$EMBEDDINGS_MODEL_NAME' from Hugging Face"
+        echo "on first use (set HF_ENDPOINT for a mirror). To pre-place the model,"
+        echo "put these five files in $EMBEDDINGS_ONNX_DIR (sibling of the torch dir):"
+        echo "  model.onnx | config.json | tokenizer.json | tokenizer_config.json | special_tokens_map.json"
+        echo ""
+        echo "Until then, semantic search degrades to keyword search."
+        echo "=========================================="
+    else
+        echo "ONNX embeddings model found"
+    fi
+elif [ "$EMBEDDINGS_PROVIDER" = "sentence-transformers" ]; then
     EMBEDDINGS_MODEL_DIR="/app/registry/models/$EMBEDDINGS_MODEL_NAME"
 
     echo "Checking for sentence-transformers model..."
@@ -283,13 +306,10 @@ if [ "$EMBEDDINGS_PROVIDER" = "sentence-transformers" ]; then
         echo "WARNING: Embeddings model not found!"
         echo "=========================================="
         echo ""
-        echo "The registry requires the sentence-transformers model to function properly."
-        echo "Please download the model to: $EMBEDDINGS_MODEL_DIR"
-        echo ""
-        echo "Run this command to download the model:"
-        echo "  docker run --rm -v \$(pwd)/models:/models huggingface/transformers-pytorch-cpu python -c \"from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/$EMBEDDINGS_MODEL_NAME').save('/models/$EMBEDDINGS_MODEL_NAME')\""
-        echo ""
-        echo "Or see the README for alternative download methods."
+        echo "The sentence-transformers backend additionally requires the 'local-torch'"
+        echo "dependency extra, which the runtime image does NOT install. Semantic"
+        echo "search degrades to keyword search until both the model files and the"
+        echo "extra are present. Consider EMBEDDINGS_PROVIDER=fastembed (default)."
         echo "=========================================="
     else
         echo "Embeddings model found at $EMBEDDINGS_MODEL_DIR"

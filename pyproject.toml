@@ -21,10 +21,11 @@ dependencies = [
     "python-dotenv>=1.2.2",
     "python-multipart>=0.0.27",
     "uvicorn[standard]>=0.34.2",
-    "sentence-transformers>=3.0.0",
+    # Local embeddings inference is ONNX-based (fastembed); the torch-backed
+    # sentence-transformers stack lives in the `local-torch` extra so the
+    # runtime image ships without torch (739MB) — slim-registry-image.
+    "fastembed>=0.6.0",
     "websockets>=15.0.1",
-    "scikit-learn>=1.3.0",
-    "torch>=2.13.0",
     "huggingface-hub>=0.31.1",
     "bandit>=1.8.3",
     "langchain-core>=1.3.3",
@@ -39,7 +40,6 @@ dependencies = [
     "httpcore[asyncio]>=1.0.9",
     "pyyaml>=6.0.0",
     "langchain-anthropic>=1.4.6",
-    "matplotlib>=3.10.5",
     "psutil>=6.1.0",
     "email-validator>=2.2.0",
     "aiohttp>=3.11.12",
@@ -48,7 +48,6 @@ dependencies = [
     "cisco-ai-a2a-scanner @ git+https://github.com/cisco-ai-defense/a2a-scanner.git@8f6e27f",
     "cisco-ai-skill-scanner>=1.0.0",
     "cisco-ai-mcp-scanner>=3.0.1",
-    "awscli>=1.36.0",
     "boto3>=1.42.87",
     "motor>=3.3.0",
     "pymongo>=4.6.3",
@@ -76,6 +75,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# torch-backed local embeddings escape hatch: `uv sync --extra local-torch`.
+# Not installed by default and not in the runtime image; SentenceTransformersClient
+# lazy-imports and degrades to keyword search when absent (slim-registry-image).
+local-torch = [
+    "sentence-transformers>=3.0.0",
+    "torch>=2.13.0",
+]
 dev = [
     "pytest>=9.0.3",
     "pytest-asyncio>=0.23.0",
@@ -192,14 +198,20 @@ package = false
 # Resolve torch from the PyTorch CPU wheel index so the lockfile pins the
 # CPU-only wheels (vs. the default CUDA-enabled wheels from PyPI). This
 # lets Docker builds install torch via `uv sync --locked` without any
-# special pre-install step or --extra-index-url flag.
+# special pre-install step or --extra-index-url flag. torch lives in the
+# `local-torch` extra, so the source must be marked optional (uv errors on
+# a source for a package that is not a base dependency).
 [[tool.uv.index]]
 name = "pytorch-cpu"
 url = "https://download.pytorch.org/whl/cpu"
 explicit = true
 
 [tool.uv.sources]
-torch = { index = "pytorch-cpu" }
+# torch ships only via the local-torch extra, so the CPU-index source is
+# scoped to that extra (uv rejects an unscoped source for a non-base dep).
+torch = [
+  { index = "pytorch-cpu", extra = "local-torch" },
+]
 
 # Bandit Configuration
 # B101 (assert_used): exclude test directories where assert is expected

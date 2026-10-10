@@ -61,7 +61,33 @@ jobs:
           push: true
           provenance: false
           build-args: |
-            BUILD_VERSION=fd-1.1.2
+            BUILD_VERSION=fd-1.2.0
           tags: ${{ steps.meta.outputs.tags }}
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+
+      # slim-registry-image: dependency-budget gate for the registry image.
+      # Rebuild is a cache hit (layers already pushed); assertions enforce the
+      # registry-lineage spec: size budget + fastembed present + torch absent.
+      - name: Assert image dependency budget (mcp-registry)
+        if: matrix.image == 'mcp-registry'
+        run: |
+          docker buildx build --file ${{ matrix.dockerfile }} \
+            --build-arg BUILD_VERSION=fd-1.2.0 \
+            --load -t assert:mcp-registry .
+          SIZE=$(docker image inspect assert:mcp-registry --format '{{.Size}}')
+          LIMIT=$((1600 * 1024 * 1024))
+          echo "image size: $SIZE bytes (~$((SIZE / 1024 / 1024))MB), budget: 1600MB"
+          if [ "$SIZE" -gt "$LIMIT" ]; then
+            echo "::error::image size $((SIZE / 1024 / 1024))MB exceeds the 1600MB dependency budget (registry-lineage)"
+            exit 1
+          fi
+          docker run --rm --entrypoint /app/.venv/bin/python assert:mcp-registry \
+            -c "import fastembed; print('fastembed import: OK')"
+          if docker run --rm --entrypoint /app/.venv/bin/python assert:mcp-registry \
+            -c "import torch" 2>/dev/null; then
+            echo "::error::torch is present in the runtime image (registry-lineage budget violated)"
+            exit 1
+          else
+            echo "torch absent: OK"
+          fi

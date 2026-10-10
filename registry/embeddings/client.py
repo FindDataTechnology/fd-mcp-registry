@@ -108,8 +108,191 @@ class EmbeddingsClient(ABC):
         pass
 
 
+class FastembedClient(EmbeddingsClient):
+    """Client for local ONNX embeddings via fastembed (torch-free).
+
+    The default local inference engine: same sentence-transformers model ids
+    (e.g. all-MiniLM-L6-v2), same normalized output vectors, but the ONNX
+    runtime instead of the torch stack — which keeps the runtime image
+    ~800MB smaller (slim-registry-image).
+    """
+
+    def __init__(
+        self,
+        model_name: str,
+        model_dir: Path | None = None,
+        cache_dir: Path | None = None,
+        expected_dimension: int | None = None,
+    ):
+        """
+        Initialize the fastembed client.
+
+        Args:
+            model_name: fastembed-supported model id (e.g.
+                'sentence-transformers/all-MiniLM-L6-v2')
+            model_dir: Optional local directory holding the ONNX model files
+                (model.onnx, config.json, tokenizer.json, ...). Used via
+                fastembed's specific_model_path, fully offline. Production
+                hosts pre-place these files on the models bind mount.
+            cache_dir: Optional cache directory for a lazy HuggingFace
+                download when model_dir is absent (honors HF_ENDPOINT).
+            expected_dimension: Optional dimension to validate the loaded
+                model against — a mismatch would silently corrupt the vector
+                index, so it fails the load instead.
+        """
+        self.model_name = model_name
+        self.model_dir = model_dir
+        self.cache_dir = cache_dir
+        self.expected_dimension = expected_dimension
+        self._model: Any = None
+        self._dimension: int | None = None
+        self._load_error: RuntimeError | None = None
+
+    def _load_model(self) -> None:
+        """Load the ONNX model via fastembed."""
+        if self._model is not None:
+            return
+
+        # Cache the failure so a broken model path does not re-attempt a
+        # download (or a directory scan) on every call — mirrors
+        # SentenceTransformersClient.
+        if self._load_error is not None:
+            raise self._load_error
+
+        try:
+            from fastembed import TextEmbedding
+
+            # fastembed's registry only matches full ids (e.g.
+            # 'sentence-transformers/all-MiniLM-L6-v2'), while the
+            # registry settings/env historically use the bare model name.
+            # Normalize here so configs, .env and the host-mounted models
+            # directory keep their unprefixed names.
+            full_model_id = (
+                model_id
+                if "/" in (model_id := self.model_name)
+                else f"sentence-transformers/{self.model_name}"
+            )
+
+            kwargs: dict[str, Any] = {}
+            # Local-dir probe order: the settings-derived model_dir first
+            # (torch weights may live there for the local-torch extra), then
+            # a sibling "<name>-onnx" dir — the production pre-place location,
+            # which keeps the ONNX payload and the legacy torch weights
+            # cleanly separated on the same models bind mount.
+            onnx_dir: Path | None = None
+            for candidate in (
+                self.model_dir,
+                self.model_dir.with_name(f"{self.model_dir.name}-onnx")
+                if self.model_dir is not None
+                else None,
+            ):
+                if candidate is not None and (candidate / "model.onnx").exists():
+                    onnx_dir = candidate
+                    break
+            if onnx_dir is not None:
+                logger.info(f"Loading fastembed model from local path: {onnx_dir}")
+                kwargs["specific_model_path"] = str(onnx_dir)
+            else:
+                logger.info(
+                    "Local ONNX model not found, fastembed will resolve "
+                    f"'{full_model_id}' (cache dir: {self.cache_dir})"
+                )
+
+            candidate = TextEmbedding(
+                model_name=full_model_id,
+                cache_dir=str(
+                    self.cache_dir
+                    if self.cache_dir is not None
+                    else self.model_dir.parent
+                    if self.model_dir is not None
+                    else None
+                ),
+                **kwargs,
+            )
+
+            # Dimension from a probe encode — robust across fastembed
+            # versions (the attribute surface differs between releases).
+            import numpy as _np
+
+            probe = _np.asarray(next(iter(candidate.embed(["dimension probe"]))))
+            dimension = int(probe.shape[-1])
+
+            if (
+                self.expected_dimension is not None
+                and dimension != self.expected_dimension
+            ):
+                raise RuntimeError(
+                    f"Embedding model '{self.model_name}' produces "
+                    f"{dimension}-dim vectors but the configured "
+                    f"EMBEDDINGS_MODEL_DIMENSIONS is {self.expected_dimension}. "
+                    "Stored vectors would silently mismatch the index — "
+                    "fix the configuration or reindex."
+                )
+
+            # Attach only after validation so a rejected model leaves the
+            # client in the not-loaded state (the cached error re-raises
+            # on the next call instead of returning a broken model).
+            self._model = candidate
+            self._dimension = dimension
+
+            logger.info(
+                f"fastembed model loaded successfully. Dimension: {self._dimension}"
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to load fastembed model: {e}", exc_info=True)
+            self._load_error = RuntimeError(f"Failed to load fastembed model: {e}")
+            raise self._load_error from e
+
+    def encode(
+        self,
+        texts: list[str],
+    ) -> np.ndarray:
+        """
+        Generate embeddings using fastembed (ONNX runtime).
+
+        Args:
+            texts: List of text strings to encode
+
+        Returns:
+            NumPy array of embeddings
+
+        Raises:
+            RuntimeError: If encoding fails
+        """
+        if self._model is None:
+            self._load_model()
+
+        try:
+            embeddings = np.asarray(list(self._model.embed(texts)), dtype=np.float32)
+            return embeddings
+        except Exception as e:
+            logger.error(f"Failed to encode texts: {e}", exc_info=True)
+            raise RuntimeError(f"Failed to encode texts: {e}") from e
+
+    def get_embedding_dimension(self) -> int:
+        """
+        Get the embedding dimension.
+
+        Returns:
+            Integer dimension of embedding vectors
+
+        Raises:
+            RuntimeError: If model is not loaded
+        """
+        if self._dimension is None:
+            self._load_model()
+        return self._dimension
+
+
 class SentenceTransformersClient(EmbeddingsClient):
-    """Client for local sentence-transformers models."""
+    """Client for local sentence-transformers models (torch backend).
+
+    Requires the ``local-torch`` optional dependency group — the runtime
+    image does not ship torch, so this path is only usable in environments
+    that installed the extra. On load failure the search repository's
+    latch degrades to keyword search.
+    """
 
     def __init__(
         self,
@@ -472,14 +655,15 @@ def create_embeddings_client(
     Factory function to create an embeddings client based on provider.
 
     Args:
-        provider: Provider type ('sentence-transformers' or 'litellm')
+        provider: Provider type ('fastembed', 'sentence-transformers' or 'litellm')
         model_name: Model identifier
-        model_dir: Optional local model directory (sentence-transformers only)
-        cache_dir: Optional cache directory (sentence-transformers only)
+        model_dir: Optional local model directory (fastembed and sentence-transformers)
+        cache_dir: Optional cache directory (fastembed and sentence-transformers)
         api_key: Optional API key (litellm only)
         api_base: Optional API base URL (litellm only)
         aws_region: Optional AWS region (litellm with Bedrock only)
-        embedding_dimension: Optional embedding dimension
+        embedding_dimension: Optional embedding dimension (validated by fastembed
+            and litellm against the loaded model / endpoint response)
         token_provider: Optional callable returning a fresh bearer token (litellm only)
         response_format: Endpoint response shape, "openai" or "raw_array" (litellm only)
 
@@ -495,7 +679,16 @@ def create_embeddings_client(
     """
     provider_lower = provider.lower()
 
-    if provider_lower == "sentence-transformers":
+    if provider_lower == "fastembed":
+        logger.info(f"Creating FastembedClient with model: {model_name}")
+        return FastembedClient(
+            model_name=model_name,
+            model_dir=model_dir,
+            cache_dir=cache_dir,
+            expected_dimension=embedding_dimension,
+        )
+
+    elif provider_lower == "sentence-transformers":
         logger.info(f"Creating SentenceTransformersClient with model: {model_name}")
         return SentenceTransformersClient(
             model_name=model_name,
@@ -511,7 +704,7 @@ def create_embeddings_client(
                 f"LiteLLM requires provider-prefixed model names. "
                 f"Examples: 'openai/text-embedding-3-small', 'bedrock/amazon.titan-embed-text-v1', "
                 f"'cohere/embed-english-v3.0'. "
-                f"If you want to use '{model_name}', set EMBEDDINGS_PROVIDER=sentence-transformers"
+                f"If you want to use '{model_name}', set EMBEDDINGS_PROVIDER=fastembed"
             )
 
         logger.info(f"Creating LiteLLMClient with model: {model_name}")
@@ -528,5 +721,5 @@ def create_embeddings_client(
     else:
         raise ValueError(
             f"Unsupported embeddings provider: {provider}. "
-            "Supported providers: 'sentence-transformers', 'litellm'"
+            "Supported providers: 'fastembed', 'sentence-transformers', 'litellm'"
         )
