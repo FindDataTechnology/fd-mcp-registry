@@ -468,6 +468,13 @@ class AgentCard(ProxyableMixin):
         default_factory=list,
         description="Categorization tags",
     )
+    # fd extension (add-agent-card-examples): sample prompts shown on catalog
+    # cards. Not part of the A2A spec; None keeps absent cards unchanged.
+    examples: list[str] | None = Field(
+        None,
+        max_length=3,
+        description="Sample prompts for catalog discovery (fd extension, max 3)",
+    )
     is_enabled: bool = Field(
         False,
         alias="isEnabled",
@@ -1050,6 +1057,11 @@ class AgentRegistrationRequest(ProxyableMixin):
     capabilities: dict[str, Any] = Field(
         default_factory=dict,
         description="Agent capabilities (e.g., streaming, push_notifications)",
+    )
+    examples: list[str] | None = Field(
+        None,
+        max_length=3,
+        description="Sample prompts for catalog discovery (fd extension, max 3)",
     )
 
     model_config = ConfigDict(populate_by_name=True)

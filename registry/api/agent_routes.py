@@ -1041,6 +1041,9 @@ async def register_agent(
             optional_card_kwargs["default_output_modes"] = request.default_output_modes
         if request.metadata:
             optional_card_kwargs["metadata"] = request.metadata
+        # fd extension (add-agent-card-examples): sample prompts ride the card.
+        if request.examples:
+            optional_card_kwargs["examples"] = request.examples
         # Build capabilities: merge explicit capabilities dict with streaming bool
         capabilities = dict(request.capabilities) if request.capabilities else {}
         if request.streaming and "streaming" not in capabilities:
@@ -2305,6 +2308,8 @@ async def update_agent(
             update_optional_kwargs["default_input_modes"] = request.default_input_modes
         if request.default_output_modes:
             update_optional_kwargs["default_output_modes"] = request.default_output_modes
+        if request.examples:
+            update_optional_kwargs["examples"] = request.examples
 
         updated_agent = AgentCard(
             protocol_version=request.protocol_version,

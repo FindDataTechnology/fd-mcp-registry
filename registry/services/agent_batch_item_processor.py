@@ -165,6 +165,8 @@ def _build_card_from_request(request, path: str, existing: AgentCard | None) -> 
         optional_kwargs["default_input_modes"] = request.default_input_modes
     if request.default_output_modes:
         optional_kwargs["default_output_modes"] = request.default_output_modes
+    if request.examples:
+        optional_kwargs["examples"] = request.examples
 
     capabilities = dict(request.capabilities) if request.capabilities else {}
     if request.streaming and "streaming" not in capabilities:
