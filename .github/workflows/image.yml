@@ -61,7 +61,7 @@ jobs:
           push: true
           provenance: false
           build-args: |
-            BUILD_VERSION=fd-1.2.2
+            BUILD_VERSION=fd-1.3.0
           tags: ${{ steps.meta.outputs.tags }}
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}
@@ -73,7 +73,7 @@ jobs:
         if: matrix.image == 'mcp-registry'
         run: |
           docker buildx build --file ${{ matrix.dockerfile }} \
-            --build-arg BUILD_VERSION=fd-1.2.2 \
+            --build-arg BUILD_VERSION=fd-1.3.0 \
             --load -t assert:mcp-registry .
           SIZE=$(docker image inspect assert:mcp-registry --format '{{.Size}}')
           LIMIT=$((1600 * 1024 * 1024))
