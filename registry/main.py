@@ -49,6 +49,7 @@ from registry.api.public_record_routes import router as public_record_router
 from registry.api.rate_limit_routes import router as rate_limit_router
 from registry.api.registry_management_routes import router as registry_management_router
 from registry.api.registry_routes import router as registry_router
+from registry.api.sub2api_caller_map_routes import router as sub2api_caller_map_router
 from registry.api.search_routes import router as search_router
 from registry.api.server_routes import router as servers_router
 from registry.api.skill_routes import router as skill_router
@@ -1258,6 +1259,10 @@ app.include_router(proxied_entities_router)
 # verification switch on/off together.
 if settings.patch_key_auth_enabled:
     app.include_router(patch_key_router)
+# Pre-flight caller map (add-customer-onboarding-automation 3.1): admin-gated
+# CRUD consumed by the wire onboarding flow; auth-server preflight reads the
+# same collection with a TTL cache.
+app.include_router(sub2api_caller_map_router)
 # Register Anthropic MCP Registry API (public API for MCP servers only)
 app.include_router(registry_router, prefix="/api/registry", tags=["Registry Card"])
 

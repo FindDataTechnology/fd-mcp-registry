@@ -239,3 +239,107 @@ class TestPlaintextLogSafety:
         assert response.status_code == 201
         assert plaintext not in caplog.text
         assert plaintext not in response.headers.get("X-Audit-Action", "")
+
+
+# ---------------------------------------------------------------------------
+# Admin mint-on-behalf-of + admin revoke (add-customer-onboarding-automation 4.1/4.2)
+# ---------------------------------------------------------------------------
+
+
+def _admin_context() -> dict[str, Any]:
+    return {
+        "username": "wire-platform-service",
+        "groups": ["mcp-registry-admin"],
+        "scopes": ["mcp-registry-admin"],
+        "auth_method": "patch-key",
+        "is_admin": True,
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.api
+class TestAdminMintOnBehalfOf:
+    def test_admin_mints_with_explicit_owner_and_groups(self, mock_settings, mock_service):
+        mock_service.mint_key = AsyncMock(
+            return_value=PatchKeyCreated(key="wgk-onbehalfof", info=_info())
+        )
+        _override_auth(_admin_context())
+        with patch(
+            "registry.api.patch_key_routes._get_service",
+            new=AsyncMock(return_value=mock_service),
+        ):
+            client = TestClient(app, cookies={"mcp_gateway_session": "s"})
+            resp = client.post(
+                "/api/patch-keys",
+                json={
+                    "name": "drillcust001-customer-track",
+                    "username": "drillcust001",
+                    "groups": ["wire-customers", "wire-cust-drillcust001"],
+                },
+            )
+        app.dependency_overrides.clear()
+        assert resp.status_code == 201
+        mock_service.mint_key.assert_awaited_once_with(
+            username="drillcust001",
+            groups=["wire-cust-drillcust001", "wire-customers"],  # schema 清洗为排序去重
+            name="drillcust001-customer-track",
+            email=None,
+            provider=None,
+            egress_user=None,  # 代铸不捕获调用者的 egress vault id
+        )
+
+    def test_non_admin_sending_fields_gets_403_not_silent_fallback(self, client):
+        client, service = client
+        resp = client.post(
+            "/api/patch-keys",
+            json={"name": "x", "username": "victim", "groups": ["g"]},
+        )
+        assert resp.status_code == 403
+        service.mint_key.assert_not_awaited()
+
+    def test_half_pair_is_rejected_at_schema(self, client):
+        """username without groups (or vice versa) is a mis-shaped mint."""
+        client, _ = client
+        resp = client.post("/api/patch-keys", json={"name": "x", "username": "u"})
+        assert resp.status_code == 422
+
+    def test_plain_mint_unchanged_without_fields(self, client):
+        client, service = client
+        service.mint_key.return_value = PatchKeyCreated(key="wgk-x", info=_info())
+        resp = client.post("/api/patch-keys", json={"name": "ci"})
+        assert resp.status_code == 201
+        kwargs = service.mint_key.await_args.kwargs
+        assert kwargs["username"] == "alice"
+        assert kwargs["groups"] == ["developers"]
+
+
+@pytest.mark.unit
+@pytest.mark.api
+class TestAdminRevoke:
+    def test_admin_revokes_foreign_key_after_owner_miss(self, mock_settings, mock_service):
+        from registry.services.patch_key_service import PatchKeyNotFound
+
+        _override_auth(_admin_context())
+        mock_service.revoke_key = AsyncMock(
+            side_effect=[PatchKeyNotFound("k1"), _info(status=PATCH_KEY_STATUS_REVOKED)]
+        )
+        with patch(
+            "registry.api.patch_key_routes._get_service",
+            new=AsyncMock(return_value=mock_service),
+        ):
+            client = TestClient(app, cookies={"mcp_gateway_session": "s"})
+            resp = client.delete("/api/patch-keys/k1")
+        app.dependency_overrides.clear()
+        assert resp.status_code == 200
+        # 第一次 owner 限定（admin 自己名下没有）→ 第二次 admin 旁路（不限定 owner）
+        first = mock_service.revoke_key.await_args_list[0].kwargs
+        second = mock_service.revoke_key.await_args_list[1].kwargs
+        assert first == {"key_id": "k1", "username": "wire-platform-service"}
+        assert second == {"key_id": "k1"}
+
+    def test_non_admin_foreign_key_still_404(self, client):
+        from registry.services.patch_key_service import PatchKeyNotFound
+
+        client, service = client
+        service.revoke_key = AsyncMock(side_effect=PatchKeyNotFound("k1"))
+        assert client.delete("/api/patch-keys/k1").status_code == 404

@@ -732,6 +732,7 @@ def _attach_mcp_proxy_token(
     auth_method: str = "",
     egress_user: str = "",
     audit_identity: dict | None = None,
+    groups: list[str] | None = None,
 ) -> None:
     """Mint and attach the X-Internal-Token for the /mcp-proxy hop.
 
@@ -2800,6 +2801,18 @@ async def lifespan(app: FastAPI):
                 type(e).__name__,
             )
 
+        # Same best-effort for the call-grant counters (ecosystem-bridge 3.3):
+        # the unique (owner, month) index backs lookup speed only.
+        try:
+            from registry.services.call_grant_service import get_call_grant_service
+
+            await (await get_call_grant_service()).ensure_indexes()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "Failed to ensure call_grant_usage index during startup (%s)",
+                type(e).__name__,
+            )
+
     # Run the legacy-scope audit. This used to be registered via the
     # deprecated @app.on_event("startup") API, but FastAPI/Starlette never
     # invokes on_event handlers once a custom `lifespan` is passed to
@@ -3604,10 +3617,39 @@ async def _validate_patch_key_token(access_token: str) -> dict:
         logger.warning("Patch key rejected: unknown, revoked, or disabled")
         raise ValueError("Invalid or revoked API key")
 
+    # Group resolution for patch keys (ecosystem-bridge 3.4). The stored
+    # document snapshots the owner's groups at mint time; a key minted before
+    # the owner had any groups (self-service signup: no idp_user_groups row,
+    # no groups claim yet) would otherwise stay scopeless forever. When the
+    # snapshot is empty, run the SAME fallback the JWT path uses
+    # (idp_user_groups row -> IDP_USER_GROUP_DEFAULTS), so a fresh registrant's
+    # key picks up the community default without re-minting. A non-empty
+    # snapshot is authoritative and never overridden.
+    groups = list(record.groups)
+    if not groups:
+        try:
+            from mongodb_groups_enrichment import enrich_user_groups_from_mongodb
+
+            groups = await enrich_user_groups_from_mongodb(
+                record.username, [], record.provider or "patch-key"
+            )
+            if groups:
+                logger.info(
+                    "Patch key key_id=%s: empty group snapshot resolved to %d group(s) via fallback",
+                    record.key_id,
+                    len(groups),
+                )
+        except Exception as exc:  # noqa: BLE001 - fallback failure keeps the empty snapshot
+            logger.warning(
+                "Patch key key_id=%s: group fallback failed (%s); proceeding with empty groups",
+                record.key_id,
+                type(exc).__name__,
+            )
+
     # Resolve scope NAMES from the current mappings on every use (the stored
     # document snapshots only the owner's groups): a scope-mapping change in
     # the registry takes effect for existing keys immediately.
-    scopes = await map_groups_to_scopes(list(record.groups))
+    scopes = await map_groups_to_scopes(groups)
 
     # Best-effort metadata refresh; never blocks or fails the request.
     await service.touch_last_used(record.key_id)
@@ -3641,7 +3683,11 @@ async def _validate_patch_key_token(access_token: str) -> dict:
         "email": record.email or "",
         # Non-expiring by design: no expires_at claim.
         "scopes": scopes,
-        "groups": list(record.groups),
+        # The resolved groups (fallback applied when the mint-time snapshot
+        # was empty), NOT the raw snapshot — downstream consumers (tier gate,
+        # group->scope mappings on later hops, audit) must see the same
+        # entitlement view the scope mapping just used.
+        "groups": groups,
         # Marks the caller as a per-USER credential so the M2M group
         # enrichment fallback never treats it as a service account
         # (mirrors the self-signed validator's marker).
@@ -4679,6 +4725,39 @@ async def validate_request(request: Request):
                     actual_tool_name = params.get("name")
                     logger.debug(
                         "Extracted actual tool name for tools/call: '%s'", actual_tool_name
+                    )
+
+            # Ecosystem-bridge 3.4 (tier gate, /validate hop): a grant-group
+            # patch-key caller aiming at a paid-tier server gets 402
+            # TIER_REQUIRED naming the tier BEFORE the scope denial below.
+            # Without this the caller hits an opaque 403 here (they have no
+            # scope for the gated server by construction) and never reaches
+            # the mcp_proxy handler where the gate also lives. Non-grant
+            # callers (wire customers, internal) are untouched; inert unless
+            # CALL_GRANT_ENABLED=true.
+            try:
+                from call_grant import is_tier_gated
+            except ImportError:
+                from auth_server.call_grant import is_tier_gated
+
+            if server_name:
+                _tier = is_tier_gated(validation_result, server_name)
+                if _tier:
+                    logger.info(
+                        "Tier gate: %s -> %s requires tier '%s' (403 marker; nginx rewrites to 402)",
+                        hash_username(validation_result.get("username", "")),
+                        server_name,
+                        _tier,
+                    )
+                    # nginx auth_request only forwards 401/403 (anything else
+                    # becomes a 500 at the client). Same pattern as the rate
+                    # limiter: answer 403 with a marker header; the data-plane
+                    # location captures it via auth_request_set and
+                    # @forbidden_error rewrites it into the real 402 + body.
+                    return JSONResponse(
+                        status_code=403,
+                        content={"error": "TIER_REQUIRED", "tier": _tier},
+                        headers={"X-Tier-Required": _tier, "Connection": "close"},
                     )
 
             # Check if user has any scopes - if not, deny access (fail closed)
@@ -8304,6 +8383,94 @@ async def _authorize_forwarded_mcp_body(
     )
 
 
+async def _audit_mcp_proxy_refusal(
+    request: "Request",
+    claims: dict,
+    server_name: str,
+    upstream_url: str,
+    request_body: bytes,
+    started_at: float,
+    exc: "HTTPException",
+) -> None:
+    """Write the definitive refusal record for a request refused at this hop.
+
+    fix-quota-gate-server-scope: /validate already wrote its MCP-access
+    ``success`` row BEFORE this hop ran (auth validation success — it cannot
+    know this outcome), so without this record the audit stream shows a
+    refused call as success. Refused-at-the-proxy is the final outcome; the
+    reconciliation side takes this record over the earlier success row.
+
+    Key/join discipline mirrors /validate: a fresh server-minted request_id
+    (the (request_id, log_type) unique key must never be client-seeded) and
+    the sanitized client correlation header as the join field — both hops of
+    one client request see the same headers. The record carries the
+    JSON-RPC id parsed from the body, so an id-keyed join works even when
+    the client sent no correlation header.
+
+    Failure of this audit must never mask the refusal itself: every error
+    here is swallowed after a warning log, and the caller re-raises ``exc``.
+    """
+    try:
+        mcp_logger = get_mcp_logger()
+        if mcp_logger is None:
+            return
+
+        detail = exc.detail
+        if isinstance(detail, dict):
+            machine_code = str(detail.get("error") or "")
+            human_message = str(detail.get("message") or "")
+            error_message = (
+                f"{machine_code}: {human_message}" if machine_code else human_message
+            ) or None
+        else:
+            error_message = str(detail) if detail else None
+
+        # Identity from VERIFIED hop-token claims only (same rule as the OBO
+        # mint audit): the audit_identity display + durable fields, degrading
+        # to the verified sub when the claim predates a rolling deploy.
+        obo_display, obo_identity_fields = _audit_identity_from_token(claims)
+        identity_kwargs = dict(obo_identity_fields)
+        identity_kwargs.setdefault("subject", claims.get("sub"))
+        identity = Identity(
+            username=obo_display or claims.get("sub") or "unknown",
+            auth_method=str(claims.get("auth_method") or "jwt_bearer"),
+            credential_type="bearer_token",
+            groups=list(claims.get("groups") or []),
+            scopes=list(claims.get("scopes") or []),
+            **identity_kwargs,
+        )
+        mcp_server = MCPServer(
+            name=server_name,
+            path=f"/{server_name}" if server_name else "/",
+            proxy_target=upstream_url or "",
+        )
+        await mcp_logger.log_mcp_access(
+            request_id=new_audit_request_id(),
+            identity=identity,
+            mcp_server=mcp_server,
+            request_body=request_body,
+            response_status="refused",
+            duration_ms=(time.perf_counter() - started_at) * 1000,
+            mcp_session_id=request.headers.get("Mcp-Session-Id"),
+            error_code=exc.status_code,
+            error_message=error_message,
+            client_ip=get_client_ip(request),
+            forwarded_for=request.headers.get("X-Forwarded-For"),
+            user_agent=request.headers.get("User-Agent"),
+            correlation_id=sanitize_correlation_id(
+                request.headers.get("X-Correlation-ID") or request.headers.get("X-Request-ID")
+            ),
+        )
+    except Exception:
+        logger.warning(
+            "mcp_proxy: refusal audit write failed for server=%s status=%s "
+            "(the refusal itself is unaffected)",
+            server_name,
+            exc.status_code,
+            exc_info=True,
+        )
+
+
 @app.post("/mcp-proxy/{server_name:path}", dependencies=[Depends(verify_mcp_proxy_token)])
 async def mcp_proxy(
     server_name: str,
@@ -8397,30 +8564,96 @@ async def mcp_proxy(
     # egress-vend / OpenBao availability -- otherwise a transient vend failure
     # (503) could mask a genuine authorization denial, turning a "denied" into a
     # "retry later" in responses, logs, and metrics. Authorized-but-not-connected
-    # callers still pass here and reach the egress consent/local-answer paths
-    # below (they already had these methods in scope on the connected path).
-    await _authorize_forwarded_mcp_body(server_name, request_body, user_scopes)
-
-    # wire-platform-v1 task 2.2 (patch-preflight): zero-cost sub2api quota
-    # probe for callers mapped in SUB2API_CALLER_MAP, run before ANY outbound
-    # work (egress vend, upstream forward) so a refused request costs
-    # nothing. Deliberately AFTER scope authorization: a genuine 403 must
-    # never be masked by a billing verdict (same ordering guarantee as the
-    # block above). No-op unless PREFLIGHT_ENABLED is on AND the caller is
-    # mapped (internal users are unaffected); raises HTTPException 402
-    # INSUFFICIENT_BALANCE on an exhausted account and 503
-    # BILLING_UNAVAILABLE when the billing plane is unreachable under
-    # PREFLIGHT_MODE=strict (postpaid mode degrades to allow + audit).
-    # Flat import first: Dockerfile.auth copies auth_server/ into /app
-    # flattened, so the sibling module only resolves by its flat name in the
-    # container (see tests/unit/test_auth_server_flat_imports.py); the
-    # packaged form is the fallback for repo-root runs (pytest).
+    #
+    # fix-quota-gate-server-scope: refusal audit finality. The four admission
+    # gates below (tier / scope / preflight / call-grant) are wrapped in one
+    # try so ANY refusal at this hop leaves the definitive audit record via
+    # _audit_mcp_proxy_refusal before the HTTPException propagates. Without
+    # it, the only audit row for a refused call is /validate's success (it
+    # runs before this hop and cannot know the outcome) — the exact lie that
+    # misdiagnosed the 2026-10-12 lex incident as "rejected but executed".
+    _admission_gates_started_at = time.perf_counter()
     try:
-        from preflight_quota import enforce_mcp_proxy_preflight
-    except ImportError:
-        from auth_server.preflight_quota import enforce_mcp_proxy_preflight
+        # add-ecosystem-bridge 3.4 (tier gate): a grant-group patch-key caller
+        # hitting a paid-tier server (CALL_GRANT_TIER_SERVERS, e.g. law-bench)
+        # gets a 402 TIER_REQUIRED naming the tier BEFORE the scope denial below
+        # would fire -- an upgrade path, not an opaque 403. Non-grant callers
+        # (wire customers, internal) are untouched; the gate ships inert with
+        # CALL_GRANT_ENABLED=false.
+        try:
+            from call_grant import is_tier_gated
+        except ImportError:
+            from auth_server.call_grant import is_tier_gated
 
-    await enforce_mcp_proxy_preflight(claims, server_name)
+        _tier = is_tier_gated(claims, _registered_server_from_proxy_path(server_name))
+        if _tier:
+            raise HTTPException(
+                status_code=402,
+                detail={
+                    "error": "TIER_REQUIRED",
+                    "tier": _tier,
+                    "message": f"该服务属「{_tier}」档；当前免费档不可用，升级后即可调用。",
+                },
+            )
+
+        # wire-platform-v1 task 2.2 note: the sub2api preflight below runs after
+        # scope authorization deliberately -- a genuine 403 must never be masked
+        # by a billing verdict. The tier gate above is the one deliberate
+        # exception: it answers a question the scope check cannot (which tier),
+        # and only for callers who could never pass that scope anyway.
+        await _authorize_forwarded_mcp_body(server_name, request_body, user_scopes)
+
+        # wire-platform-v1 task 2.2 (patch-preflight): zero-cost sub2api quota
+        # probe for callers mapped in SUB2API_CALLER_MAP, run before ANY outbound
+        # work (egress vend, upstream forward) so a refused request costs
+        # nothing. Deliberately AFTER scope authorization: a genuine 403 must
+        # never be masked by a billing verdict (same ordering guarantee as the
+        # block above). No-op unless PREFLIGHT_ENABLED is on AND the caller is
+        # mapped (internal users are unaffected); raises HTTPException 402
+        # INSUFFICIENT_BALANCE on an exhausted account and 503
+        # BILLING_UNAVAILABLE when the billing plane is unreachable under
+        # PREFLIGHT_MODE=strict (postpaid mode degrades to allow + audit).
+        # wire-self-serve-launch 3.2: with FD_WIRE_QUOTA_GATE=on the module first
+        # runs the monthly line-quota gate against the wire api (402
+        # MONTHLY_QUOTA_EXHAUSTED when the month's included lines are spent; 503
+        # QUOTA_UNAVAILABLE fail-closed; admin callers exempt; servers outside
+        # FD_WIRE_QUOTA_SERVERS exempt — fix-quota-gate-server-scope) and its
+        # enforce_balance flag conditions the balance probe below (false skips
+        # it, so free-tier 0 balances pass). Default off == old behavior only.
+        # Flat import first: Dockerfile.auth copies auth_server/ into /app
+        # flattened, so the sibling module only resolves by its flat name in the
+        # container (see tests/unit/test_auth_server_flat_imports.py); the
+        # packaged form is the fallback for repo-root runs (pytest).
+        try:
+            from preflight_quota import enforce_mcp_proxy_preflight
+        except ImportError:
+            from auth_server.preflight_quota import enforce_mcp_proxy_preflight
+
+        await enforce_mcp_proxy_preflight(claims, server_name)
+
+        # add-ecosystem-bridge 3.3 (call grant): free-tier monthly pool for
+        # community patch-key callers — one pool per OWNER across all their keys,
+        # tools/call only. Ships inert (CALL_GRANT_ENABLED=false); refuses 402
+        # GRANT_EXHAUSTED beyond the monthly limit, 503 GRANT_UNAVAILABLE when
+        # the counter store is down (fail closed, same rule as the preflight's
+        # strict mode). Flat import first: same container-flattening note as above.
+        try:
+            from call_grant import enforce_call_grant
+        except ImportError:
+            from auth_server.call_grant import enforce_call_grant
+
+        await enforce_call_grant(claims, request_body)
+    except HTTPException as exc:
+        await _audit_mcp_proxy_refusal(
+            request,
+            claims,
+            server_name,
+            upstream_url,
+            request_body,
+            _admission_gates_started_at,
+            exc,
+        )
+        raise
 
     # True once we inject a vaulted egress token below. An egress upstream is
     # itself an OAuth resource server: if it rejects our injected token it 401s
@@ -8432,6 +8665,10 @@ async def mcp_proxy(
     # cross-resource "Protected resource ... does not match expected ..." error).
     # We drop the foreign header on this path (see the 401 handling below).
     egress_token_injected = False
+    # Vend payload from the registry (None when egress is off / unreachable).
+    # Consumed by the per-user branches below AND by the shared Backend Auth
+    # fallback right before the upstream forward.
+    vend: dict | None = None
 
     # Per-user egress credential vault. When the feature is on, ask the
     # registry to vend this user's third-party token for the resolved server. The
@@ -8706,6 +8943,30 @@ async def mcp_proxy(
                     req_id=req_id,
                     vend=vend,
                 )
+
+    # Server-level Backend Authentication fallback (shared credential, zero
+    # per-user setup). When no per-user egress token was injected and the
+    # registry vended backend-auth headers for this server (auth_scheme
+    # bearer/api_key with a stored credential), inject them so every
+    # authenticated gateway user can reach the upstream. The registry decrypts;
+    # the plaintext rides only the internal registry -> auth_server hop and is
+    # stripped from the client by the ingress header policy above. Marked as an
+    # egress injection so the guarded-client + WWW-Authenticate protections
+    # below apply identically.
+    if not egress_token_injected and vend and vend.get("backend_auth_header"):
+        inject_header = vend["backend_auth_header"]
+        forward_headers = {
+            k: v
+            for k, v in forward_headers.items()
+            if k.lower() != str(inject_header).lower()
+        }
+        forward_headers[inject_header] = vend["backend_auth_value"]
+        egress_token_injected = True
+        logger.info(
+            "mcp_proxy: server=%s injected shared backend auth credential "
+            "(server-level fallback, no per-user PAT)",
+            server_name,
+        )
 
     logger.info(
         f"mcp_proxy: server={server_name} method={incoming_method} filter_enabled={filter_enabled} timeout={proxy_timeout}"

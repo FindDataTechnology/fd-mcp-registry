@@ -10,6 +10,7 @@ Works with both:
 """
 
 import logging
+import os
 from typing import Any
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
@@ -275,6 +276,7 @@ async def enrich_user_groups_from_mongodb(
 
     logger.info(f"User {username} (provider={provider}) has no groups in token, querying database")
 
+    record_exists = False
     # Try to fetch groups from DocumentDB/MongoDB
     try:
         db = await _get_mongodb()
@@ -291,6 +293,7 @@ async def enrich_user_groups_from_mongodb(
             doc = None
 
         if doc:
+            record_exists = True
             db_groups = doc.get("groups", [])
             if db_groups:
                 logger.info(f"Enriched {len(db_groups)} groups for user {username} from database")
@@ -303,7 +306,30 @@ async def enrich_user_groups_from_mongodb(
 
     except Exception as e:
         logger.warning(f"Failed to query database for user groups enrichment: {e}")
-        # Don't fail token validation if database is unavailable
+        # Don't fail token validation if database is unavailable -- and do NOT
+        # fall through to the defaults below: a store outage must not hand out
+        # groups. Fail closed to the original (empty) claim.
+        return current_groups
+
+    # Ecosystem-bridge 3.4: self-service registrants land with no groups and
+    # no idp_user_groups record. IDP_USER_GROUP_DEFAULTS (CSV) assigns a
+    # baseline community membership so a fresh signup is not a dead end.
+    # Applies ONLY on the no-record path: an explicit record (even one with
+    # an empty groups list) is an operator decision and suppresses the
+    # defaults; a store outage returns above. Inert unless the env is set.
+    defaults = [
+        g.strip()
+        for g in (os.environ.get("IDP_USER_GROUP_DEFAULTS", "") or "").split(",")
+        if g.strip()
+    ]
+    if defaults and not record_exists:
+        logger.info(
+            "User %s has no idp_user_groups record; applying IDP_USER_GROUP_DEFAULTS (%d group(s))",
+            username,
+            len(defaults),
+        )
+        _audit_privileged_enrichment(username, "IDP_USER_GROUP_DEFAULTS", defaults)
+        return defaults
 
     # Return original empty groups if no enrichment possible
     return current_groups

@@ -74,10 +74,45 @@ and is gray-released by the deploy switches (task 2.3's A/B requirement):
 - ``PREFLIGHT_ENABLED``       (default false)
 - ``SUB2API_BASE``            (e.g. https://router.finddatatech.cloud)
 - ``SUB2API_ADMIN_KEY``       admin API key (``x-api-key``), user-id probes
-- ``SUB2API_CALLER_MAP``      JSON object, see above
+- ``SUB2API_CALLER_MAP``      JSON object, see above — **override layer**: entries
+                               here win over the ``sub2api_caller_map`` Mongo
+                               collection (add-customer-onboarding-automation
+                               3.2; retires once every live caller is in Mongo)
+- ``PREFLIGHT_MAP_TTL``       seconds, default 30; Mongo map re-read cadence
+- ``PREFLIGHT_UNMAPPED``      ``pass`` (default) | ``warn`` | ``deny`` — what
+                               happens to a caller found in NEITHER layer.
+                               ``deny`` fails closed EXCEPT for admin-semantic
+                               callers (``mcp-registry-admin`` scope/group:
+                               platform credentials bill to the platform
+                               account, not a customer balance), which keep
+                               the skip-and-pass behavior.
 - ``PREFLIGHT_MODE``          ``strict`` (default) | ``postpaid``
 - ``PREFLIGHT_CACHE_TTL``     seconds, default 30; 0 disables caching
 - ``PREFLIGHT_AUDIT_PATH``    JSONL sink, default logs/audit/preflight_quota.jsonl
+
+wire monthly line-quota gate (wire-self-serve-launch task 3.2, default OFF):
+
+- ``FD_WIRE_QUOTA_GATE``      (default false) master switch. Off -> the probe
+                               below never runs and behavior is byte-identical
+                               to the pre-3.2 balance-only preflight.
+- ``FD_WIRE_QUOTA_URL``       wire api base, e.g. https://wire.finddatatech.cloud
+- ``FD_WIRE_INTERNAL_TOKEN``  value of the ``X-Internal-Token`` header the wire
+                               internal quota endpoint requires
+- ``FD_WIRE_QUOTA_TTL``       seconds, default 60; line-quota verdict cache
+                               (monthly-granularity data, minutes are fine)
+
+When the gate is ON, a mapped NON-admin caller is probed at
+``GET {FD_WIRE_QUOTA_URL}/internal/quota/{sub2api_user_id}`` AFTER map
+resolution and BEFORE the balance gate (design D1: mapping -> line gate ->
+balance gate). ``remaining_lines <= 0`` refuses 402
+``MONTHLY_QUOTA_EXHAUSTED`` (distinct from the balance 402); an unreachable /
+non-200 / unparseable endpoint refuses 503 ``QUOTA_UNAVAILABLE``
+unconditionally fail-closed (the gate's own switch is the rollback lever, so
+this verdict ignores PREFLIGHT_MODE). The response's ``enforce_balance``
+flag conditions the balance gate: false (free/cheap tier) skips the sub2api
+balance probe entirely so a 0-balance free-tier caller is not killed by the
+wrong gate. Admin-semantic callers are exempt from the line gate (same
+``_is_admin_caller``口径 as the balance exemption; platform-track metering).
 """
 
 from __future__ import annotations
@@ -140,15 +175,36 @@ _BLOCKED_USER_STATUSES = frozenset(
 _ALLOW = "allow"
 _INSUFFICIENT = "insufficient"
 _UNAVAILABLE = "unavailable"
+#: Monthly line-quota exhausted (wire-self-serve-launch 3.2) — a DIFFERENT
+#: refusal semantic from the balance 402: the tier's included lines for the
+#: current month are spent; the fix is waiting for next month or upgrading,
+#: not topping up a balance.
+_EXHAUSTED = "exhausted"
+#: Mapped caller whose sub2api ACCOUNT does not exist (readUser 404) —
+#: an onboarding gap, NOT a balance verdict (R6, 2026-10-09: 误分类会让客户
+#: 去充值而真相是配置缺口).
+_MISSING = "missing"
 
 _INSUFFICIENT_ERROR_CODE = "INSUFFICIENT_BALANCE"
 _UNAVAILABLE_ERROR_CODE = "BILLING_UNAVAILABLE"
+#: wire-self-serve-launch 3.2: distinct monthly-quota semantics (never mixed
+#: with the balance verdict so customers are not told to top up when the real
+#: state is "this month's included lines are spent").
+_QUOTA_EXHAUSTED_ERROR_CODE = "MONTHLY_QUOTA_EXHAUSTED"
+_QUOTA_UNAVAILABLE_ERROR_CODE = "QUOTA_UNAVAILABLE"
 
 _INSUFFICIENT_MESSAGE_ZH = (
     "额度不足：该账户的余额或消费窗额度已耗尽，请充值后重试"
     "（如认为有误请联系平台管理员）"
 )
 _UNAVAILABLE_MESSAGE_ZH = "计费服务暂时不可用，请稍后重试（fail-closed 保护中）"
+_QUOTA_EXHAUSTED_MESSAGE_ZH = (
+    "当月额度已用完：本月包含的读取行数已耗尽，次月自动恢复"
+    "（如需更多额度请升级套餐或联系平台管理员）"
+)
+_QUOTA_UNAVAILABLE_MESSAGE_ZH = (
+    "额度服务暂时不可用，请稍后重试（fail-closed 保护中）"
+)
 
 
 class PreflightConfigError(RuntimeError):
@@ -192,6 +248,183 @@ def _cache_ttl() -> float:
         return max(0.0, float(raw))
     except (TypeError, ValueError):
         return 30.0
+
+
+def _map_ttl() -> float:
+    """Mongo caller-map re-read cadence (add-customer-onboarding-automation 3.2).
+
+    Same parsing discipline as ``_cache_ttl``: an onboarding write becomes
+    effective within this bounded window (default 30s), no restart, no reload.
+    """
+    try:
+        raw = os.getenv("PREFLIGHT_MAP_TTL")
+        if raw is None or raw.strip() == "":
+            return 30.0
+        return max(0.0, float(raw))
+    except (TypeError, ValueError):
+        return 30.0
+
+
+def _unmapped_policy() -> str:
+    """pass | warn | deny for callers absent from BOTH map layers (3.3)."""
+    policy = (os.getenv("PREFLIGHT_UNMAPPED") or "pass").strip().lower()
+    return policy if policy in ("pass", "warn", "deny") else "pass"
+
+
+def _quota_gate_enabled() -> bool:
+    """wire line-quota gate master switch (3.2): default OFF — ships inert,
+    gray-released by flipping the env; off == byte-identical old behavior."""
+    return _env_truthy(os.getenv("FD_WIRE_QUOTA_GATE"), default=False)
+
+
+#: Trailing MCP transport endpoint segments stripped when deriving the
+#: registered server name from a proxy path. Mirrors
+#: ``server.py::MCP_TRANSPORT_ENDPOINTS`` (tests pin the equivalence).
+_TRANSPORT_ENDPOINTS: frozenset[str] = frozenset({"mcp", "sse", "messages"})
+
+
+def _registered_server_from_proxy_name(server_path: str) -> str:
+    """Normalize a proxy-path server segment to the registered server name.
+
+    Local mirror of ``server.py::_registered_server_from_proxy_path`` (not
+    imported — server.py lazily imports this module, and a top-level reverse
+    import would be fragile): strip a single trailing MCP transport segment,
+    preserve everything else so federated ``peer/server`` keys stay intact.
+    A drift between the two shows up as an equivalence-test failure, never
+    as a silent authorization/scope skew between the hops.
+    """
+    parts = [p for p in (server_path or "").strip("/").split("/") if p]
+    if len(parts) >= 2 and parts[-1] in _TRANSPORT_ENDPOINTS:
+        parts = parts[:-1]
+    return "/".join(parts)
+
+
+def _quota_scope_servers() -> frozenset[str] | None:
+    """Wire line-quota gate jurisdiction (fix-quota-gate-server-scope).
+
+    ``FD_WIRE_QUOTA_SERVERS`` is the opt-in registered-server list:
+    unset -> ``None`` (the gate polices every server — the pre-scope
+    behavior, kept for gray-release safety and because a wire free tier's
+    ``enforce_balance=false`` semantics arrive from the wire quota response
+    itself); set -> only the listed servers are gated. The opt-in polarity is
+    the root fix: any future line's servers are structurally exempt, so the
+    lex incident (a non-wire customer 404ing the wire quota plane and being
+    fail-closed) cannot recur for a new line.
+    """
+    raw = os.getenv("FD_WIRE_QUOTA_SERVERS")
+    if raw is None or not raw.strip():
+        return None
+    return frozenset(
+        _registered_server_from_proxy_name(entry).lower()
+        for entry in raw.split(",")
+        if entry.strip()
+    )
+
+
+def _server_in_gate_scope(server_name: str) -> bool:
+    """True when the line-quota gate's jurisdiction covers this server."""
+    scope = _quota_scope_servers()
+    if scope is None:
+        return True
+    registered = _registered_server_from_proxy_name(server_name or "")
+    if not registered:
+        # Slashes-only path: no nginx location renders for it, unreachable
+        # in practice; treat as out of jurisdiction rather than gating a
+        # name that can never be listed.
+        return False
+    return registered.lower() in scope
+
+
+def _quota_base() -> str:
+    return (os.getenv("FD_WIRE_QUOTA_URL") or "").strip().rstrip("/")
+
+
+def _quota_internal_token() -> str:
+    return (os.getenv("FD_WIRE_INTERNAL_TOKEN") or "").strip()
+
+
+def _quota_ttl() -> float:
+    """Line-quota verdict cache window (default 60s). The data is a monthly
+    aggregate, so minutes of staleness are fine; env-adjustable so ops can
+    tighten it during rollout verification."""
+    try:
+        raw = os.getenv("FD_WIRE_QUOTA_TTL")
+        if raw is None or raw.strip() == "":
+            return 60.0
+        return max(0.0, float(raw))
+    except (TypeError, ValueError):
+        return 60.0
+
+
+def _is_admin_caller(claims: dict) -> bool:
+    """Admin-semantic caller (platform credential): exempt from the customer
+    balance gate — its metering attributes to the platform track (dual-
+    credential attribution), so the unmapped-deny policy never bites it."""
+    if not isinstance(claims, dict):
+        return False
+    marker = "mcp-registry-admin"
+    scopes = claims.get("scopes")
+    groups = claims.get("groups")
+    if isinstance(scopes, list) and marker in scopes:
+        return True
+    if isinstance(groups, list) and marker in groups:
+        return True
+    return False
+
+
+#: Hard ceiling on one Mongo map refresh. A datastore that cannot answer in
+#: two seconds is DOWN for our purposes; the env override layer carries the
+#: request and the error-cache window throttles retries.
+_MAP_READ_TIMEOUT = 2.0
+
+
+# Mongo caller-map snapshot cache (3.2): {expiry-monotonic, map}. Refreshed at
+# _map_ttl cadence; a read error is cached as empty for a SHORT window so a
+# flapping datastore does not hammer the collection, and the env override
+# layer keeps the last-known rows usable in the meantime.
+_map_cache: tuple[float, dict[str, str]] = (0.0, {})
+
+
+async def _mongo_caller_map() -> dict[str, str]:
+    """Read the ``sub2api_caller_map`` collection behind the TTL cache.
+
+    Fail-open by design (mirrors the env map's philosophy): on datastore
+    error/timeout the layer contributes nothing and the ERROR line surfaces
+    it — ``PREFLIGHT_ENABLED`` remains the kill switch and mapped-in-env
+    callers keep working. The read is bounded by ``_MAP_READ_TIMEOUT`` so a
+    down datastore costs at most a couple of seconds on one request per
+    short error-cache window, never the motor client's default 30s
+    server-selection wait on every refresh.
+    """
+    global _map_cache
+    now = time.monotonic()
+    if now < _map_cache[0]:
+        return _map_cache[1]
+    mapping: dict[str, str] = {}
+    try:
+        import asyncio
+
+        from registry.services.caller_map_service import get_caller_map_service
+
+        service = await get_caller_map_service()
+        mapping = await asyncio.wait_for(service.get_map(), timeout=_MAP_READ_TIMEOUT)
+        _map_cache = (now + _map_ttl(), mapping)
+        return mapping
+    except Exception as exc:  # noqa: BLE001 - fail-open to env-only layer
+        logger.error(
+            "sub2api_caller_map read failed (%s); falling back to env-only "
+            "caller map for up to %.0fs",
+            type(exc).__name__,
+            min(_map_ttl(), 5.0),
+        )
+        _map_cache = (now + min(_map_ttl(), 5.0), {})
+        return {}
+
+
+def _reset_caller_map_cache() -> None:
+    """Test hook: drop the Mongo map snapshot so the next read re-fetches."""
+    global _map_cache
+    _map_cache = (0.0, {})
 
 
 def _audit_path() -> str:
@@ -247,12 +480,15 @@ def _caller_map() -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 
-def _resolve_target(claims: dict) -> tuple[str, str] | None:
+async def _resolve_target(claims: dict) -> tuple[str, str] | None:
     """Resolve the verified proxy-token claims to a (caller, map-value) pair.
 
-    Returns ``None`` when the caller is not in the map (skip -> pass).
+    Two-layer map (3.2): the ``sub2api_caller_map`` Mongo collection is the
+    system of record (written by onboarding); ``SUB2API_CALLER_MAP`` env
+    entries OVERRIDE it per-key during the migration. Returns ``None`` when
+    the caller is in neither layer (-> the unmapped policy).
     """
-    caller_map = _caller_map()
+    caller_map = {**await _mongo_caller_map(), **_caller_map()}
     if not caller_map:
         return None
     # Claim precedence: `sub` is the username for JWT AND patch-key callers
@@ -330,8 +566,10 @@ async def _cache_put(key: str, verdict: str, reason: str, ttl: float) -> None:
 
 
 def reset_preflight_cache() -> None:
-    """Test/ops helper: drop all cached verdicts."""
+    """Test/ops helper: drop all cached verdicts and the Mongo map snapshot."""
     _cache.clear()
+    _quota_cache.clear()
+    _reset_caller_map_cache()
 
 
 # ---------------------------------------------------------------------------
@@ -461,6 +699,11 @@ async def _probe_user(base: str, target: str) -> tuple[str, str]:
     # account verdict — route it to the mode switch, not to 402.
     if response.status_code in (401, 403):
         return _UNAVAILABLE, f"admin credential rejected (HTTP {response.status_code})"
+    # Mapped caller but the account itself does not exist: an onboarding gap
+    # (miss-created account / wrong user id in the map), distinct from both
+    # "no money" and "plane down" — surfaces as BILLING_ACCOUNT_MISSING (R6).
+    if response.status_code == 404:
+        return _MISSING, f"readUser 404: billing account not found"
     try:
         doc = response.json()
     except ValueError:
@@ -491,6 +734,131 @@ async def _probe(base: str, target_kind: str, target: str) -> tuple[str, str]:
 
 
 # ---------------------------------------------------------------------------
+# wire-side monthly line-quota probe (wire-self-serve-launch 3.2)
+# ---------------------------------------------------------------------------
+
+
+#: Line-quota verdict cache: {sub2api_user_id: (verdict, reason,
+#: enforce_balance, expires-monotonic)}. Same lock discipline as ``_cache``:
+#: the lock is held ONLY around dict reads/writes, never across probe I/O.
+#: allow/exhausted verdicts live ``_quota_ttl()`` (monthly-granularity data);
+#: unavailable verdicts only the short negative window so wire-side recovery
+#: (deploy of the quota endpoint) takes effect quickly.
+_quota_cache: dict[str, tuple[str, str, "bool | None", float]] = {}
+
+
+async def _quota_cache_get(key: str) -> tuple[str, str, "bool | None"] | None:
+    async with _cache_lock_get():
+        entry = _quota_cache.get(key)
+        if entry is None:
+            return None
+        verdict, reason, enforce_balance, expires_at = entry
+        if time.monotonic() >= expires_at:
+            _quota_cache.pop(key, None)
+            return None
+        return verdict, reason, enforce_balance
+
+
+async def _quota_cache_put(
+    key: str, verdict: str, reason: str, enforce_balance: "bool | None", ttl: float
+) -> None:
+    if ttl <= 0:
+        return
+    async with _cache_lock_get():
+        if len(_quota_cache) >= _MAX_CACHE_ENTRIES:
+            _quota_cache.clear()
+        _quota_cache[key] = (verdict, reason, enforce_balance, time.monotonic() + ttl)
+
+
+def _reset_quota_cache() -> None:
+    """Test hook: drop the line-quota verdict cache."""
+    _quota_cache.clear()
+
+
+async def _probe_wire_quota(
+    base: str, token: str, sub2api_user_id: str
+) -> tuple[str, str, "bool | None"]:
+    """GET {base}/internal/quota/{sub2api_user_id} with X-Internal-Token.
+
+    Success body (wire api): ``{"included_lines": int, "used_lines": int,
+    "remaining_lines": int, "enforce_balance": bool, ...}``.
+
+    Verdict doctrine (fail-closed, 3.2): ``remaining_lines <= 0`` ->
+    ``_EXHAUSTED`` (the month's included lines are spent); positive ->
+    ``_ALLOW`` with the ``enforce_balance`` flag carried through so the
+    balance gate can be conditioned. EVERYTHING else — network error,
+    timeout, non-200 (including a rejected internal token or an unknown user
+    id: both are locatable misconfigurations, not balance verdicts), and an
+    unparseable/shape-mismatched 200 body — is ``_UNAVAILABLE``: the caller
+    refuses rather than forwarding ungated usage.
+    """
+    url = f"{base}/internal/quota/{sub2api_user_id}"
+    try:
+        async with _HttpxAsyncClient(timeout=PROBE_TIMEOUT_SECONDS) as client:
+            response = await client.get(url, headers={"X-Internal-Token": token})
+    except (httpx.HTTPError, OSError) as exc:
+        return (
+            _UNAVAILABLE,
+            f"wire quota endpoint unreachable: {type(exc).__name__}: {exc}",
+            None,
+        )
+
+    if response.status_code != 200:
+        return (
+            _UNAVAILABLE,
+            f"wire quota endpoint non-200 (HTTP {response.status_code})",
+            None,
+        )
+    try:
+        doc = response.json()
+    except ValueError:
+        return _UNAVAILABLE, "wire quota response not JSON (HTTP 200)", None
+    if not isinstance(doc, dict) or "remaining_lines" not in doc:
+        return _UNAVAILABLE, "wire quota response missing remaining_lines", None
+    try:
+        remaining = int(doc.get("remaining_lines"))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return _UNAVAILABLE, "wire quota response remaining_lines not an integer", None
+
+    enforce_balance = bool(doc.get("enforce_balance", True))
+    if remaining <= 0:
+        return (
+            _EXHAUSTED,
+            f"monthly lines exhausted: included={doc.get('included_lines')}, "
+            f"used={doc.get('used_lines')}, remaining={remaining}",
+            enforce_balance,
+        )
+    return _ALLOW, f"monthly lines remaining={remaining}", enforce_balance
+
+
+async def _enforce_line_quota_gate(sub2api_user_id: str) -> tuple[str, str, "bool | None"]:
+    """Config-checked, cached entry to the wire line-quota probe.
+
+    Returns ``(verdict, reason, enforce_balance)``; the caller raises/advances
+    per the doctrine in the module docstring. Missing base/token configuration
+    is itself fail-closed (a half-configured gate must not silently pass).
+    """
+    base = _quota_base()
+    token = _quota_internal_token()
+    if not base or not token:
+        return (
+            _UNAVAILABLE,
+            "FD_WIRE_QUOTA_URL / FD_WIRE_INTERNAL_TOKEN not configured "
+            "(FD_WIRE_QUOTA_GATE=on requires both)",
+            None,
+        )
+
+    cached = await _quota_cache_get(sub2api_user_id)
+    if cached is not None:
+        return cached
+
+    verdict, reason, enforce_balance = await _probe_wire_quota(base, token, sub2api_user_id)
+    ttl = NEGATIVE_CACHE_TTL_SECONDS if verdict == _UNAVAILABLE else _quota_ttl()
+    await _quota_cache_put(sub2api_user_id, verdict, reason, enforce_balance, ttl)
+    return verdict, reason, enforce_balance
+
+
+# ---------------------------------------------------------------------------
 # The hook: enforce-or-allow
 # ---------------------------------------------------------------------------
 
@@ -510,22 +878,63 @@ async def enforce_mcp_proxy_preflight(
     """Pre-forward quota preflight for the /mcp-proxy hop.
 
     Returns silently when the forward may proceed; raises ``HTTPException``
-    (402 ``INSUFFICIENT_BALANCE`` / 503 ``BILLING_UNAVAILABLE``) when it must
-    not. Call this AFTER scope authorization so a genuine 403 can never be
-    masked by a billing verdict, and BEFORE any egress/upstream work so a
-    refused request costs nothing.
+    (402 ``INSUFFICIENT_BALANCE`` / 503 ``BILLING_UNAVAILABLE`` / 402
+    ``CALLER_NOT_MAPPED`` under the deny policy / 402
+    ``MONTHLY_QUOTA_EXHAUSTED`` and 503 ``QUOTA_UNAVAILABLE`` when
+    ``FD_WIRE_QUOTA_GATE`` is on) when it must not. Call this
+    AFTER scope authorization so a genuine 403 can never be masked by a
+    billing verdict, and BEFORE any egress/upstream work so a refused request
+    costs nothing.
 
-    Fast no-op paths (no I/O, no log spam): feature disabled; caller not in
-    SUB2API_CALLER_MAP (internal users are unaffected by design).
+    Fast no-op paths (no I/O, no log spam): feature disabled; unmapped caller
+    under the default ``pass`` policy (internal users are unaffected by design).
     """
     if not _preflight_enabled():
         return
 
-    resolved = _resolve_target(claims)
+    resolved = await _resolve_target(claims)
     if resolved is None:
-        # Unmapped caller: v1 has no sub2api identity for it — skip (pass).
+        # Unmapped caller: neither the Mongo map nor the env override knows a
+        # sub2api identity for them (add-customer-onboarding-automation 3.3).
+        # Platform credentials (admin semantics) always pass — their metering
+        # attributes to the platform track, not a customer balance.
+        if _is_admin_caller(claims):
+            logger.debug(
+                "preflight: unmapped admin-semantic caller; skipping (server=%s)",
+                server_name,
+            )
+            return
+        policy = _unmapped_policy()
+        if policy == "deny":
+            _write_audit_event(
+                caller=(claims.get("sub") or claims.get("egress_user") or "unknown"),
+                server=server_name,
+                result="rejected_caller_not_mapped",
+                reason="no sub2api identity in either map layer",
+                mode=_preflight_mode(),
+                target_kind="none",
+            )
+            logger.warning(
+                "preflight: refusing unmapped caller=%s server=%s "
+                "(PREFLIGHT_UNMAPPED=deny — onboarding gap, not a balance issue)",
+                claims.get("sub") or claims.get("egress_user"),
+                server_name,
+            )
+            raise _reject(
+                402,
+                "CALLER_NOT_MAPPED",
+                "该调用者未完成计费开户映射（配置缺口），请联系平台完成开户",
+            )
+        if policy == "warn":
+            logger.warning(
+                "preflight: unmapped caller=%s server=%s (PREFLIGHT_UNMAPPED=warn; "
+                "allowing — fix the onboarding gap)",
+                claims.get("sub") or claims.get("egress_user"),
+                server_name,
+            )
+            return
         logger.debug(
-            "preflight: caller not in SUB2API_CALLER_MAP; skipping (server=%s)",
+            "preflight: caller not in caller map; skipping (server=%s)",
             server_name,
         )
         return
@@ -534,6 +943,107 @@ async def enforce_mcp_proxy_preflight(
     mode = _preflight_mode()
     cache_key = f"{caller}\x00{target_kind}\x00{target}"
 
+    # wire-self-serve-launch 3.2: monthly line-quota gate, BETWEEN map
+    # resolution and the balance gate (design D1 ordering: mapping -> line
+    # gate -> balance gate). Default OFF; when on, admin-semantic callers are
+    # exempt (same _is_admin_caller rule as the balance exemption — platform
+    # credentials meter to the platform track). The response's
+    # enforce_balance flag conditions the balance gate below: false skips it
+    # entirely so a free-tier 0 balance is never the thing that refuses.
+    # fix-quota-gate-server-scope: the gate additionally requires
+    # _server_in_gate_scope — it polices the wire line's servers ONLY. The
+    # caller map is shared across lines (wire and lex customers live in one
+    # SUB2API_CALLER_MAP), so a non-wire caller on a non-wire server must not
+    # be probed against the wire quota plane (their 404 "no such customer"
+    # is the other line's normal state, not a fail-closable misconfiguration).
+    # The balance gate below is deliberately OUTSIDE this scope condition:
+    # an exempted caller keeps the ordinary balance semantics.
+    skip_balance_gate = False
+    if (
+        _quota_gate_enabled()
+        and not _is_admin_caller(claims)
+        and _server_in_gate_scope(server_name)
+    ):
+        # The wire quota endpoint is keyed by sub2api USER id (what the
+        # onboarding-written caller map stores). A key-shaped map value
+        # (legacy env override layer) cannot identify a quota account:
+        # fail-closed with the gap named, never an ungated forward.
+        if target_kind != "user":
+            reason = (
+                "caller-map value is a sub2api key; FD_WIRE_QUOTA_GATE=on "
+                "requires a sub2api user id to query the wire quota endpoint"
+            )
+            _write_audit_event(
+                caller=caller,
+                server=server_name,
+                result="rejected_quota_unavailable",
+                reason=reason,
+                mode=mode,
+                target_kind=target_kind,
+            )
+            logger.error(
+                "preflight: line-quota gate cannot resolve caller=%s server=%s (%s); "
+                "refusing (fail-closed)",
+                caller,
+                server_name,
+                reason,
+            )
+            raise _reject(503, _QUOTA_UNAVAILABLE_ERROR_CODE, _QUOTA_UNAVAILABLE_MESSAGE_ZH)
+
+        verdict, reason, enforce_balance = await _enforce_line_quota_gate(target)
+        if verdict == _EXHAUSTED:
+            _write_audit_event(
+                caller=caller,
+                server=server_name,
+                result="rejected_monthly_quota_exhausted",
+                reason=reason,
+                mode=mode,
+                target_kind=target_kind,
+            )
+            logger.warning(
+                "preflight: refusing caller=%s server=%s (%s) — monthly line "
+                "quota exhausted (distinct from balance; next month resets)",
+                caller,
+                server_name,
+                reason,
+            )
+            raise _reject(
+                402, _QUOTA_EXHAUSTED_ERROR_CODE, _QUOTA_EXHAUSTED_MESSAGE_ZH
+            )
+        if verdict == _UNAVAILABLE:
+            # Unconditional fail-closed (3.2): the gate's own switch is the
+            # rollback lever, so this verdict does NOT enter the
+            # strict/postpaid mode switch — an ungated forward here would be
+            # exactly the un-metered usage the gate exists to stop.
+            _write_audit_event(
+                caller=caller,
+                server=server_name,
+                result="rejected_quota_unavailable",
+                reason=reason,
+                mode=mode,
+                target_kind=target_kind,
+            )
+            logger.error(
+                "preflight: wire quota endpoint unavailable for caller=%s "
+                "server=%s (%s); refusing (fail-closed)",
+                caller,
+                server_name,
+                reason,
+            )
+            raise _reject(503, _QUOTA_UNAVAILABLE_ERROR_CODE, _QUOTA_UNAVAILABLE_MESSAGE_ZH)
+        # Line gate passed: condition the balance gate on the tier's
+        # enforce_balance flag (free/cheap tiers do not balance-gate).
+        skip_balance_gate = not enforce_balance
+
+    if skip_balance_gate:
+        logger.debug(
+            "preflight: enforce_balance=false for caller=%s; skipping balance "
+            "gate (line gate governs) (server=%s)",
+            caller,
+            server_name,
+        )
+        return
+
     cached = await _cache_get(cache_key)
     if cached is not None:
         verdict, reason = cached
@@ -541,6 +1051,12 @@ async def enforce_mcp_proxy_preflight(
             return
         if verdict == _INSUFFICIENT:
             raise _reject(402, _INSUFFICIENT_ERROR_CODE, _INSUFFICIENT_MESSAGE_ZH)
+        if verdict == _MISSING:
+            raise _reject(
+                402,
+                "BILLING_ACCOUNT_MISSING",
+                "该调用者的计费账户不存在（开户配置缺口），请联系平台核对开户映射",
+            )
         # Unavailable verdict: same mode switch as a fresh probe.
         if mode == "postpaid":
             logger.warning(
@@ -561,6 +1077,29 @@ async def enforce_mcp_proxy_preflight(
     if verdict == _ALLOW:
         await _cache_put(cache_key, verdict, reason, _cache_ttl())
         return
+
+    if verdict == _MISSING:
+        await _cache_put(cache_key, verdict, reason, NEGATIVE_CACHE_TTL_SECONDS)
+        _write_audit_event(
+            caller=caller,
+            server=server_name,
+            result="rejected_billing_account_missing",
+            reason=reason,
+            mode=mode,
+            target_kind=target_kind,
+        )
+        logger.warning(
+            "preflight: caller=%s mapped to a billing account that does not exist "
+            "server=%s (%s) — onboarding gap, not a balance issue",
+            caller,
+            server_name,
+            reason,
+        )
+        raise _reject(
+            402,
+            "BILLING_ACCOUNT_MISSING",
+            "该调用者的计费账户不存在（开户配置缺口），请联系平台核对开户映射",
+        )
 
     if verdict == _INSUFFICIENT:
         await _cache_put(cache_key, verdict, reason, NEGATIVE_CACHE_TTL_SECONDS)

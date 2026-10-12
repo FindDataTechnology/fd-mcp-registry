@@ -247,3 +247,40 @@ class TestListKeys:
         assert query == {"username": "alice"}
         assert len(items) == 1
         assert "secret-hash-value" not in items[0].model_dump()
+
+
+# ---------------------------------------------------------------------------
+# Admin (owner-unscoped) revoke (add-customer-onboarding-automation 4.2)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_revoke_admin_path_ignores_owner(mock_db, mock_collection):
+    """username=None revokes ANY key by key_id (route gates it on admin)."""
+    service = PatchKeyService(mock_db)
+    mock_collection.find_one = AsyncMock(
+        return_value={
+            "key_id": "k1",
+            "username": "someone-else",
+            "status": "active",
+            "groups": [],
+        }
+    )
+    info = await service.revoke_key(key_id="k1")
+    assert info.username == "someone-else"
+    assert mock_collection.find_one.await_args.args[0] == {"key_id": "k1"}
+    update_query = mock_collection.update_one.await_args.args[0]
+    assert "username" not in update_query  # 不限定 owner
+
+
+@pytest.mark.asyncio
+async def test_revoke_owner_scoped_still_filters(mock_db, mock_collection):
+    """Default path (username given) keeps the owner filter — no oracle."""
+    service = PatchKeyService(mock_db)
+    mock_collection.find_one = AsyncMock(return_value=None)
+    with pytest.raises(PatchKeyNotFound):
+        await service.revoke_key(key_id="k1", username="alice")
+    assert mock_collection.find_one.await_args.args[0] == {
+        "key_id": "k1",
+        "username": "alice",
+    }

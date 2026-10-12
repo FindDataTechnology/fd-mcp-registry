@@ -19,6 +19,7 @@ Tracked by the wire-platform-v1 fork (task 2.1).
 """
 
 import logging
+import os
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -70,17 +71,32 @@ async def mint_patch_key(
 
     The response body contains the plaintext key exactly once; it is not
     stored server-side (only its SHA-256 hash) and cannot be retrieved again.
+
+    Admin mint-on-behalf-of (add-customer-onboarding-automation 4.1): when
+    the body carries ``{username, groups}``, an ADMIN caller may mint a key
+    owned by ``username`` with exactly that groups snapshot — the wire
+    onboarding path for customer-track keys, replacing the self-signed-JWT
+    claims channel. Non-admin callers sending these fields get 403 (never a
+    silent fallback to their own identity).
     """
     ctx = _require_user(user_context)
+    on_behalf_of = payload.username is not None
+    if on_behalf_of and not ctx.get("is_admin"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="username/groups fields are admin-only (mint on behalf of)",
+        )
     service = await _get_service()
     try:
         created = await service.mint_key(
-            username=ctx["username"],
-            groups=list(ctx.get("groups") or []),
+            username=payload.username if on_behalf_of else ctx["username"],
+            groups=payload.groups if on_behalf_of else list(ctx.get("groups") or []),
             name=payload.name,
-            email=ctx.get("email") or None,
-            provider=ctx.get("auth_method") or None,
-            egress_user=ctx.get("egress_user") or None,
+            email=None if on_behalf_of else (ctx.get("email") or None),
+            provider=None if on_behalf_of else (ctx.get("auth_method") or None),
+            # egress vault id belongs to the CONSOLE CALLER's identity; a
+            # customer minted on behalf has no vault — capture nothing.
+            egress_user=None if on_behalf_of else (ctx.get("egress_user") or None),
         )
     except PatchKeyQuotaExceeded as exc:
         raise HTTPException(
@@ -92,7 +108,12 @@ async def mint_patch_key(
         "create",
         _RESOURCE_TYPE,
         resource_id=created.info.key_id,
-        description=f"Minted patch key '{payload.name}' (hash-stored, shown once)",
+        description=(
+            f"Minted patch key '{payload.name}' on behalf of {payload.username} "
+            f"with explicit groups (admin path)"
+            if on_behalf_of
+            else f"Minted patch key '{payload.name}' (hash-stored, shown once)"
+        ),
     )
     # SECURITY: never log `created.key` -- plaintext appears only in the response.
     return created
@@ -102,11 +123,36 @@ async def mint_patch_key(
 async def list_patch_keys(
     user_context: Annotated[dict | None, Depends(nginx_proxied_auth)] = None,
 ) -> PatchKeyListResponse:
-    """List the caller's keys. Metadata only: no plaintext, no hash."""
+    """List the caller's keys. Metadata only: no plaintext, no hash.
+
+    When the call-grant gate is enabled (ecosystem-bridge 3.3), the response
+    also carries the OWNER's monthly grant usage — one pool across all keys.
+    Store hiccups degrade to ``grant: null`` (visibility, never a hard fail).
+    """
     ctx = _require_user(user_context)
     service = await _get_service()
     items = await service.list_keys_for_user(ctx["username"])
-    return PatchKeyListResponse(total=len(items), items=items)
+
+    grant_view = None
+    if (os.getenv("CALL_GRANT_ENABLED") or "").strip().lower() in ("1", "true", "yes", "on"):
+        try:
+            from registry.schemas.patch_key import PatchKeyGrantView
+            from registry.services.call_grant_service import (
+                current_month,
+                get_call_grant_service,
+            )
+
+            limit = max(0, int((os.getenv("CALL_GRANT_MONTHLY_LIMIT") or "").strip() or 5000))
+            grant_service = await get_call_grant_service()
+            month = current_month()
+            grant_view = PatchKeyGrantView(
+                month=month,
+                used=await grant_service.usage(ctx["username"], month=month),
+                limit=limit,
+            )
+        except Exception:  # noqa: BLE001 - visibility is best-effort
+            logger.warning("call-grant usage lookup failed for %s", ctx["username"], exc_info=True)
+    return PatchKeyListResponse(total=len(items), items=items, grant=grant_view)
 
 
 @router.delete("/{key_id}", response_model=PatchKeyInfo)
@@ -120,13 +166,32 @@ async def revoke_patch_key(
 
     Revocation is one-way: there is no re-activate. A key that belongs to a
     different user is reported as 404 (no cross-user existence oracle).
+
+    Admin fallback (add-customer-onboarding-automation 4.2): when the
+    owner-scoped lookup misses AND the caller is admin, the revoke retries
+    admin-scoped (any key by key_id) — the deprovision automation path, so
+    retiring a customer never depends on impersonating the owner. A non-admin
+    still gets the plain 404.
     """
     ctx = _require_user(user_context)
     service = await _get_service()
     try:
         info = await service.revoke_key(key_id=key_id, username=ctx["username"])
     except PatchKeyNotFound:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Patch key not found")
+        if not ctx.get("is_admin"):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Patch key not found"
+            )
+        try:
+            info = await service.revoke_key(key_id=key_id)  # admin: any owner
+        except PatchKeyNotFound:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Patch key not found"
+            )
+        except PatchKeyAlreadyRevoked:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail="Patch key already revoked"
+            )
     except PatchKeyAlreadyRevoked:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail="Patch key already revoked"

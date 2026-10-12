@@ -101,3 +101,37 @@ class TestWWWAuthenticateMiddleware:
         header = response.headers["www-authenticate"]
         embedded = header.split('resource_metadata="', 1)[1].rsplit('"', 1)[0]
         assert embedded == RESOURCE_METADATA_URL
+
+
+class TestHeaderReplacesUpstreamValue:
+    """ecosystem-bridge 5.1: a 401 that already carries the auth server's bare
+    `WWW-Authenticate: Bearer` must end with exactly ONE header — this value.
+    Appending produced two headers and clients that read the first lost the
+    resource_metadata pointer (the discovery dead end this middleware exists
+    to prevent)."""
+
+    def _app_with_upstream_header(self) -> FastAPI:
+        app = FastAPI()
+        app.add_middleware(
+            WWWAuthenticateMiddleware,
+            resource_metadata_url=RESOURCE_METADATA_URL,
+        )
+
+        @app.get("/airegistry-tools/mcp")
+        async def upstream_401():
+            return JSONResponse(
+                status_code=401,
+                content={"error": "auth required"},
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+        return app
+
+    def test_single_header_survives_upstream_bare_bearer(self):
+        client = TestClient(self._app_with_upstream_header())
+        response = client.get("/airegistry-tools/mcp")
+        values = response.headers.get_list("www-authenticate")
+        assert len(values) == 1, f"expected one header, got {values!r}"
+        assert values[0] == (
+            f'Bearer realm="mcp", resource_metadata="{RESOURCE_METADATA_URL}"'
+        )

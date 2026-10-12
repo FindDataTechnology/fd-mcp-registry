@@ -182,6 +182,7 @@ def mint_mcp_proxy_token(
     auth_method: str = "",
     egress_user: str = "",
     audit_identity: dict | None = None,
+    groups: list[str] | None = None,
 ) -> str:
     """Mint the per-request /mcp-proxy token in /validate's 200 path.
 
@@ -223,6 +224,11 @@ def mint_mcp_proxy_token(
         "upstream_url": upstream_url,
         "auth_method": auth_method,
         "egress_user": egress_user or "",
+        # Resolved entitlement groups (ecosystem-bridge 3.3/3.4): the tier gate
+        # and call-grant on the mcp_proxy hop read these — the canonical
+        # auth_method alone lost the patch-key marker, and the raw claim set
+        # carries no groups.
+        "groups": list(groups or []),
         "token_use": MCP_PROXY_TOKEN_USE,
     }
     if audit_identity:

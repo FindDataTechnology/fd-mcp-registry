@@ -56,5 +56,11 @@ class WWWAuthenticateMiddleware(BaseHTTPMiddleware):
         if not _MCP_PATH_PATTERN.match(request.url.path):
             return response
 
+        # REPLACE, not append: the auth server's own 401 already carries a bare
+        # `WWW-Authenticate: Bearer`, and an appended second header confused
+        # clients (RFC 7230 allows repeats, but MCP clients that take the first
+        # value lose the resource_metadata pointer — the discovery dead end
+        # this middleware exists to prevent). A single header, this value.
+        del response.headers["WWW-Authenticate"]
         response.headers["WWW-Authenticate"] = self._header_value
         return response
