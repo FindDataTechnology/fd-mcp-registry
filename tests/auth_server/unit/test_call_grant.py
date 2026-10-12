@@ -15,8 +15,9 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi import HTTPException
+from fastapi.testclient import TestClient
 
-from registry.schemas.patch_key import PatchKeyInfo
+from registry.schemas.patch_key import PatchKeyInfo, PATCH_KEY_STATUS_ACTIVE
 from registry.services.call_grant_service import GrantVerdict
 
 pytestmark = [pytest.mark.unit, pytest.mark.auth]
@@ -151,7 +152,11 @@ async def test_non_patch_key_caller_skips(grant_env) -> None:
     fake_holder = grant_env(_verdict(True, used=0))
     with fake_holder as svc:
         await enforce_call_grant(_claims(groups=["community"], auth_method="oauth2", client_id="logto-app"), _body())
-    assert svc.return_value.consume_calls == []
+    # Deployed semantics (ecosystem-bridge 3.3, aligned 2026-10-13): at the
+    # mcp_proxy hop /validate has already folded patch-key into "oauth2", so
+    # the marker is invisible -- a non-empty groups claim IS the free-tier
+    # population signal. This caller therefore counts (was: skipped).
+    assert svc.return_value.consume_calls == ["comuser"]
 
 
 async def test_non_grant_group_caller_skips(grant_env) -> None:
@@ -223,7 +228,10 @@ async def test_tier_gate_skips_untargeted_servers_and_lanes(grant_env, monkeypat
     monkeypatch.setenv("CALL_GRANT_TIER_SERVERS", "law-bench:paid")
     assert is_tier_gated(_claims(groups=["community"]), "fd-open-data-mcp") is None
     assert is_tier_gated(_claims(groups=["wire-customers"]), "law-bench") is None
-    assert is_tier_gated(_claims(groups=["community"], auth_method="oauth2", client_id="app"), "law-bench") is None
+    # Deployed semantics (aligned 2026-10-13): oauth2 + non-empty groups is
+    # the proxy-token form of a community patch-key caller, so the tier gate
+    # DOES answer for it (was: skipped).
+    assert is_tier_gated(_claims(groups=["community"], auth_method="oauth2", client_id="app"), "law-bench") == "paid"
 
 
 async def test_tier_gate_inert_when_unconfigured(grant_env, monkeypatch) -> None:
