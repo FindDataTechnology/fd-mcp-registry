@@ -1252,6 +1252,7 @@ def _build_skill_card(
         name=request.name,
         description=request.description,
         skill_md_url=request.skill_md_url,
+        skill_md_content=request.skill_md_content or None,
         skill_md_raw_url=skill_md_raw_url,
         repository_url=request.repository_url,
         license=request.license,
@@ -1624,33 +1625,61 @@ class SkillService:
         # the update) and pin the resolved IPs, before persisting. Rejects a
         # metadata/private target at update time. Only reads the DB when a proxy
         # field is actually touched, so non-proxy updates pay no cost.
-        if "is_proxied" in updates or "proxy_target_url" in updates:
-            existing = await repo.get(normalized)
-            if existing is not None:
-                merged_is_proxied = updates.get("is_proxied", existing.is_proxied)
-                merged_target = updates.get("proxy_target_url", existing.proxy_target_url)
-                pin = await validate_and_pin_proxy_target(
-                    "skill",
-                    {
-                        "is_proxied": merged_is_proxied,
-                        "proxy_target_url": merged_target,
-                        # An update re-enabling proxying must clear a prior auto-disable.
-                        "proxy_disabled_reason": None,
-                    },
-                )
-                # Refresh the pin bookkeeping to match the (re)validated target, or
-                # clear it when the merged state is no longer a live proxy.
-                updates["proxy_resolved_ips"] = pin.get("proxy_resolved_ips", [])
-                updates["proxy_target_host"] = pin.get("proxy_target_host")
-                updates["proxy_disabled_reason"] = None
-                # Credential-misdirection guard: if the effective target changed,
-                # the create-time upstream headers were scoped to the OLD host --
-                # clear them so we never inject the old host's secret at the new
-                # host. (Headers are not settable on update; re-add for the new
-                # target via a fresh create.)
-                clear_upstream_headers_on_repoint(
-                    updates, existing_target=existing.proxy_target_url, new_target=merged_target
-                )
+        touches_proxy = "is_proxied" in updates or "proxy_target_url" in updates
+        # skill-content-propagation: the URL/body bookkeeping below also needs
+        # the pre-update card; one read serves both when either side is touched.
+        touches_content = "skill_md_url" in updates or "skill_md_content" in updates
+        existing = await repo.get(normalized) if (touches_proxy or touches_content) else None
+
+        if touches_proxy and existing is not None:
+            merged_is_proxied = updates.get("is_proxied", existing.is_proxied)
+            merged_target = updates.get("proxy_target_url", existing.proxy_target_url)
+            pin = await validate_and_pin_proxy_target(
+                "skill",
+                {
+                    "is_proxied": merged_is_proxied,
+                    "proxy_target_url": merged_target,
+                    # An update re-enabling proxying must clear a prior auto-disable.
+                    "proxy_disabled_reason": None,
+                },
+            )
+            # Refresh the pin bookkeeping to match the (re)validated target, or
+            # clear it when the merged state is no longer a live proxy.
+            updates["proxy_resolved_ips"] = pin.get("proxy_resolved_ips", [])
+            updates["proxy_target_host"] = pin.get("proxy_target_host")
+            updates["proxy_disabled_reason"] = None
+            # Credential-misdirection guard: if the effective target changed,
+            # the create-time upstream headers were scoped to the OLD host --
+            # clear them so we never inject the old host's secret at the new
+            # host. (Headers are not settable on update; re-add for the new
+            # target via a fresh create.)
+            clear_upstream_headers_on_repoint(
+                updates, existing_target=existing.proxy_target_url, new_target=merged_target
+            )
+
+        # skill-content-propagation: a PUT that supplies no inline body (absent,
+        # JSON null, or an empty string normalized by the request model) must
+        # never clear the stored one.
+        if updates.get("skill_md_content") is None:
+            updates.pop("skill_md_content", None)
+
+        if existing is not None:
+            served_body_moved = False
+            if "skill_md_url" in updates and str(updates["skill_md_url"]) != str(
+                existing.skill_md_url
+            ):
+                # skill_md_raw_url is derived from skill_md_url (the create path
+                # translates once); re-derive on every URL move so the content
+                # fallback can't keep pointing at a stale pack version.
+                _, raw_url = translate_skill_url(str(updates["skill_md_url"]))
+                updates["skill_md_raw_url"] = raw_url
+                served_body_moved = True
+            if updates.get("skill_md_content") is not None and updates["skill_md_content"] != (
+                existing.skill_md_content or ""
+            ):
+                served_body_moved = True
+            if served_body_moved:
+                updates["content_updated_at"] = datetime.now(UTC)
 
         updated = await repo.update(normalized, updates)
 

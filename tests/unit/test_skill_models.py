@@ -224,6 +224,38 @@ class TestSkillRegistrationRequest:
                 name="INVALID", description="Test", skill_md_url="https://test.com/SKILL.md"
             )
 
+    def test_inline_content_accepted(self):
+        """An inline skill body parses and survives exclude_unset dumps."""
+        request = SkillRegistrationRequest(
+            name="spider-heal-repair",
+            description="Repair spider units",
+            skill_md_url="https://facet.example/api/packs/p/versions/2/skills/s.md",
+            skill_md_content="# body v2\n",
+        )
+        assert request.skill_md_content == "# body v2\n"
+        dumped = request.model_dump(exclude_unset=True)
+        assert dumped["skill_md_content"] == "# body v2\n"
+
+    def test_inline_content_absent_stays_unset(self):
+        """Omitting the body keeps it out of exclude_unset dumps (no clearing)."""
+        request = SkillRegistrationRequest(
+            name="spider-heal-repair",
+            description="Repair spider units",
+            skill_md_url="https://facet.example/api/packs/p/versions/2/skills/s.md",
+        )
+        dumped = request.model_dump(exclude_unset=True)
+        assert "skill_md_content" not in dumped
+
+    def test_inline_content_empty_string_normalizes(self):
+        """An empty-string body normalizes to None (treated as not supplied)."""
+        request = SkillRegistrationRequest(
+            name="spider-heal-repair",
+            description="Repair spider units",
+            skill_md_url="https://facet.example/api/packs/p/versions/2/skills/s.md",
+            skill_md_content="",
+        )
+        assert request.skill_md_content is None
+
 
 class TestSkillInfo:
     """Tests for SkillInfo model."""

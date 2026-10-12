@@ -434,6 +434,14 @@ class SkillRegistrationRequest(ProxyableMixin):
     name: str = Field(..., min_length=1, max_length=64)
     description: str = Field(..., min_length=1, max_length=1024)
     skill_md_url: HttpUrl = Field(..., description="URL to SKILL.md file")
+    skill_md_content: str | None = Field(
+        None,
+        description=(
+            "Inline SKILL.md content, stored on the card instead of fetching "
+            "the URL (pack deploys PUT the current version's body this way, "
+            "keeping the served content in lockstep with skill_md_url)"
+        ),
+    )
     repository_url: HttpUrl | None = None
     version: str | None = Field(None, max_length=32, description="Skill version (e.g., 1.0.0)")
     id: str | None = Field(
@@ -480,6 +488,14 @@ class SkillRegistrationRequest(ProxyableMixin):
             "auth_credential, which authenticates the SKILL.md FETCH, not the proxy hop."
         ),
     )
+
+    @field_validator("skill_md_content")
+    @classmethod
+    def _normalize_skill_md_content(cls, v: str | None) -> str | None:
+        # An empty string is a client's way of omitting the body; normalizing
+        # it to None keeps `exclude_unset` semantics from clearing the stored
+        # content on PUTs that never meant to touch it.
+        return v or None
 
     @field_validator("id")
     @classmethod
