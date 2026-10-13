@@ -3,20 +3,21 @@
 单一事实源：当前生产运行什么、哪条谱系出的、历史怎么走到这里。
 任何发布/换版前，先核本文件 §1，再核 `git log origin/main`（D4 教训：台账与远端都要看）。
 
-## §1 当前生产运行（2026-10-13 fd-1.3.0 起）
+## §1 当前生产运行（2026-10-13 晚起：k8s/GitOps 形态，onboard-registry-argocd 切流）
 
-| 组件 | 镜像 tag | 谱系 | 状态 |
+| 组件 | 形态 | 谱系 | 状态 |
 |---|---|---|---|
-| registry 容器 | `ccr.ccs.tencentyun.com/yizuo/mcp-registry:sha-a95f7a0` | origin/main（fd-1.3.0） | healthy |
-| auth-server 容器 | `ccr.ccs.tencentyun.com/yizuo/mcp-auth-server:sha-a95f7a0` | origin/main（fd-1.3.0） | healthy |
-| mcpgw 容器 | `ccr.ccs.tencentyun.com/yizuo/mcpgw:1.32.0`（钉版，非我方构建；上游原版 `public.ecr.aws/p3v1o3c6/mcpgw` 已转存 ccr） | 上游 | healthy |
+| registry 容器 | cheap k3s `mcp-registry` ns，Deployment hostNetwork@cheap-8（100.64.0.15），镜像 `ccr.../yizuo/mcp-registry:sha-a95f7a0`，nginx listen 18080/18443（启动 sed，全节点宿主 8080 被 k3s 系统组件占用） | origin/main（fd-1.3.0） | healthy |
+| auth-server 容器 | 同上拓扑，`ccr.../yizuo/mcp-auth-server:sha-a95f7a0`（8888） | origin/main（fd-1.3.0） | healthy |
+| mcpgw 容器 | 同上拓扑，`ccr.../yizuo/mcpgw:1.32.0`（8003，钉版上游） | 上游 | healthy |
+| mongodb | 同上拓扑，Deployment+hostPath `/opt/mcp-registry-k8s/mongo`（1010MiB mongodump/restore 迁入，对账 servers 14/14） | mongo:8.2 | healthy |
+| openbao | **留 cheap-1 compose**（密钥库，k8s 经 tailnet 100.64.0.11:8200 直连；迁移另立项） | 上游 | healthy |
 
-- 双容器自 fd-1.3.0 起**同源出片**（同一 commit、同一构建 matrix）。
-- 2026-10-13 晚补正：fd-1.3.0 切换当时 registry 容器曾以 cheap-1 本地构建的
-  `mcp-gateway-registry-registry:latest`（digest 131321e5，代码同源 48c1d23）顶班，
-  当晚已 `docker compose up -d registry` 滚回 compose pin 的 ccr 同源镜像
-  （digest e3af2230）——live / compose pin / 本台账三方一致。本地构建的
-  latest 镜像留宿主机作应急回退，不再用作运行镜像。
+- **滚动=改 manifest**：gitee fd-infra-deploy `mcp-registry/prod/` → ArgoCD app `mcp-registry`（selfHeal）自动 sync。Secret 外建不进仓（mcp-registry-env/-env-auth/-mongo-keyfile + tcr-ccr，ns mcp-registry）。
+- **入口链**：`mcp.finddatatech.cloud`（http:8080 与 https:443 同路）→ 雷池 tengine(443)→宿主 Caddy :8080 mcp 站点块→`100.64.0.15:18080`（Caddyfile 三处 reverse_proxy，2026-10-13 晚切）。Caddy SSE 参数（flush_interval -1/900s）与 mint 预检特判块原样保留。
+- **回退**：Caddyfile 三处 upstream 改回 `127.0.0.1:18080`+reload（秒级）——compose 双轨栈冻结在 sha-a95f7a0（stop 前保留 ≥1 天观察期；观察期内 compose 侧只读）。数据回退=观察窗内 k8s mongo 新写入反向 dump 回灌。
+- models 262MiB 在 cheap-8 hostPath `/opt/mcp-registry-k8s/models`（rsync 自 cheap-1）。
+- 历史（compose 时代，2026-10-13 凌晨~晚）：fd-1.3.0 切换当时 registry 容器曾以 cheap-1 本地构建 `latest`（digest 131321e5）顶班，当晚滚回 ccr pin（e3af2230）后随即整体迁 k8s。
 - 栈运行目录：cheap-1 `/opt/mcp-gateway-registry`，compose 文件 = `docker-compose.prebuilt.yml`（本仓跟踪，随仓更新；镜像 pin 在内）。
 - 运行时 nginx conf 由 /opt checkout **bind-mount**（`docker/nginx_rev_proxy_http_and_https.conf` + `docker/nginx_rev_proxy_http_only.conf`），与仓库内容字节一致；镜像内置 conf 仅作无挂载时的回退。
 - 构建：GitHub Actions（org 账单阻断期走 scs001 fork 临时线，`image.yml` workflow_dispatch 到 `fd-*` 分支）→ hkccr → cheap-3 `tcr-relay-sync.sh` 回灌 ccr（手动单 tag：`tcr-relay-sync.sh <repo> <tag>`）。
@@ -40,6 +41,7 @@
 | fd-1.1.0–1.1.3 | …3739eb7 | wire 侧线（tier/quota/caller-map/backend-auth 移植对）；auth-server 用 |
 | fd-1.2.0–1.2.2 | …ad118d4a | main 线（i18n/fastembed/card examples/skill 传播）；registry 用 |
 | **fd-1.3.0** | **a95f7a01** | **谱系归一**：wire 载荷并回 main，双容器同源；修 business-mcp 401（backend-auth 生产者半缺位） |
+| **k8s 迁移** | 同 a95f7a0 | 2026-10-13 晚 onboard-registry-argocd：四工作负载迁 cheap k3s（ArgoCD app mcp-registry），Caddy 三处切流；compose 双轨冻结（回退位）；openbao 留守 |
 
 ## §4 关键机制备忘
 
