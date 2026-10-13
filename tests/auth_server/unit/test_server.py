@@ -4253,6 +4253,162 @@ class TestMcpProxyEndpointHeaderPassthrough:
 
 
 # =============================================================================
+# MCP PROXY OPT-IN IDENTITY FORWARDING TESTS
+# =============================================================================
+#
+# The /mcp-proxy hop injects X-Forwarded-User: <verified sub> ONLY when the
+# target server registered identity_forwarding=true. The value comes from the
+# signed mcp-proxy token, never from the inbound request; every disabled path
+# (flag off, no sub, lookup failure) leaves the egress headers exactly as the
+# pre-feature hop produced them.
+
+
+def _patch_server_repo_doc(doc: dict | None):
+    """Patch get_server_repository so ``get`` returns the given server document.
+
+    mcp_proxy consults the server repository for the per-server opt-in
+    identity_forwarding flag; these tests care only about the flag value, not
+    the repository itself. Overrides the conftest autouse stub for the duration
+    of the context.
+    """
+    repo = AsyncMock()
+    repo.get.return_value = doc
+    return patch("auth_server.server.get_server_repository", return_value=repo)
+
+
+def _get_captured_header(headers: dict, name: str) -> str | None:
+    """Case-insensitive lookup on the captured upstream header dict.
+
+    Relayed inbound headers keep the ASGI casing (lowercase), while the
+    injected value is set under the canonical "X-Forwarded-User" spelling.
+    """
+    lower = name.lower()
+    return next((v for k, v in headers.items() if k.lower() == lower), None)
+
+
+class TestMcpProxyIdentityForwarding:
+    """Opt-in X-Forwarded-User injection on the /mcp-proxy hop."""
+
+    def test_flag_on_injects_verified_sub(self):
+        """identity_forwarding=true + verified sub: the upstream request carries
+        X-Forwarded-User set to the token's `sub`, not any caller-supplied value.
+        """
+        import auth_server.server as server_module
+
+        patch_httpx, captured = _capture_upstream_headers()
+        with (
+            _patch_server_repo_doc({"path": "/office-docs", "identity_forwarding": True}),
+            _patch_scope_repo_allow_all(),
+            patch.object(server_module, "_read_mcp_filter_enabled", return_value=False),
+            patch_httpx,
+        ):
+            client = TestClient(server_module.app)
+            response = client.post(
+                "/mcp-proxy/office-docs",
+                json={"jsonrpc": "2.0", "id": 1, "method": "initialize"},
+                headers=_mcp_proxy_token_headers(),
+            )
+
+        assert response.status_code == 200
+        assert captured["headers"]["X-Forwarded-User"] == "test-user"
+
+    def test_flag_off_leaves_egress_unchanged(self):
+        """Flag absent (schema default): no injection; the unmanaged inbound
+        header relays exactly as the pre-feature hop forwarded it.
+        """
+        import auth_server.server as server_module
+
+        patch_httpx, captured = _capture_upstream_headers()
+        with (
+            _patch_server_repo_doc({"path": "/office-docs"}),
+            _patch_scope_repo_allow_all(),
+            patch.object(server_module, "_read_mcp_filter_enabled", return_value=False),
+            patch_httpx,
+        ):
+            client = TestClient(server_module.app)
+            response = client.post(
+                "/mcp-proxy/office-docs",
+                json={"jsonrpc": "2.0", "id": 1, "method": "initialize"},
+                headers={
+                    "X-Forwarded-User": "caller-chosen",
+                    **_mcp_proxy_token_headers(),
+                },
+            )
+
+        assert response.status_code == 200
+        # Not injected over: the caller-supplied value passes through unchanged.
+        assert _get_captured_header(captured["headers"], "X-Forwarded-User") == "caller-chosen"
+
+    def test_no_sub_skips_lookup_and_injection(self):
+        """Claims without a `sub` (machine-credential style): no repository
+        lookup at all and no injection; egress headers are untouched.
+        """
+        import auth_server.server as server_module
+        from fastapi import Request as _Request
+
+        async def _verify_without_sub(request: _Request) -> None:
+            # Same stash verify_mcp_proxy_token performs, minus any `sub` claim.
+            request.state.mcp_proxy_claims = {
+                "scopes": ["admin:all"],
+                "server": "office-docs",
+                "upstream_url": "https://upstream.example/mcp",
+            }
+
+        repo = AsyncMock()
+        patch_httpx, captured = _capture_upstream_headers()
+        with (
+            patch("auth_server.server.get_server_repository", return_value=repo),
+            _patch_scope_repo_allow_all(),
+            patch.object(server_module, "_read_mcp_filter_enabled", return_value=False),
+            patch_httpx,
+        ):
+            server_module.app.dependency_overrides[server_module.verify_mcp_proxy_token] = (
+                _verify_without_sub
+            )
+            try:
+                client = TestClient(server_module.app)
+                response = client.post(
+                    "/mcp-proxy/office-docs",
+                    json={"jsonrpc": "2.0", "id": 1, "method": "initialize"},
+                    headers={"X-Forwarded-User": "caller-chosen"},
+                )
+            finally:
+                server_module.app.dependency_overrides.clear()
+
+        assert response.status_code == 200
+        # Without a sub the flag is never even consulted.
+        repo.get.assert_not_called()
+        assert _get_captured_header(captured["headers"], "X-Forwarded-User") == "caller-chosen"
+
+    def test_forged_inbound_header_overridden_by_verified_sub(self):
+        """Flag on + caller-supplied X-Forwarded-User: the VERIFIED sub wins.
+        The forged value is dropped and never relayed to the upstream.
+        """
+        import auth_server.server as server_module
+
+        patch_httpx, captured = _capture_upstream_headers()
+        with (
+            _patch_server_repo_doc({"path": "/office-docs", "identity_forwarding": True}),
+            _patch_scope_repo_allow_all(),
+            patch.object(server_module, "_read_mcp_filter_enabled", return_value=False),
+            patch_httpx,
+        ):
+            client = TestClient(server_module.app)
+            response = client.post(
+                "/mcp-proxy/office-docs",
+                json={"jsonrpc": "2.0", "id": 1, "method": "initialize"},
+                headers={
+                    "X-Forwarded-User": "attacker-chosen",
+                    **_mcp_proxy_token_headers(),
+                },
+            )
+
+        assert response.status_code == 200
+        assert captured["headers"]["X-Forwarded-User"] == "test-user"
+        assert "attacker-chosen" not in captured["headers"].values()
+
+
+# =============================================================================
 # OBO EXCHANGE EGRESS MODE TESTS (Phase 3)
 # =============================================================================
 

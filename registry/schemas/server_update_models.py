@@ -145,6 +145,10 @@ class ServerUpdateRequest(BaseModel):
     is_proxied: bool | None = None
     proxy_target_url: str | None = None
 
+    # Opt-in identity forwarding on the /mcp-proxy hop (X-Forwarded-User carries
+    # the caller's verified subject upstream).
+    identity_forwarding: bool | None = None
+
     # NOTE: Credential-shaped fields (auth_scheme, auth_credential,
     # auth_header_name, custom_headers) are intentionally absent.
     # They are owned by PATCH /api/servers/{path}/auth-credential.
@@ -244,6 +248,8 @@ class ServerCardPatch(BaseModel):
     # would 422 these without declaration.
     is_proxied: bool | None = None
     proxy_target_url: str | None = None
+    # Opt-in identity forwarding on the /mcp-proxy hop (None = leave unchanged).
+    identity_forwarding: bool | None = None
     # NOTE: Credential-shaped fields (auth_scheme, auth_credential,
     # auth_header_name, custom_headers, custom_header_names) are
     # intentionally absent and rejected by extra="forbid" with 422.

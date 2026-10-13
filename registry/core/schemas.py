@@ -728,6 +728,15 @@ class ServerInfo(ProxyableMixin):
             "MCP at the server path itself; set true to force the suffix."
         ),
     )
+    identity_forwarding: bool = Field(
+        default=False,
+        description=(
+            "Opt-in identity forwarding: when true, the auth-server /mcp-proxy hop "
+            "injects the caller's verified token subject as X-Forwarded-User on the "
+            "upstream request. Default false keeps egress behavior unchanged (no "
+            "identity header injected)."
+        ),
+    )
     metadata: dict[str, Any] = Field(
         default_factory=dict,
         description="Additional custom metadata for organization, compliance, or integration purposes",
@@ -1085,6 +1094,14 @@ class ServiceRegistrationRequest(ProxyableMixin):
     )
     auth_header_name: str | None = Field(
         default=None, description="Custom header name for API key auth. Default: X-API-Key"
+    )
+    identity_forwarding: bool = Field(
+        default=False,
+        description=(
+            "Opt-in identity forwarding: when true, the /mcp-proxy hop injects the "
+            "caller's verified token subject as X-Forwarded-User on the upstream "
+            "request. Default false keeps behavior unchanged."
+        ),
     )
     status: LifecycleStatus = Field(
         default=LifecycleStatus.ACTIVE,

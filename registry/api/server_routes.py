@@ -1734,6 +1734,7 @@ async def register_service(
     local_runtime: Annotated[str | None, Form()] = None,
     oauth_client_id: Annotated[str | None, Form()] = None,
     append_mcp_path: Annotated[bool | None, Form()] = None,
+    identity_forwarding: Annotated[bool | None, Form()] = None,
     user_context: Annotated[dict, Depends(enhanced_auth)] = None,
     _csrf: Annotated[None, Depends(verify_csrf_token_flexible)] = None,
 ):
@@ -1868,6 +1869,11 @@ async def register_service(
         server_entry["oauth_client_id"] = oauth_client_id
     if append_mcp_path is not None:
         server_entry["append_mcp_path"] = append_mcp_path
+
+    # Opt-in identity forwarding on the /mcp-proxy hop. Absent = the schema
+    # default (False), so unconfigured registrations behave unchanged.
+    if identity_forwarding is not None:
+        server_entry["identity_forwarding"] = identity_forwarding
 
     # Add metadata if provided (expects JSON string)
     if metadata:
@@ -4314,6 +4320,7 @@ async def register_service_api(
     allowed_groups: Annotated[str | None, Form()] = None,
     oauth_client_id: Annotated[str | None, Form()] = None,
     append_mcp_path: Annotated[bool | None, Form()] = None,
+    identity_forwarding: Annotated[bool | None, Form()] = None,
     _csrf: Annotated[None, Depends(verify_csrf_token_flexible)] = None,
 ):
     """Register a service via JWT Bearer Token authentication (External API).
@@ -4559,6 +4566,11 @@ async def register_service_api(
         server_entry["oauth_client_id"] = oauth_client_id
     if append_mcp_path is not None:
         server_entry["append_mcp_path"] = append_mcp_path
+
+    # Opt-in identity forwarding on the /mcp-proxy hop. Absent = the schema
+    # default (False), so unconfigured registrations behave unchanged.
+    if identity_forwarding is not None:
+        server_entry["identity_forwarding"] = identity_forwarding
 
     if version:
         server_entry["version"] = version
