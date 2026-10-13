@@ -9,9 +9,14 @@
 |---|---|---|---|
 | registry 容器 | `ccr.ccs.tencentyun.com/yizuo/mcp-registry:sha-a95f7a0` | origin/main（fd-1.3.0） | healthy |
 | auth-server 容器 | `ccr.ccs.tencentyun.com/yizuo/mcp-auth-server:sha-a95f7a0` | origin/main（fd-1.3.0） | healthy |
-| mcpgw 容器 | `public.ecr.aws/p3v1o3c6/mcpgw:1.32.0`（钉版，非我方构建） | 上游 | healthy |
+| mcpgw 容器 | `ccr.ccs.tencentyun.com/yizuo/mcpgw:1.32.0`（钉版，非我方构建；上游原版 `public.ecr.aws/p3v1o3c6/mcpgw` 已转存 ccr） | 上游 | healthy |
 
 - 双容器自 fd-1.3.0 起**同源出片**（同一 commit、同一构建 matrix）。
+- 2026-10-13 晚补正：fd-1.3.0 切换当时 registry 容器曾以 cheap-1 本地构建的
+  `mcp-gateway-registry-registry:latest`（digest 131321e5，代码同源 48c1d23）顶班，
+  当晚已 `docker compose up -d registry` 滚回 compose pin 的 ccr 同源镜像
+  （digest e3af2230）——live / compose pin / 本台账三方一致。本地构建的
+  latest 镜像留宿主机作应急回退，不再用作运行镜像。
 - 栈运行目录：cheap-1 `/opt/mcp-gateway-registry`，compose 文件 = `docker-compose.prebuilt.yml`（本仓跟踪，随仓更新；镜像 pin 在内）。
 - 运行时 nginx conf 由 /opt checkout **bind-mount**（`docker/nginx_rev_proxy_http_and_https.conf` + `docker/nginx_rev_proxy_http_only.conf`），与仓库内容字节一致；镜像内置 conf 仅作无挂载时的回退。
 - 构建：GitHub Actions（org 账单阻断期走 scs001 fork 临时线，`image.yml` workflow_dispatch 到 `fd-*` 分支）→ hkccr → cheap-3 `tcr-relay-sync.sh` 回灌 ccr（手动单 tag：`tcr-relay-sync.sh <repo> <tag>`）。
@@ -38,7 +43,7 @@
 
 ## §4 关键机制备忘
 
-- **backend-auth 注入链**：mcp_proxy（auth-server）→ `POST {egress_registry_internal_url}/_egress_internal/egress-token` → **registry 容器**执行 vend（`registry/api/egress_auth_routes.py` `_consent_with_backend_auth`）→ 响应携带 `backend_auth_header/value` → auth-server 消费注入（server.py ~L8944，日志 `injected shared backend auth credential`）。任一半缺位即上游 401——两容器必须同源。
+- **backend-auth 注入链**：mcp_proxy（auth-server）→ `POST {egress_registry_internal_url}/_egress_internal/egress-token` → **registry 容器**执行 vend（`registry/api/egress_auth_routes.py` `_consent_with_backend_auth`）→ 响应携带 `backend_auth_header/value` → auth-server 消费注入（server.py ~L8944，日志 `injected shared backend auth credential`）。任一半缺位即上游 401——两容器必须同源。fd-1.3.0 生产实证：24h 窗口 `injected shared backend auth credential server=fd-find-data-business-mcp` 132 次；滚回 ccr 镜像后 vend 端点持续 200。
 - compose env 白名单：wire 门控变量（FD_WIRE_*/CALL_GRANT_*/PREFLIGHT_*）写在 `docker-compose.prebuilt.yml` 的 environment 段，`.env` 提供值；**改 compose 时勿丢这批透传**。
 - relay 的 seen-tags 去重：新 sha tag 通常被全量轮自动首见拷贝；紧急时手动 `ssh cheap3 /usr/local/bin/tcr-relay-sync.sh yizuo/<repo> <tag>`（注意 flock 并发跳过）。
 - `/opt` checkout 有未跟踪运维文件（.admin-jwt* 等），切分支时保留即可。
