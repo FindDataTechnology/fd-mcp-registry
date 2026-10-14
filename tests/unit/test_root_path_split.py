@@ -43,6 +43,33 @@ class TestAnonymousRoot:
         assert "壹座·Packs" in resp.text
 
 
+class TestRootCaching:
+    """Both / variants share one URL, so caches MUST be told they differ.
+
+    Regression guard: without Vary: Cookie, a browser that cached the console
+    shell while logged in replays it after logout — the shell then 401s and
+    bounces to /login, which reads as "the landing page vanished".
+    """
+
+    def test_landing_declares_vary_cookie(self):
+        resp = _client().get("/")
+        assert "cookie" in resp.headers.get("vary", "").lower()
+
+    def test_console_variant_declares_vary_cookie(self):
+        resp = _client().get("/", cookies={settings.session_cookie_name: "opaque-id"})
+        assert "cookie" in resp.headers.get("vary", "").lower()
+
+    def test_both_variants_revalidate(self):
+        for kwargs in ({}, {"cookies": {settings.session_cookie_name: "opaque-id"}}):
+            resp = _client().get("/", **kwargs)
+            assert "no-cache" in resp.headers.get("cache-control", "")
+
+    def test_the_two_variants_are_distinguishable(self):
+        anon = _client().get("/")
+        authed = _client().get("/", cookies={settings.session_cookie_name: "opaque-id"})
+        assert anon.headers.get("etag") != authed.headers.get("etag") or anon.text != authed.text
+
+
 class TestSessionRoot:
     def test_session_cookie_serves_console_spa(self):
         client = _client()

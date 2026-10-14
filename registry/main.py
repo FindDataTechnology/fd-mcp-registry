@@ -1583,18 +1583,40 @@ if FRONTEND_BUILD_PATH.exists():
 
     @app.get("/", include_in_schema=False)
     async def serve_root(request: Request):
-        """Split the root path by session-cookie presence."""
+        """Split the root path by session-cookie presence.
+
+        The two variants share one URL, so they MUST be distinguished for
+        caches: without Vary: Cookie a browser (or any shared cache) that
+        stored the console shell while the user was logged in will replay it
+        after logout — the shell then 401s and bounces to /login, which looks
+        like "the landing page disappeared after I logged out".
+        """
         if request.cookies.get(settings.session_cookie_name):
             return await _serve_console_root()
         landing = _landing_index_path()
         if landing is None:
             return await _serve_console_root()
-        return FileResponse(landing, media_type="text/html")
+        return FileResponse(
+            landing,
+            media_type="text/html",
+            headers={
+                "Vary": "Cookie",
+                # Revalidate so a copy edit picked up on rollout is served
+                # immediately; the ETag still saves the bytes on revalidation.
+                "Cache-Control": "no-cache",
+            },
+        )
 
     async def _serve_console_root():
         if _CACHED_INDEX_HTML is not None:
-            return HTMLResponse(content=_CACHED_INDEX_HTML)
-        return FileResponse(FRONTEND_BUILD_PATH / "index.html")
+            return HTMLResponse(
+                content=_CACHED_INDEX_HTML,
+                headers={"Vary": "Cookie", "Cache-Control": "no-cache"},
+            )
+        return FileResponse(
+            FRONTEND_BUILD_PATH / "index.html",
+            headers={"Vary": "Cookie", "Cache-Control": "no-cache"},
+        )
 
     # Serve React app for all other routes (SPA)
     @app.get("/{full_path:path}")

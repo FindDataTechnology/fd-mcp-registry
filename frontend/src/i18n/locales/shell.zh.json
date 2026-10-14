@@ -61,8 +61,6 @@
   "Successfully Logged Out": "已成功退出登录",
   "You have been logged out from all sessions": "你已从所有会话中退出",
   "Your session has been terminated and you've been logged out from the identity provider.": "你的会话已终止，并已从身份提供方退出登录。",
-  "Return to Login": "返回登录",
-  "Redirecting to login in 5 seconds...": "5 秒后自动跳转到登录页…",
   "{title} - Secure Access Management": "{title} - 安全访问管理",
   "Uptime: unavailable": "运行时长：不可用",
   "Uptime: {uptime}": "运行时长：{uptime}",
@@ -95,5 +93,8 @@
   "URL:": "URL：",
   "Switch to light mode": "切换到浅色模式",
   "Switch to dark mode": "切换到深色模式",
-  "Completing authentication...": "正在完成身份验证…"
+  "Completing authentication...": "正在完成身份验证…",
+  "Back to Home": "返回首页",
+  "Sign in again": "重新登录",
+  "Redirecting to home in 5 seconds...": "5 秒后自动返回首页…"
 }
