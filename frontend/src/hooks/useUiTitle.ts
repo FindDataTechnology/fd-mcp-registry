@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import axios from 'axios';
 
-const DEFAULT_UI_TITLE = 'AI Gateway & Registry';
+const DEFAULT_UI_TITLE = 'Yizuo Packs';
 
 interface VersionResponse {
   version: string;

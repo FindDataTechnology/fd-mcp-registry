@@ -25,7 +25,7 @@ export const LOCALE_STORAGE_KEY = 'registry.lang';
 export const LOCALE_QUERY_PARAM = 'lang';
 
 /** Title the app falls back to before/without a server-provided ui_title. */
-export const DEFAULT_APP_TITLE = 'AI Gateway & Registry';
+export const DEFAULT_APP_TITLE = 'Yizuo Packs';
 
 export type TranslateVars = Record<string, string | number>;
 export type TranslateFn = (source: string, vars?: TranslateVars, context?: string) => string;

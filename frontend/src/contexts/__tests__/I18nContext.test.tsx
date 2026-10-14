@@ -34,7 +34,7 @@ describe('I18nProvider', () => {
     expect(screen.getByTestId('locale')).toHaveTextContent('zh');
     expect(screen.getByTestId('translated')).toHaveTextContent('退出登录');
     expect(document.documentElement.lang).toBe('zh-CN');
-    expect(document.title).toBe('AI 网关与注册处');
+    expect(document.title).toBe('壹座·Packs');
   });
 
   it('defaults to en for en browsers', () => {
@@ -46,7 +46,7 @@ describe('I18nProvider', () => {
     expect(screen.getByTestId('locale')).toHaveTextContent('en');
     expect(screen.getByTestId('translated')).toHaveTextContent('Sign out');
     expect(document.documentElement.lang).toBe('en');
-    expect(document.title).toBe('AI Gateway & Registry');
+    expect(document.title).toBe('Yizuo Packs');
   });
 
   it('switches language, persists the choice and re-translates', async () => {

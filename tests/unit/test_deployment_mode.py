@@ -172,15 +172,11 @@ class TestA2AReverseProxyModeBanner:
 class TestEffectiveUiTitle:
     """Test effective_ui_title property — UI_TITLE override and mode-aware default."""
 
-    def test_unset_with_gateway_default(self):
-        """Unset UI_TITLE + with-gateway -> 'AI Gateway & Registry'."""
-        settings = Settings(deployment_mode=DeploymentMode.WITH_GATEWAY, ui_title=None)
-        assert settings.effective_ui_title == "AI Gateway & Registry"
-
-    def test_unset_registry_only_default(self):
-        """Unset UI_TITLE + registry-only -> 'AI Registry'."""
-        settings = Settings(deployment_mode=DeploymentMode.REGISTRY_ONLY, ui_title=None)
-        assert settings.effective_ui_title == "AI Registry"
+    def test_unset_defaults_to_yizuo_packs(self):
+        """Unset UI_TITLE -> 'Yizuo Packs' regardless of mode (product-home brand)."""
+        for mode in (DeploymentMode.WITH_GATEWAY, DeploymentMode.REGISTRY_ONLY):
+            settings = Settings(deployment_mode=mode, ui_title=None)
+            assert settings.effective_ui_title == "Yizuo Packs"
 
     def test_override_with_gateway(self):
         """Set UI_TITLE wins over with-gateway default."""
@@ -195,14 +191,14 @@ class TestEffectiveUiTitle:
         assert settings.effective_ui_title == "Contoso Agent Registry"
 
     def test_empty_string_treated_as_unset(self):
-        """Empty UI_TITLE falls back to deployment-mode default."""
+        """Empty UI_TITLE falls back to the brand default."""
         settings = Settings(deployment_mode=DeploymentMode.WITH_GATEWAY, ui_title="")
-        assert settings.effective_ui_title == "AI Gateway & Registry"
+        assert settings.effective_ui_title == "Yizuo Packs"
 
     def test_whitespace_only_treated_as_unset(self):
-        """Whitespace-only UI_TITLE falls back to deployment-mode default."""
+        """Whitespace-only UI_TITLE falls back to the brand default."""
         settings = Settings(deployment_mode=DeploymentMode.REGISTRY_ONLY, ui_title="   ")
-        assert settings.effective_ui_title == "AI Registry"
+        assert settings.effective_ui_title == "Yizuo Packs"
 
 
 # =============================================================================
@@ -239,19 +235,13 @@ class TestVersionEndpointUiTitle:
         monkeypatch.setattr(system_routes, "settings", settings)
         return TestClient(app)
 
-    def test_registry_only_default_returns_ai_registry(self, monkeypatch):
-        """DEPLOYMENT_MODE=registry-only, UI_TITLE unset -> 'AI Registry'."""
-        client = self._patched_client(monkeypatch, DeploymentMode.REGISTRY_ONLY, None)
-        response = client.get("/api/version")
-        assert response.status_code == 200
-        assert response.json()["ui_title"] == "AI Registry"
-
-    def test_with_gateway_default_returns_full_title(self, monkeypatch):
-        """DEPLOYMENT_MODE=with-gateway, UI_TITLE unset -> 'AI Gateway & Registry'."""
-        client = self._patched_client(monkeypatch, DeploymentMode.WITH_GATEWAY, None)
-        response = client.get("/api/version")
-        assert response.status_code == 200
-        assert response.json()["ui_title"] == "AI Gateway & Registry"
+    def test_unset_defaults_to_yizuo_packs(self, monkeypatch):
+        """UI_TITLE unset -> 'Yizuo Packs' regardless of deployment_mode."""
+        for mode in (DeploymentMode.REGISTRY_ONLY, DeploymentMode.WITH_GATEWAY):
+            client = self._patched_client(monkeypatch, mode, None)
+            response = client.get("/api/version")
+            assert response.status_code == 200
+            assert response.json()["ui_title"] == "Yizuo Packs"
 
     def test_override_wins_over_mode_default(self, monkeypatch):
         """UI_TITLE='Acme Portal' is returned regardless of deployment_mode."""

@@ -44,7 +44,16 @@ RUN mkdir -p /etc/nginx/lua/virtual_mappings && \
     rm -f /etc/nginx/sites-enabled/default /etc/nginx/sites-available/default && \
     mkdir -p /var/lib/nginx/body /var/lib/nginx/proxy /var/lib/nginx/fastcgi /var/lib/nginx/uwsgi /var/lib/nginx/scgi && \
     mkdir -p /var/log/nginx && \
-    mkdir -p /run/nginx
+    mkdir -p /run/nginx && \
+    mkdir -p /app/landing-assets /app/public-featured
+
+# Landing page + featured curation mount points (registry-product-home):
+# operators mount a ConfigMap over /app/landing-assets (index.html) and
+# /app/public-featured (featured.json) to update copy and curation without an
+# image rebuild. The image ships empty mount-point directories; the code
+# falls back to the baseline assets baked under registry/static_landing and to
+# "no featured entries" when nothing is mounted. NOTE: subPath mounts do not
+# hot-reload — copy updates take effect on pod rollout.
 
 # Expose ports for Nginx (HTTP/HTTPS on high ports for non-root) and the Registry
 EXPOSE 8080 8443 7860

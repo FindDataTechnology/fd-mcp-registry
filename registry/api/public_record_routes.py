@@ -12,9 +12,16 @@ module adds parallel public endpoints under ``/api/public`` that:
    the response body.
 
 See issue #1294 (Blocker B1, SEC-1) and ``.scratchpad/issue-1294/lld.md``.
+
+The aggregate summary endpoint (``/api/public/summary``) serves the product
+landing page: total counts plus an operator-curated featured list. It reuses
+the same public+enabled filter and never reveals non-public records — a
+featured path that is not currently public+enabled is silently dropped.
 """
 
+import json
 import logging
+import os
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Path
@@ -31,6 +38,15 @@ from ..utils.credential_encryption import strip_credentials_from_dict
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# Landing-page curation asset (registry-product-home): a JSON file mapping
+# entity kinds to featured record paths. Resolved at request time so operators
+# can update it without an image rebuild; absent file or malformed content
+# degrades to "no featured entries" rather than failing the endpoint.
+_FEATURED_JSON_PATH = os.environ.get(
+    "PUBLIC_FEATURED_JSON",
+    "/app/public-featured/featured.json",
+)
 
 # Stored routing, DNS-pin, disable-state, and credential metadata is internal.
 # ``is_proxied`` and ``proxy_client_url`` are intentionally not in this set: they
@@ -153,3 +169,115 @@ async def get_public_skill(
             body = skill.model_dump(mode="json")
             return _strip_fields(body, _SKILL_SENSITIVE_FIELDS)
     raise HTTPException(status_code=404, detail="Skill not found")
+
+
+# Fields allowed on a featured card in the public summary. An allowlist (not a
+# strip-list) guarantees no internal field can leak by default when the record
+# shape gains new keys.
+_FEATURED_CARD_FIELDS = ("name", "displayName", "description", "tags")
+
+# Featured-card entry: {"kind": "servers"|"agents"|"skills", "path": "<stored path>"}.
+def _load_featured_config() -> list[dict[str, str]]:
+    """Read the curated featured list; malformed or absent asset degrades to [].."""
+    try:
+        with open(_FEATURED_JSON_PATH) as f:
+            doc = json.load(f)
+    except FileNotFoundError:
+        return []
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("public summary: featured asset unreadable (%s): %s", _FEATURED_JSON_PATH, exc)
+        return []
+    entries = doc.get("featured") if isinstance(doc, dict) else None
+    if not isinstance(entries, list):
+        return []
+    out: list[dict[str, str]] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        kind = entry.get("kind")
+        path = entry.get("path")
+        if kind in ("servers", "agents", "skills") and isinstance(path, str) and path:
+            out.append({"kind": kind, "path": path})
+    return out
+
+
+async def _public_server_records() -> dict[str, dict[str, Any]]:
+    repo = get_server_repository()
+    return await repo.find_with_filter({"is_enabled": True, "visibility": "public"}, limit=None)
+
+
+async def _public_agent_records() -> dict[str, dict[str, Any]]:
+    repo = get_agent_repository()
+    return await repo.find_with_filter({"is_enabled": True, "visibility": "public"}, limit=None)
+
+
+async def _public_skill_records() -> list[Any]:
+    repo = get_skill_repository()
+    return await repo.list_filtered(
+        include_disabled=False,
+        visibility="public",
+        registry_name="local",
+    )
+
+
+def _featured_card(kind: str, path: str, record: dict[str, Any]) -> dict[str, Any]:
+    """Project a stored record onto the public card allowlist."""
+    display = record.get("display_name") or record.get("name") or path
+    card: dict[str, Any] = {"kind": kind, "path": path}
+    card["name"] = path
+    card["displayName"] = display
+    card["description"] = record.get("description") or ""
+    tags = record.get("tags")
+    card["tags"] = [str(t) for t in tags][:8] if isinstance(tags, list) else []
+    return {k: v for k, v in card.items() if k in ("kind", "path", *_FEATURED_CARD_FIELDS)}
+
+
+@router.get("/public/summary")
+async def get_public_summary() -> dict[str, Any]:
+    """Aggregate counts + curated featured cards for the product landing page.
+
+    Anonymous by design. Counts cover ONLY public+enabled records; featured
+    entries are re-checked against the same predicate at request time and
+    silently dropped when they no longer qualify, so the response never
+    discloses the existence of private, group-gated, or disabled records.
+    """
+    servers = await _public_server_records()
+    agents = await _public_agent_records()
+    skills = await _public_skill_records()
+
+    pools: dict[str, dict[str, dict[str, Any]]] = {
+        "servers": servers,
+        "agents": agents,
+    }
+    skill_pool = {s.path: (s.model_dump(mode="json") if hasattr(s, "model_dump") else dict(s)) for s in skills}
+
+    featured: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for entry in _load_featured_config():
+        kind, path = entry["kind"], entry["path"]
+        key = (kind, path)
+        if key in seen:
+            continue
+        seen.add(key)
+        if kind == "skills":
+            record = skill_pool.get(path)
+        else:
+            record = pools.get(kind, {}).get(path)
+        # Fail-closed: curated entries that are not currently public+enabled are
+        # dropped without any existence signal. The DB filter already enforces
+        # this predicate; the explicit re-check is defense-in-depth so a filter
+        # drift upstream can never leak a private record through a featured card.
+        if not isinstance(record, dict):
+            continue
+        if record.get("visibility") != "public" or record.get("is_enabled") is not True:
+            continue
+        featured.append(_featured_card(kind, path, record))
+
+    return {
+        "counts": {
+            "servers": len(servers),
+            "agents": len(agents),
+            "skills": len(skill_pool),
+        },
+        "featured": featured,
+    }

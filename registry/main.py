@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import FileResponse, HTMLResponse, Response
@@ -1559,9 +1559,46 @@ if FRONTEND_BUILD_PATH.exists():
     # static location handles the prefixed request and never reaches this app.
     app.mount("/static", StaticFiles(directory=FRONTEND_BUILD_PATH / "static"), name="static")
 
+    # ── Product landing page (registry-product-home) ─────────────────────────
+    # Anonymous GET / must land on the product home (intro + three-step guide),
+    # not a login wall. The landing asset is a plain static HTML file: the
+    # image ships a baseline and an operator-mounted directory (ConfigMap)
+    # overrides it wholesale, so copy edits roll with the pod, not the image.
+    # Session handling is existence-only on purpose: this is the hottest route,
+    # and a stale cookie just gets the SPA shell which then redirects to login
+    # — the same behavior an expired session has today.
+    _LANDING_BASELINE_DIR = Path(__file__).parent / "static_landing"
+    _LANDING_OVERRIDE_DIR = Path(
+        os.environ.get("LANDING_ASSETS_DIR", "/app/landing-assets")
+    )
+
+    def _landing_index_path() -> Path | None:
+        override = _LANDING_OVERRIDE_DIR / "index.html"
+        if override.is_file():
+            return override
+        baseline = _LANDING_BASELINE_DIR / "index.html"
+        if baseline.is_file():
+            return baseline
+        return None
+
+    @app.get("/", include_in_schema=False)
+    async def serve_root(request: Request):
+        """Split the root path by session-cookie presence."""
+        if request.cookies.get(settings.session_cookie_name):
+            return await _serve_console_root()
+        landing = _landing_index_path()
+        if landing is None:
+            return await _serve_console_root()
+        return FileResponse(landing, media_type="text/html")
+
+    async def _serve_console_root():
+        if _CACHED_INDEX_HTML is not None:
+            return HTMLResponse(content=_CACHED_INDEX_HTML)
+        return FileResponse(FRONTEND_BUILD_PATH / "index.html")
+
     # Serve React app for all other routes (SPA)
     @app.get("/{full_path:path}")
-    async def serve_react_app(full_path: str):
+    async def serve_react_app(full_path: str, request: Request):
         """Serve React app for all non-API routes"""
         # Import here to avoid circular dependency
         from registry.constants import REGISTRY_CONSTANTS
