@@ -345,7 +345,18 @@ async def logout_handler(
             #     post-logout redirect URIs.
             # See docs/idp/*.md. If a deployment cannot register "/logout", point
             # this at a registered page (e.g. "/login") at the cost of the screen.
-            redirect_uri = _build_external_url(request, "/logout")
+            #
+            # This deployment (registry-product-home): the Logto client's
+            # post-logout allow-list contains the bare origin "/" — NOT
+            # "/logout". Sending "/logout" made Logto silently drop the
+            # parameter (unregistered URI) and land on its generic
+            # /oidc/session/end/success page, stranding the user off-domain.
+            # Point at "/" instead: after sign-out the session cookie is
+            # already cleared, so "/" resolves to the anonymous product landing
+            # page — exactly where a completed sign-out should end up. The
+            # /logout confirmation screen is still reachable for IdPs whose
+            # allow-list has it (and the page auto-returns to "/" anyway).
+            redirect_uri = _build_external_url(request, "/")
             logout_params: dict[str, str] = {"redirect_uri": redirect_uri}
 
             # Include id_token_hint for proper SSO session termination if we

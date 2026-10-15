@@ -7138,7 +7138,23 @@ async def oauth2_logout(
         logout_hostname = parsed_logout_url.hostname or ""
         logout_path = parsed_logout_url.path or ""
 
-        if "keycloak" in provider.lower() or "/realms/" in logout_path:
+        if "logto" in provider.lower() or logout_path.endswith("/session/end"):
+            # Logto (OIDC RP-initiated logout): standard post_logout_redirect_uri
+            # + id_token_hint. Reaching this branch requires the IdP side to
+            # register the URI in the client's post-logout redirect list — an
+            # unregistered URI is silently dropped by Logto and the user lands
+            # on its generic /oidc/session/end/success page instead (observed
+            # live 2026-10-15). The registry console registers "<host>/logout"
+            # for the Logto app, and /logout now auto-returns to the product
+            # home after 5s (registry-product-home).
+            logout_params = {
+                "client_id": provider_config["client_id"],
+                "post_logout_redirect_uri": full_redirect_uri,
+            }
+            if id_token_hint:
+                logout_params["id_token_hint"] = id_token_hint
+            logger.debug(f"Logto logout params built: has_id_token_hint={bool(id_token_hint)}")
+        elif "keycloak" in provider.lower() or "/realms/" in logout_path:
             # Keycloak logout parameters
             logout_params = {
                 "client_id": provider_config["client_id"],
