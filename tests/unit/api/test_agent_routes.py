@@ -769,7 +769,7 @@ class TestListAgents:
             assert "total_count" in data
             assert data["total_count"] == 1
             assert len(data["agents"]) == 1
-            assert data["limit"] == 20
+            assert data["limit"] == 500
             assert data["offset"] == 0
             assert data["has_next"] is False
 
@@ -820,7 +820,7 @@ class TestListAgents:
             data = response.json()
             assert data["total_count"] == 1
             assert data["agents"][0]["path"] == "/agents/enabled"
-            assert data["limit"] == 20
+            assert data["limit"] == 500
             assert data["offset"] == 0
             assert data["has_next"] is False
 
@@ -845,7 +845,7 @@ class TestListAgents:
             data = response.json()
             assert data["total_count"] == 1
             assert data["agents"][0]["path"] == "/agents/public"
-            assert data["limit"] == 20
+            assert data["limit"] == 500
             assert data["offset"] == 0
             assert data["has_next"] is False
 
@@ -886,7 +886,7 @@ class TestListAgents:
             data = response.json()
             assert data["total_count"] == 1
             assert data["agents"][0]["name"] == "data-processor"
-            assert data["limit"] == 20
+            assert data["limit"] == 500
             assert data["offset"] == 0
             assert data["has_next"] is False
 
@@ -1008,6 +1008,25 @@ class TestListAgents:
             assert data["total_count"] == 1
 
     # --- Pagination: Validation tests ---
+
+    @pytest.mark.asyncio
+    async def test_list_agents_default_limit_is_500(self, test_app_admin, mock_admin_context, sample_agent_card):
+        """Default page size is 500 (registry-pagination-defaults): a bare GET must
+        NOT silently cap at the historical 20 -- callers that read one page get the
+        whole registry at realistic sizes, and the envelope still reports the truth."""
+        with patch("registry.api.agent_routes.agent_service") as mock_agent_service:
+            mock_agent_service.get_agents_paginated = AsyncMock(
+                return_value=([sample_agent_card], 1)
+            )
+            mock_agent_service.is_agent_enabled = AsyncMock(return_value=True)
+
+            response = test_app_admin.get("/agents")
+
+            assert response.status_code == status.HTTP_200_OK
+            data = response.json()
+            assert data["limit"] == 500
+            assert data["total_count"] == 1
+            assert data["has_next"] is False
 
     @pytest.mark.asyncio
     async def test_list_agents_limit_exceeds_max_rejected(self, test_app, mock_user_context):

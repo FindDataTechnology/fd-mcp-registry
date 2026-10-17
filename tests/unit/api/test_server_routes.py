@@ -448,12 +448,25 @@ class TestGetServersJSON:
         assert "servers" in data
         assert len(data["servers"]) == 1
         assert data["total_count"] == 1
-        assert data["limit"] == 20
+        assert data["limit"] == 500
         assert data["offset"] == 0
         assert data["has_next"] is False
         mock_server_service.get_servers_paginated.assert_called_once_with(
-            skip=0, limit=20, exclude_tool_list=False, metadata_paths=None
+            skip=0, limit=500, exclude_tool_list=False, metadata_paths=None
         )
+
+    def test_default_limit_is_500(self, test_client_admin, mock_server_service):
+        """Default page size is 500 (registry-pagination-defaults): a bare GET must
+        NOT silently cap at the historical 20 -- the envelope reports what it served."""
+        from unittest.mock import AsyncMock
+
+        mock_server_service.get_servers_paginated = AsyncMock(return_value=({}, 0))
+        response = test_client_admin.get("/api/servers")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["limit"] == 500
+        assert data["total_count"] == 0
+        assert data["has_next"] is False
 
     def test_list_response_includes_local_server_fields(
         self, test_client_admin, mock_server_service
@@ -3817,7 +3830,7 @@ class TestMetadataFieldsProjection:
         test_client_admin.get("/api/servers?metadata_fields=owner,config.region")
         mock_server_service.get_servers_paginated.assert_called_once_with(
             skip=0,
-            limit=20,
+            limit=500,
             exclude_tool_list=False,
             metadata_paths=["owner", "config.region"],
         )

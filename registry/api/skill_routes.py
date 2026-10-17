@@ -224,7 +224,7 @@ async def list_skills(
     user_context: Annotated[dict, Depends(nginx_proxied_auth)],
     include_disabled: bool = Query(False, description="Include disabled skills"),
     tag: str | None = Query(None, description="Filter by tag"),
-    limit: int = Query(20, ge=1, le=2000, description="Number of skills to return (max 2000)"),
+    limit: int = Query(500, ge=1, le=2000, description="Number of skills to return (default 500; max 2000). The list is paginated -- clients SHOULD follow has_next regardless."),
     offset: int = Query(0, ge=0, description="Number of skills to skip"),
     metadata_fields: list[str] | None = Query(
         None,

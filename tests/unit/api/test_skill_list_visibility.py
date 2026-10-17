@@ -350,3 +350,23 @@ class TestSkillListVisibility:
         returned_paths = {s["path"] for s in data["skills"]}
         assert returned_paths == {"/skills/public-one"}
         service.get_skills_paginated.assert_not_awaited()
+
+    def test_default_limit_is_500_and_envelope_truthful(self, mock_settings, sample_skills):
+        """Default page size is 500 (registry-pagination-defaults): a bare GET must
+        NOT silently cap at the historical 20, and the envelope still reports
+        total_count/has_next so clients can verify completeness."""
+        service = _make_service_with_filtering(sample_skills)
+        context = _admin_context()
+
+        gen = _client(service, context)
+        client = next(gen)
+        try:
+            response = client.get("/api/skills?include_disabled=true")
+        finally:
+            gen.close()
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["limit"] == 500
+        assert data["total_count"] == 3
+        assert data["has_next"] is False
