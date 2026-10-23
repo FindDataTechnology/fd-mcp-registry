@@ -7,9 +7,14 @@ wire-ops-mcp, wanxing-ops-mcp, paper-trading) can never be probed for
 therefore kept a stale `tool_list`, and the publish gate read legal tool names
 as "unresolved".
 
+The path deliberately avoids `/api/internal/`: nginx hard-404s that whole
+prefix (`location ^~ /api/internal/ { return 404; }`) — it is reserved for the
+lua subrequest channel and is unreachable from the public edge. This route is
+reached by services over the public domain, so it carries its own Bearer gate.
+
 This route lets such a service report its own surface at startup:
 
-    POST /api/internal/servers/{path}/tool-list
+    POST /api/surface-report/servers/{path}/tool-list
     Authorization: Bearer <per-entry token>
 
 Auth model (design D2): one token per entry, registry stores only its hash and
@@ -89,7 +94,7 @@ def _bearer(request: Request) -> str | None:
     return value or None
 
 
-@router.post("/internal/servers/{path:path}/tool-list")
+@router.post("/surface-report/servers/{path:path}/tool-list")
 async def report_tool_surface(path: str, payload: ToolSurfaceReport, request: Request):
     """Accept a service's self-reported tool surface.
 
