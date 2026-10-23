@@ -73,7 +73,7 @@ def client(monkeypatch):
 
 def test_legal_report_writes_full_surface(client):
     c, svc, token, _other, written, broadcasts = client
-    r = c.post("/api/internal/servers/wire-build-mcp/tool-list",
+    r = c.post("/api/surface-report/servers/wire-build-mcp/tool-list",
                headers={"Authorization": f"Bearer {token}"},
                json={"tools": [{"name": "a"}, {"name": "b"}], "surface_version": "sha-9"})
     assert r.status_code == 200, r.text
@@ -91,7 +91,7 @@ def test_legal_report_writes_full_surface(client):
 
 def test_token_for_another_path_is_refused(client):
     c, _svc, _token, other_token, written, _b = client
-    r = c.post("/api/internal/servers/wire-build-mcp/tool-list",
+    r = c.post("/api/surface-report/servers/wire-build-mcp/tool-list",
                headers={"Authorization": f"Bearer {other_token}"},
                json={"tools": [{"name": "a"}]})
     assert r.status_code == 403
@@ -100,7 +100,7 @@ def test_token_for_another_path_is_refused(client):
 
 def test_missing_token_is_401(client):
     c, _svc, _token, _other, written, _b = client
-    r = c.post("/api/internal/servers/wire-build-mcp/tool-list",
+    r = c.post("/api/surface-report/servers/wire-build-mcp/tool-list",
                json={"tools": [{"name": "a"}]})
     assert r.status_code == 401
     assert written == {}
@@ -108,7 +108,7 @@ def test_missing_token_is_401(client):
 
 def test_unknown_path_is_404(client):
     c, _svc, token, _other, written, _b = client
-    r = c.post("/api/internal/servers/nope/tool-list",
+    r = c.post("/api/surface-report/servers/nope/tool-list",
                headers={"Authorization": f"Bearer {token}"},
                json={"tools": [{"name": "a"}]})
     assert r.status_code == 404
@@ -126,7 +126,7 @@ def test_repeat_report_is_idempotent_at_the_writer(client, monkeypatch):
         return {"updated": False, "num_tools": len(tool_list), "reason": "unchanged"}
 
     monkeypatch.setattr(mod, "apply_tool_surface", unchanged)
-    r = c.post("/api/internal/servers/wire-build-mcp/tool-list",
+    r = c.post("/api/surface-report/servers/wire-build-mcp/tool-list",
                headers={"Authorization": f"Bearer {token}"},
                json={"tools": [{"name": "a"}]})
     assert r.status_code == 200
@@ -136,7 +136,7 @@ def test_repeat_report_is_idempotent_at_the_writer(client, monkeypatch):
 
 def test_empty_tool_list_is_rejected(client):
     c, _svc, token, _other, written, _b = client
-    r = c.post("/api/internal/servers/wire-build-mcp/tool-list",
+    r = c.post("/api/surface-report/servers/wire-build-mcp/tool-list",
                headers={"Authorization": f"Bearer {token}"},
                json={"tools": []})
     assert r.status_code == 422
