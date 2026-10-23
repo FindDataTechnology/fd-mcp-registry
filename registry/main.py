@@ -39,6 +39,7 @@ from registry.api.federation_export_routes import router as federation_export_ro
 from registry.api.federation_routes import router as federation_router
 from registry.api.iam_user_groups_routes import router as iam_user_groups_router
 from registry.api.internal_routes import router as internal_router
+from registry.api.surface_report_routes import router as surface_report_router
 from registry.api.log_routes import router as log_router
 from registry.api.m2m_management_routes import router as m2m_management_router
 from registry.api.management_routes import router as management_router
@@ -1196,6 +1197,10 @@ if settings.audit_log_enabled:
 
 # Register API routers with /api prefix
 app.include_router(system_router, tags=["System"])  # /api/version, /api/stats
+# Self-reported tool surface MUST be registered before servers_router: the
+# greedy "/servers/{path:path}" would otherwise swallow
+# "/servers/<path>/tool-list" (first match wins in Starlette).
+app.include_router(surface_report_router, prefix="/api")
 app.include_router(auth_router, prefix="/api/auth", tags=["Authentication"])
 # Egress credential vault routes MUST be registered before servers_router: the
 # servers_router has a greedy GET/PUT/PATCH "/servers/{path:path}" that would

@@ -283,6 +283,11 @@ _SERVER_RESPONSE_SECRET_FIELDS: frozenset[str] = frozenset(
         CUSTOM_HEADERS_PLAINTEXT_FIELD,
         "client_secret",
         "client_secret_encrypted",
+        # Self-reported tool surface (add-self-reported-tool-surface D2): the
+        # per-entry report token's hash is a credential — it must never reach a
+        # console/API response. The route reads it back with
+        # include_credentials=True.
+        "surface_report_token_hash",
     }
 )
 

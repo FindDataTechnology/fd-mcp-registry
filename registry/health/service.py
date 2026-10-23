@@ -231,6 +231,104 @@ class HighPerformanceWebSocketManager:
         }
 
 
+async def apply_tool_surface(
+    service_path: str,
+    tool_list: list[dict],
+    mcp_server_info: dict | None = None,
+    *,
+    broadcast=None,
+) -> dict:
+    """Write a discovered/reported tool surface into the registry entry.
+
+    The single write path shared by the probe (`_update_tools_background`) and
+    the self-report internal route. Doing the three writes here — snapshot
+    fields, scope rows, console broadcast — is what keeps a snapshot from
+    drifting away from the scope table or from what the console shows.
+
+    Returns ``{"updated": bool, "num_tools": int, "reason": str}``.
+    """
+    from ..services.server_service import server_service
+
+    new_tool_count = len(tool_list)
+    current_server_info = await server_service.get_server_info(service_path)
+    if not current_server_info:
+        return {"updated": False, "num_tools": new_tool_count, "reason": "no_entry"}
+
+    current_tool_count = current_server_info.get("num_tools", 0)
+    current_tool_list = current_server_info.get("tool_list", [])
+    current_mcp_version = current_server_info.get("mcp_server_version")
+    new_mcp_version = mcp_server_info.get("version") if mcp_server_info else None
+
+    if current_mcp_version and new_mcp_version and current_mcp_version != new_mcp_version:
+        logger.warning(
+            f"MCP server version change detected for {service_path}: "
+            f"{current_mcp_version} -> {new_mcp_version}"
+        )
+
+    needs_update = (
+        current_tool_count != new_tool_count
+        or not current_tool_list
+        or current_mcp_version != new_mcp_version
+    )
+    if not needs_update:
+        return {"updated": False, "num_tools": new_tool_count, "reason": "unchanged"}
+
+    updated_server_info = current_server_info.copy()
+    updated_server_info["tool_list"] = tool_list
+    updated_server_info["num_tools"] = new_tool_count
+    written_fields = ["tool_list", "num_tools"]
+
+    if mcp_server_info:
+        if mcp_server_info.get("version"):
+            new_ver = mcp_server_info["version"]
+            if current_mcp_version and current_mcp_version != new_ver:
+                updated_server_info["mcp_server_version_previous"] = current_mcp_version
+                updated_server_info["mcp_server_version_updated_at"] = (
+                    datetime.now(UTC).isoformat()
+                )
+                written_fields += [
+                    "mcp_server_version_previous",
+                    "mcp_server_version_updated_at",
+                ]
+            updated_server_info["mcp_server_version"] = new_ver
+            written_fields.append("mcp_server_version")
+            logger.info(f"Storing MCP server version for {service_path}: {new_ver}")
+        if mcp_server_info.get("name"):
+            updated_server_info["mcp_server_name"] = mcp_server_info["name"]
+            written_fields.append("mcp_server_name")
+
+    # Field-scoped write: only the surface fields land, so a concurrent write to
+    # other fields (and the stored credentials, which a stripped read omits)
+    # survives. The repo's $set never removes absent keys, so the read-modify-
+    # write window cannot erase the entry's token hash either.
+    await server_service.update_server(
+        service_path, updated_server_info, updated_fields=written_fields
+    )
+
+    try:
+        from ..services.scope_service import update_server_scopes
+
+        tool_names = [tool["name"] for tool in tool_list if "name" in tool]
+        await update_server_scopes(
+            service_path,
+            current_server_info.get("server_name", "Unknown"),
+            tool_names,
+        )
+        logger.info(
+            f"Updated scopes for {service_path} with {len(tool_names)} discovered tools"
+        )
+    except Exception as e:
+        logger.error(
+            f"Failed to update scopes for {service_path} after tool discovery "
+            f"type={type(e).__name__}"
+        )
+
+    if broadcast is not None:
+        await broadcast(service_path)
+
+    return {"updated": True, "num_tools": new_tool_count, "reason": "changed"}
+
+
 class HealthMonitoringService:
     """Optimized health monitoring service for high-scale WebSocket operations."""
 
@@ -421,6 +519,14 @@ class HealthMonitoringService:
                 service_path, include_credentials=True
             )
             if server_info and server_info.get("proxy_pass_url"):
+                # Self-reported entries (add-self-reported-tool-surface D4): the
+                # service's HTTP layer requires a per-user Bearer, so probing can
+                # only ever answer 401 — a permanent "unhealthy" that is noise,
+                # not signal. Their liveness is k8s's business (the /health
+                # probe); the surface is what they report on startup. Skipping
+                # both the probe AND the tool scrape is the point.
+                if server_info.get("surface_source") == "self_report":
+                    continue
                 check_tasks.append((service_path, server_info))
 
         # Execute health checks in staggered batches
@@ -478,6 +584,13 @@ class HealthMonitoringService:
             self.server_health_status[service_path] = new_status
             self.server_last_check_time.pop(service_path, None)
             return previous_status != new_status
+
+        # Self-reported surface (D4): never probe. A per-user-credential service
+        # answers 401 to every anonymous request, so "unhealthy" here would be
+        # permanent noise. Reachability is the deployment's /health probe; the
+        # surface is what the service reports on startup.
+        if server_info.get("surface_source") == "self_report":
+            return False
 
         proxy_pass_url = server_info.get("proxy_pass_url")
         new_status = previous_status
@@ -1285,81 +1398,14 @@ class HealthMonitoringService:
             )
 
             if tool_list is not None:
-                new_tool_count = len(tool_list)
-                current_server_info = await server_service.get_server_info(service_path)
-                if current_server_info:
-                    current_tool_count = current_server_info.get("num_tools", 0)
-
-                    # Update if count changed OR if we have no tool details yet
-                    current_tool_list = current_server_info.get("tool_list", [])
-
-                    # Check if MCP server version changed
-                    current_mcp_version = current_server_info.get("mcp_server_version")
-                    new_mcp_version = mcp_server_info.get("version") if mcp_server_info else None
-
-                    # Log warning if version changed
-                    if (
-                        current_mcp_version
-                        and new_mcp_version
-                        and current_mcp_version != new_mcp_version
-                    ):
-                        logger.warning(
-                            f"MCP server version change detected for {service_path}: "
-                            f"{current_mcp_version} -> {new_mcp_version}"
-                        )
-
-                    needs_update = (
-                        current_tool_count != new_tool_count
-                        or not current_tool_list
-                        or current_mcp_version != new_mcp_version
-                    )
-
-                    if needs_update:
-                        updated_server_info = current_server_info.copy()
-                        updated_server_info["tool_list"] = tool_list
-                        updated_server_info["num_tools"] = new_tool_count
-
-                        # Store MCP server info if available
-                        if mcp_server_info:
-                            if mcp_server_info.get("version"):
-                                new_ver = mcp_server_info["version"]
-                                # Track previous version and change timestamp
-                                if current_mcp_version and current_mcp_version != new_ver:
-                                    updated_server_info["mcp_server_version_previous"] = (
-                                        current_mcp_version
-                                    )
-                                    updated_server_info["mcp_server_version_updated_at"] = (
-                                        datetime.now(UTC).isoformat()
-                                    )
-                                updated_server_info["mcp_server_version"] = new_ver
-                                logger.info(
-                                    f"Storing MCP server version for {service_path}: {new_ver}"
-                                )
-                            if mcp_server_info.get("name"):
-                                updated_server_info["mcp_server_name"] = mcp_server_info["name"]
-
-                        await server_service.update_server(service_path, updated_server_info)
-
-                        # Update scopes with newly discovered tools
-                        try:
-                            from ..services.scope_service import update_server_scopes
-
-                            tool_names = [tool["name"] for tool in tool_list if "name" in tool]
-                            await update_server_scopes(
-                                service_path,
-                                current_server_info.get("server_name", "Unknown"),
-                                tool_names,
-                            )
-                            logger.info(
-                                f"Updated scopes for {service_path} with {len(tool_names)} discovered tools"
-                            )
-                        except Exception as e:
-                            logger.error(
-                                f"Failed to update scopes for {service_path} after tool discovery type={type(e).__name__}"
-                            )
-
-                        # Broadcast only this specific service update
-                        await self.broadcast_health_update(service_path)
+                # Shared write path (self-report route uses the same function):
+                # snapshot fields + scope rows + console broadcast stay in step.
+                await apply_tool_surface(
+                    service_path,
+                    tool_list,
+                    mcp_server_info,
+                    broadcast=self.broadcast_health_update,
+                )
 
         except Exception as e:
             logger.warning(f"Failed to fetch tools for {service_path} type={type(e).__name__}")
