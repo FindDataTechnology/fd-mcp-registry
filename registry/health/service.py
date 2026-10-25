@@ -1571,6 +1571,16 @@ class HealthMonitoringService:
             # that's never actually checked.
             status = HealthStatus.LOCAL
             self.server_health_status[service_path] = status
+        elif server_info.get("surface_source") == "self_report":
+            # Self-reported surface (add-self-reported-tool-surface D4): the
+            # entry is exempt from probing by design (anonymous can only 401),
+            # so the cached probe status is meaningless here — 'unknown' or a
+            # stale pre-exemption 'unhealthy' would render as failure noise.
+            # The service is considered operational; freshness is the reported
+            # surface timestamp (last_surface_report_at, projected by the list
+            # endpoint), not a probe time — last_check_time stays untouched.
+            status = HealthStatus.HEALTHY
+            self.server_health_status[service_path] = status
         else:
             # Use cached status, only update if transitioning from disabled
             cached_status = self.server_health_status.get(service_path, "unknown")

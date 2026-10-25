@@ -1126,6 +1126,16 @@ async def get_servers_json(
                     "ard_source_url": server_info.get("ard_source_url"),
                     "auth_scheme": server_info.get("auth_scheme", "none"),
                     "auth_header_name": server_info.get("auth_header_name"),
+                    # Tool-surface provenance (add-self-reported-tool-surface):
+                    # probe (default) vs self_report, plus the self-report
+                    # timestamp that dates it. Without these in the projection
+                    # the public payload read surface_source as None even
+                    # though the stored entry carries it, and consumers (paas
+                    # bridge, console) cannot tell a snapshot's provenance or
+                    # freshness. The token hash is NOT projected — the
+                    # whitelist keeps it private by construction.
+                    "surface_source": server_info.get("surface_source", "probe"),
+                    "last_surface_report_at": server_info.get("last_surface_report_at"),
                     "tool_list": _filtered_tools,
                     # Access control. Default absent to "public" for servers
                     # stored before the write-side fix always persisted the
