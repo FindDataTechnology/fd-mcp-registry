@@ -44,6 +44,7 @@ from registry.api.m2m_management_routes import router as m2m_management_router
 from registry.api.management_routes import router as management_router
 from registry.api.okta_m2m_routes import router as okta_m2m_router
 from registry.api.patch_key_routes import router as patch_key_router
+from registry.api.vendor_lane_routes import router as vendor_lane_router
 from registry.api.peer_management_routes import router as peer_management_router
 from registry.api.public_record_routes import router as public_record_router
 from registry.api.rate_limit_routes import router as rate_limit_router
@@ -1258,6 +1259,9 @@ app.include_router(proxied_entities_router)
 # verification switch on/off together.
 if settings.patch_key_auth_enabled:
     app.include_router(patch_key_router)
+# vendor lane (fd-vendor-lane; paas add-vendor-supply-open 4.2): 受控注册通道
+# （env 令牌未配时端点如实 503, 非隐藏 —— 见 vendor_lane_routes 的 lane gate）。
+app.include_router(vendor_lane_router)
 # Register Anthropic MCP Registry API (public API for MCP servers only)
 app.include_router(registry_router, prefix="/api/registry", tags=["Registry Card"])
 
