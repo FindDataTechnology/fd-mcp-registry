@@ -9,14 +9,15 @@ no-charge-on-refuse guarantee.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi import HTTPException
+from fastapi.testclient import TestClient
 
-from registry.schemas.patch_key import PatchKeyInfo
+from registry.schemas.patch_key import PATCH_KEY_STATUS_ACTIVE, PatchKeyInfo
 from registry.services.call_grant_service import GrantVerdict
 
 pytestmark = [pytest.mark.unit, pytest.mark.auth]
@@ -41,10 +42,12 @@ def _claims(sub: str = "comuser", groups: list[str] | None = None, **extra) -> d
 
 def _body(method: str = "tools/call", *, batch: list[str] | None = None) -> bytes:
     if batch is not None:
-        return json.dumps([{"jsonrpc": "2.0", "method": m, "id": i} for i, m in enumerate(batch)]).encode()
-    return json.dumps({"jsonrpc": "2.0", "method": method, "id": 1, "params": {"name": "read"}}).encode()
-
-
+        return json.dumps(
+            [{"jsonrpc": "2.0", "method": m, "id": i} for i, m in enumerate(batch)]
+        ).encode()
+    return json.dumps(
+        {"jsonrpc": "2.0", "method": method, "id": 1, "params": {"name": "read"}}
+    ).encode()
 
 
 # ── 自包含夹具（镜像 test_patch_key_validate 的形状）────────────────────
@@ -141,7 +144,9 @@ async def test_batch_with_tools_call_counts(grant_env) -> None:
 
     fake_holder = grant_env(_verdict(True, used=1))
     with fake_holder as svc:
-        await enforce_call_grant(_claims(groups=["community"]), _body(batch=["initialize", "tools/call"]))
+        await enforce_call_grant(
+            _claims(groups=["community"]), _body(batch=["initialize", "tools/call"])
+        )
     assert svc.return_value.consume_calls == ["comuser"]
 
 
@@ -150,7 +155,9 @@ async def test_non_patch_key_caller_skips(grant_env) -> None:
 
     fake_holder = grant_env(_verdict(True, used=0))
     with fake_holder as svc:
-        await enforce_call_grant(_claims(groups=["community"], auth_method="oauth2", client_id="logto-app"), _body())
+        await enforce_call_grant(
+            _claims(groups=["community"], auth_method="oauth2", client_id="logto-app"), _body()
+        )
     assert svc.return_value.consume_calls == []
 
 
@@ -209,6 +216,7 @@ async def test_refusal_writes_jsonl_audit(grant_env, tmp_path) -> None:
 
 # ── 3.4 tier gate：付费档 server 的升级式拒绝 ─────────────────────────────
 
+
 async def test_tier_gate_names_the_tier(grant_env, monkeypatch) -> None:
     from auth_server.call_grant import is_tier_gated
 
@@ -223,7 +231,12 @@ async def test_tier_gate_skips_untargeted_servers_and_lanes(grant_env, monkeypat
     monkeypatch.setenv("CALL_GRANT_TIER_SERVERS", "law-bench:paid")
     assert is_tier_gated(_claims(groups=["community"]), "fd-open-data-mcp") is None
     assert is_tier_gated(_claims(groups=["wire-customers"]), "law-bench") is None
-    assert is_tier_gated(_claims(groups=["community"], auth_method="oauth2", client_id="app"), "law-bench") is None
+    assert (
+        is_tier_gated(
+            _claims(groups=["community"], auth_method="oauth2", client_id="app"), "law-bench"
+        )
+        is None
+    )
 
 
 async def test_tier_gate_inert_when_unconfigured(grant_env, monkeypatch) -> None:
@@ -249,16 +262,25 @@ class TestTierGateOnValidate:
         monkeypatch.setenv("CALL_GRANT_AUDIT_PATH", str(tmp_path / "g.jsonl"))
 
         info = PatchKeyInfo(
-            key_id="keyid-tier", name="tier-verify", key_prefix=_PLAINTEXT_KEY[:12],
-            username="freshuser", email="f@example.com", provider="logto",
-            groups=[], status=PATCH_KEY_STATUS_ACTIVE,
-            created_at=datetime.utcnow(), last_used_at=None, revoked_at=None,
+            key_id="keyid-tier",
+            name="tier-verify",
+            key_prefix=_PLAINTEXT_KEY[:12],
+            username="freshuser",
+            email="f@example.com",
+            provider="logto",
+            groups=[],
+            status=PATCH_KEY_STATUS_ACTIVE,
+            created_at=datetime.utcnow(),
+            last_used_at=None,
+            revoked_at=None,
         )
         service = _FakePatchKeyService(info, _PLAINTEXT_KEY)
         enrich = AsyncMock(return_value=["community"])
         with (
-            patch("registry.services.patch_key_service.get_patch_key_service",
-                  new=AsyncMock(return_value=service)),
+            patch(
+                "registry.services.patch_key_service.get_patch_key_service",
+                new=AsyncMock(return_value=service),
+            ),
             patch("mongodb_groups_enrichment.enrich_user_groups_from_mongodb", enrich),
         ):
             client = TestClient(server_module.app)
@@ -285,16 +307,25 @@ class TestTierGateOnValidate:
         monkeypatch.setenv("CALL_GRANT_AUDIT_PATH", str(tmp_path / "g.jsonl"))
 
         info = PatchKeyInfo(
-            key_id="keyid-tier2", name="tier-verify-2", key_prefix=_PLAINTEXT_KEY[:12],
-            username="freshuser", email="f@example.com", provider="logto",
-            groups=[], status=PATCH_KEY_STATUS_ACTIVE,
-            created_at=datetime.utcnow(), last_used_at=None, revoked_at=None,
+            key_id="keyid-tier2",
+            name="tier-verify-2",
+            key_prefix=_PLAINTEXT_KEY[:12],
+            username="freshuser",
+            email="f@example.com",
+            provider="logto",
+            groups=[],
+            status=PATCH_KEY_STATUS_ACTIVE,
+            created_at=datetime.utcnow(),
+            last_used_at=None,
+            revoked_at=None,
         )
         service = _FakePatchKeyService(info, _PLAINTEXT_KEY)
         enrich = AsyncMock(return_value=["community"])
         with (
-            patch("registry.services.patch_key_service.get_patch_key_service",
-                  new=AsyncMock(return_value=service)),
+            patch(
+                "registry.services.patch_key_service.get_patch_key_service",
+                new=AsyncMock(return_value=service),
+            ),
             patch("mongodb_groups_enrichment.enrich_user_groups_from_mongodb", enrich),
         ):
             client = TestClient(server_module.app)

@@ -14,7 +14,7 @@ distinguish "no document yet" from "already over limit".
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # motor/documentdb stay lazy: auth-server runs also import
@@ -25,7 +25,7 @@ COLLECTION_NAME = "call_grant_usage"
 
 def current_month(now: datetime | None = None) -> str:
     """Grant window key: ``YYYY-MM`` in UTC (matches the settle cadence)."""
-    return (now or datetime.now(timezone.utc)).strftime("%Y-%m")
+    return (now or datetime.now(UTC)).strftime("%Y-%m")
 
 
 @dataclass(frozen=True)
@@ -45,15 +45,15 @@ class CallGrantService:
         self._collection = db[COLLECTION_NAME]
 
     async def ensure_indexes(self) -> None:
-        await self._collection.create_index(
-            [("owner", 1), ("month", 1)], unique=True
-        )
+        await self._collection.create_index([("owner", 1), ("month", 1)], unique=True)
 
     async def _current_count(self, owner: str, month: str) -> int:
         doc = await self._collection.find_one({"owner": owner, "month": month})
         return int(doc.get("count", 0)) if doc else 0
 
-    async def check_and_consume(self, owner: str, limit: int, *, month: str | None = None) -> GrantVerdict:
+    async def check_and_consume(
+        self, owner: str, limit: int, *, month: str | None = None
+    ) -> GrantVerdict:
         """Admit one call when under the limit and charge the counter.
 
         Refusal does NOT increment (a refused call consumed nothing); the

@@ -44,7 +44,6 @@ from registry.api.m2m_management_routes import router as m2m_management_router
 from registry.api.management_routes import router as management_router
 from registry.api.okta_m2m_routes import router as okta_m2m_router
 from registry.api.patch_key_routes import router as patch_key_router
-from registry.api.vendor_lane_routes import router as vendor_lane_router
 from registry.api.peer_management_routes import router as peer_management_router
 from registry.api.public_record_routes import router as public_record_router
 from registry.api.rate_limit_routes import router as rate_limit_router
@@ -55,6 +54,7 @@ from registry.api.server_routes import router as servers_router
 from registry.api.skill_routes import router as skill_router
 from registry.api.system_routes import router as system_router
 from registry.api.system_routes import set_server_start_time
+from registry.api.vendor_lane_routes import router as vendor_lane_router
 from registry.api.virtual_server_routes import router as virtual_server_router
 from registry.api.wellknown_routes import cimd_router
 from registry.api.wellknown_routes import router as wellknown_router

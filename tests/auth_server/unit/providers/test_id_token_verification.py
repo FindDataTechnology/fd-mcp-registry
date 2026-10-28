@@ -98,9 +98,7 @@ class TestIdTokenAccepted:
         """Logto has a single issuer: the configured public endpoint + /oidc."""
         provider = _make_logto_provider()
         private_key, jwks = _build_keypair()
-        token = _sign_id_token(
-            private_key, _base_claims(provider.issuer, provider.client_id)
-        )
+        token = _sign_id_token(private_key, _base_claims(provider.issuer, provider.client_id))
 
         with patch.object(provider, "get_jwks", return_value=jwks):
             claims = provider.validate_id_token(token)

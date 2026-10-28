@@ -102,16 +102,12 @@ def _patch_probe_client(response=None, error=None):
     from contextlib import ExitStack
 
     stack = ExitStack()
-    stack.enter_context(
-        patch("auth_server.preflight_quota._HttpxAsyncClient", factory)
-    )
+    stack.enter_context(patch("auth_server.preflight_quota._HttpxAsyncClient", factory))
     try:
         flat = importlib.import_module("preflight_quota")
     except ImportError:
         flat = None
-    if flat is not None and flat is not importlib.import_module(
-        "auth_server.preflight_quota"
-    ):
+    if flat is not None and flat is not importlib.import_module("auth_server.preflight_quota"):
         stack.enter_context(patch.object(flat, "_HttpxAsyncClient", factory))
     return probe_client, stack
 
@@ -140,9 +136,7 @@ def _preflight_test_env(monkeypatch, tmp_path):
     monkeypatch.setenv("PREFLIGHT_ENABLED", "true")
     monkeypatch.setenv("SUB2API_BASE", "https://sub2api.example")
     monkeypatch.setenv("SUB2API_ADMIN_KEY", "admin-secret-key")
-    monkeypatch.setenv(
-        "SUB2API_CALLER_MAP", json.dumps({"alice": "sk-alice-key"})
-    )
+    monkeypatch.setenv("SUB2API_CALLER_MAP", json.dumps({"alice": "sk-alice-key"}))
     monkeypatch.setenv("PREFLIGHT_AUDIT_PATH", str(tmp_path / "preflight-audit.jsonl"))
     # Fresh cache + map memo per test (the memo is keyed on the raw env
     # string; resetting keeps tests independent of ordering). Reset BOTH
@@ -234,9 +228,7 @@ class TestConfigResolution:
 
         import auth_server.preflight_quota as pq
 
-        probe_client, patcher = _patch_probe_client(
-            response=_probe_response(200, {"data": []})
-        )
+        probe_client, patcher = _patch_probe_client(response=_probe_response(200, {"data": []}))
         with patcher:
             asyncio.run(
                 pq.enforce_mcp_proxy_preflight(
@@ -270,8 +262,9 @@ class TestKeyProbeVerdicts:
     def test_insufficient_balance_402(self):
         import asyncio
 
-        import auth_server.preflight_quota as pq
         from fastapi import HTTPException
+
+        import auth_server.preflight_quota as pq
 
         probe_client, patcher = _patch_probe_client(
             response=_probe_response(402, {"code": "INSUFFICIENT_BALANCE", "message": "no funds"})
@@ -289,8 +282,9 @@ class TestKeyProbeVerdicts:
         code — still a 402-semantic refusal."""
         import asyncio
 
-        import auth_server.preflight_quota as pq
         from fastapi import HTTPException
+
+        import auth_server.preflight_quota as pq
 
         probe_client, patcher = _patch_probe_client(
             response=_probe_response(429, {"code": "quota_exceeded"})
@@ -305,8 +299,9 @@ class TestKeyProbeVerdicts:
         refuse 402 (with the true reason in the audit), not 503."""
         import asyncio
 
-        import auth_server.preflight_quota as pq
         from fastapi import HTTPException
+
+        import auth_server.preflight_quota as pq
 
         probe_client, patcher = _patch_probe_client(
             response=_probe_response(401, {"code": "INVALID_KEY"})
@@ -321,8 +316,9 @@ class TestKeyProbeVerdicts:
     def test_unreachable_strict_503(self):
         import asyncio
 
-        import auth_server.preflight_quota as pq
         from fastapi import HTTPException
+
+        import auth_server.preflight_quota as pq
 
         probe_client, patcher = _patch_probe_client(error=httpx.ConnectError("conn refused"))
         with patcher:
@@ -335,12 +331,11 @@ class TestKeyProbeVerdicts:
     def test_plane_5xx_is_unavailable_not_refusal(self):
         import asyncio
 
-        import auth_server.preflight_quota as pq
         from fastapi import HTTPException
 
-        probe_client, patcher = _patch_probe_client(
-            response=_probe_response(503, {"code": "boom"})
-        )
+        import auth_server.preflight_quota as pq
+
+        probe_client, patcher = _patch_probe_client(response=_probe_response(503, {"code": "boom"}))
         with patcher:
             with pytest.raises(HTTPException) as excinfo:
                 asyncio.run(pq.enforce_mcp_proxy_preflight(_claims(), "office-docs"))
@@ -387,8 +382,9 @@ class TestUserProbeVerdicts:
     def test_zero_balance_refuses_402(self, monkeypatch):
         import asyncio
 
-        import auth_server.preflight_quota as pq
         from fastapi import HTTPException
+
+        import auth_server.preflight_quota as pq
 
         monkeypatch.setenv("SUB2API_CALLER_MAP", json.dumps({"alice": "1043"}))
         probe_client, patcher = _patch_probe_client(
@@ -402,8 +398,9 @@ class TestUserProbeVerdicts:
     def test_blocked_status_refuses_402(self, monkeypatch):
         import asyncio
 
-        import auth_server.preflight_quota as pq
         from fastapi import HTTPException
+
+        import auth_server.preflight_quota as pq
 
         monkeypatch.setenv("SUB2API_CALLER_MAP", json.dumps({"alice": "user:1043"}))
         probe_client, patcher = _patch_probe_client(
@@ -421,8 +418,9 @@ class TestUserProbeVerdicts:
         verdict: routes to the mode switch (strict -> 503)."""
         import asyncio
 
-        import auth_server.preflight_quota as pq
         from fastapi import HTTPException
+
+        import auth_server.preflight_quota as pq
 
         monkeypatch.setenv("SUB2API_CALLER_MAP", json.dumps({"alice": "user:1043"}))
         probe_client, patcher = _patch_probe_client(
@@ -436,8 +434,9 @@ class TestUserProbeVerdicts:
     def test_missing_admin_key_is_unavailable_strict(self, monkeypatch):
         import asyncio
 
-        import auth_server.preflight_quota as pq
         from fastapi import HTTPException
+
+        import auth_server.preflight_quota as pq
 
         monkeypatch.setenv("SUB2API_CALLER_MAP", json.dumps({"alice": "user:1043"}))
         monkeypatch.delenv("SUB2API_ADMIN_KEY")
@@ -451,8 +450,9 @@ class TestUserProbeVerdicts:
     def test_missing_base_is_unavailable_strict(self, monkeypatch):
         import asyncio
 
-        import auth_server.preflight_quota as pq
         from fastapi import HTTPException
+
+        import auth_server.preflight_quota as pq
 
         monkeypatch.delenv("SUB2API_BASE")
         probe_client, patcher = _patch_probe_client(response=_probe_response(200, {}))
@@ -477,9 +477,7 @@ class TestVerdictCache:
         monkeypatch.setattr(pq, "time", types.SimpleNamespace(monotonic=clock.monotonic))
         monkeypatch.setenv("PREFLIGHT_CACHE_TTL", "30")
 
-        probe_client, patcher = _patch_probe_client(
-            response=_probe_response(200, {"data": []})
-        )
+        probe_client, patcher = _patch_probe_client(response=_probe_response(200, {"data": []}))
         with patcher:
             asyncio.run(pq.enforce_mcp_proxy_preflight(_claims(), "office-docs"))
             clock.advance(29)
@@ -495,9 +493,7 @@ class TestVerdictCache:
         monkeypatch.setattr(pq, "time", types.SimpleNamespace(monotonic=clock.monotonic))
         monkeypatch.setenv("PREFLIGHT_CACHE_TTL", "30")
 
-        probe_client, patcher = _patch_probe_client(
-            response=_probe_response(200, {"data": []})
-        )
+        probe_client, patcher = _patch_probe_client(response=_probe_response(200, {"data": []}))
         with patcher:
             asyncio.run(pq.enforce_mcp_proxy_preflight(_claims(), "office-docs"))
             clock.advance(31)
@@ -510,9 +506,7 @@ class TestVerdictCache:
         import auth_server.preflight_quota as pq
 
         monkeypatch.setenv("PREFLIGHT_CACHE_TTL", "0")
-        probe_client, patcher = _patch_probe_client(
-            response=_probe_response(200, {"data": []})
-        )
+        probe_client, patcher = _patch_probe_client(response=_probe_response(200, {"data": []}))
         with patcher:
             asyncio.run(pq.enforce_mcp_proxy_preflight(_claims(), "office-docs"))
             asyncio.run(pq.enforce_mcp_proxy_preflight(_claims(), "office-docs"))
@@ -524,8 +518,9 @@ class TestVerdictCache:
         quickly."""
         import asyncio
 
-        import auth_server.preflight_quota as pq
         from fastapi import HTTPException
+
+        import auth_server.preflight_quota as pq
 
         clock = _FakeClock()
         monkeypatch.setattr(pq, "time", types.SimpleNamespace(monotonic=clock.monotonic))
@@ -587,8 +582,9 @@ class TestAuditJsonl:
     def test_402_rejection_is_audited(self, tmp_path):
         import asyncio
 
-        import auth_server.preflight_quota as pq
         from fastapi import HTTPException
+
+        import auth_server.preflight_quota as pq
 
         probe_client, patcher = _patch_probe_client(
             response=_probe_response(402, {"code": "INSUFFICIENT_BALANCE"})
@@ -611,8 +607,9 @@ class TestAuditJsonl:
     def test_503_strict_rejection_is_audited(self, tmp_path):
         import asyncio
 
-        import auth_server.preflight_quota as pq
         from fastapi import HTTPException
+
+        import auth_server.preflight_quota as pq
 
         probe_client, patcher = _patch_probe_client(error=httpx.ConnectError("down"))
         with patcher:
@@ -640,9 +637,7 @@ class TestAuditJsonl:
 
         import auth_server.preflight_quota as pq
 
-        probe_client, patcher = _patch_probe_client(
-            response=_probe_response(200, {"data": []})
-        )
+        probe_client, patcher = _patch_probe_client(response=_probe_response(200, {"data": []}))
         with patcher:
             asyncio.run(pq.enforce_mcp_proxy_preflight(_claims(), "office-docs"))
         assert _audit_lines(tmp_path) == []
@@ -650,8 +645,9 @@ class TestAuditJsonl:
     def test_audit_write_failure_never_breaks_the_request(self, monkeypatch):
         import asyncio
 
-        import auth_server.preflight_quota as pq
         from fastapi import HTTPException
+
+        import auth_server.preflight_quota as pq
 
         monkeypatch.setenv("PREFLIGHT_AUDIT_PATH", "/nonexistent-root/x/y/audit.jsonl")
         probe_client, patcher = _patch_probe_client(
@@ -730,16 +726,15 @@ class TestMcpProxyPreflightRoute:
         )
 
     def test_sufficient_forwards_to_upstream(self):
-        import auth_server.server as server_module
         from fastapi.testclient import TestClient
+
+        import auth_server.server as server_module
 
         upstream = _build_mock_upstream_response(
             200, {"content-type": "application/json"}, b'{"jsonrpc":"2.0","id":1,"result":{}}'
         )
         upstream_patch, upstream_client = _patch_upstream_client(upstream)
-        probe_client, probe_patch = _patch_probe_client(
-            response=_probe_response(200, {"data": []})
-        )
+        probe_client, probe_patch = _patch_probe_client(response=_probe_response(200, {"data": []}))
         with (
             probe_patch,
             upstream_patch,
@@ -753,8 +748,9 @@ class TestMcpProxyPreflightRoute:
         assert upstream_client.stream.called
 
     def test_insufficient_402_upstream_never_called(self):
-        import auth_server.server as server_module
         from fastapi.testclient import TestClient
+
+        import auth_server.server as server_module
 
         upstream_patch, upstream_client = _patch_upstream_client(_build_mock_upstream_response())
         probe_client, probe_patch = _patch_probe_client(
@@ -776,8 +772,9 @@ class TestMcpProxyPreflightRoute:
         assert probe_client.get.await_count == 1
 
     def test_unreachable_strict_503(self):
-        import auth_server.server as server_module
         from fastapi.testclient import TestClient
+
+        import auth_server.server as server_module
 
         upstream_patch, upstream_client = _patch_upstream_client(_build_mock_upstream_response())
         probe_client, probe_patch = _patch_probe_client(error=httpx.ConnectError("no route"))
@@ -795,8 +792,9 @@ class TestMcpProxyPreflightRoute:
         assert not upstream_client.stream.called
 
     def test_unreachable_postpaid_forwards(self, monkeypatch, caplog):
-        import auth_server.server as server_module
         from fastapi.testclient import TestClient
+
+        import auth_server.server as server_module
 
         monkeypatch.setenv("PREFLIGHT_MODE", "postpaid")
         upstream = _build_mock_upstream_response(
@@ -818,8 +816,9 @@ class TestMcpProxyPreflightRoute:
         assert any("postpaid" in r.message for r in caplog.records)
 
     def test_unmapped_caller_forwards_without_probe(self):
-        import auth_server.server as server_module
         from fastapi.testclient import TestClient
+
+        import auth_server.server as server_module
 
         upstream = _build_mock_upstream_response(
             200, {"content-type": "application/json"}, b'{"jsonrpc":"2.0","id":1,"result":{}}'
@@ -838,8 +837,9 @@ class TestMcpProxyPreflightRoute:
         assert probe_client.get.await_count == 0
 
     def test_feature_off_forwards_everything(self, monkeypatch):
-        import auth_server.server as server_module
         from fastapi.testclient import TestClient
+
+        import auth_server.server as server_module
 
         monkeypatch.setenv("PREFLIGHT_ENABLED", "false")
         upstream = _build_mock_upstream_response(
@@ -859,16 +859,15 @@ class TestMcpProxyPreflightRoute:
         assert probe_client.get.await_count == 0
 
     def test_cached_verdict_no_second_probe_across_requests(self):
-        import auth_server.server as server_module
         from fastapi.testclient import TestClient
+
+        import auth_server.server as server_module
 
         upstream = _build_mock_upstream_response(
             200, {"content-type": "application/json"}, b'{"jsonrpc":"2.0","id":1,"result":{}}'
         )
         upstream_patch, _ = _patch_upstream_client(upstream)
-        probe_client, probe_patch = _patch_probe_client(
-            response=_probe_response(200, {"data": []})
-        )
+        probe_client, probe_patch = _patch_probe_client(response=_probe_response(200, {"data": []}))
         with (
             probe_patch,
             upstream_patch,
@@ -883,8 +882,9 @@ class TestMcpProxyPreflightRoute:
     def test_postpaid_cached_unavailable_verdict_still_forwards(self, monkeypatch):
         """A cached UNAVAILABLE verdict re-applies the mode switch (no
         re-probe inside the negative window), keeping postpaid permissive."""
-        import auth_server.server as server_module
         from fastapi.testclient import TestClient
+
+        import auth_server.server as server_module
 
         monkeypatch.setenv("PREFLIGHT_MODE", "postpaid")
         upstream = _build_mock_upstream_response(

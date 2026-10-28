@@ -132,6 +132,4 @@ class TestHeaderReplacesUpstreamValue:
         response = client.get("/airegistry-tools/mcp")
         values = response.headers.get_list("www-authenticate")
         assert len(values) == 1, f"expected one header, got {values!r}"
-        assert values[0] == (
-            f'Bearer realm="mcp", resource_metadata="{RESOURCE_METADATA_URL}"'
-        )
+        assert values[0] == (f'Bearer realm="mcp", resource_metadata="{RESOURCE_METADATA_URL}"')

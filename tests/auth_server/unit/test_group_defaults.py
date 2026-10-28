@@ -65,7 +65,9 @@ async def test_real_record_wins_over_defaults(monkeypatch) -> None:
 
     with patch(
         "auth_server.mongodb_groups_enrichment._get_mongodb",
-        AsyncMock(return_value=_db_with({"username": "legal1", "groups": ["legal"], "enabled": True})),
+        AsyncMock(
+            return_value=_db_with({"username": "legal1", "groups": ["legal"], "enabled": True})
+        ),
     ):
         assert await enrich_user_groups_from_mongodb("legal1", [], "logto") == ["legal"]
 

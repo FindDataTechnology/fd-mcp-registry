@@ -101,6 +101,7 @@ servers = [ServerDetailFactory() for _ in range(5)]
 
 # Create agent with skills
 from tests.fixtures.factories import create_agent_with_skills
+
 agent = create_agent_with_skills(num_skills=5)
 ```
 
@@ -122,11 +123,7 @@ embeddings = client.encode(["text 1", "text 2"])
 from tests.fixtures.mocks.mock_auth import MockJWTValidator
 
 validator = MockJWTValidator()
-token = validator.create_token(
-    username="testuser",
-    groups=["users"],
-    scopes=["read:servers"]
-)
+token = validator.create_token(username="testuser", groups=["users"], scopes=["read:servers"])
 payload = validator.validate_token(token)
 ```
 
@@ -216,6 +213,7 @@ pytest tests/ -v
 import pytest
 from tests.fixtures.factories import ServerDetailFactory
 
+
 class TestServerService:
     """Tests for server service."""
 
@@ -236,6 +234,7 @@ class TestServerService:
 ```python
 import pytest
 
+
 class TestServerRoutes:
     """Integration tests for server routes."""
 
@@ -251,6 +250,7 @@ class TestServerRoutes:
 ```python
 import pytest
 from tests.auth_server.fixtures.mock_jwt import create_mock_jwt_token
+
 
 class TestAuthentication:
     """Tests for authentication."""

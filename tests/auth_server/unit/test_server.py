@@ -2747,6 +2747,7 @@ class TestMapUserInfoSubject:
 
         assert map_user_info(user_info, self._BASE_CONFIG)["subject"] is None
 
+
 class TestOAuth2CallbackIdTokenVerification:
     """The OAuth2 callback must verify a present id_token before trusting its
     claims. A forged/tampered id_token (verification failure) denies the login

@@ -6,7 +6,7 @@ month windows, read-only usage) are exercised without a live MongoDB.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -79,5 +79,5 @@ async def test_usage_is_read_only() -> None:
 
 
 def test_current_month_utc() -> None:
-    assert current_month(datetime(2026, 10, 7, 23, 59, tzinfo=timezone.utc)) == "2026-10"
-    assert current_month(datetime(2027, 1, 1, 0, 0, tzinfo=timezone.utc)) == "2027-01"
+    assert current_month(datetime(2026, 10, 7, 23, 59, tzinfo=UTC)) == "2026-10"
+    assert current_month(datetime(2027, 1, 1, 0, 0, tzinfo=UTC)) == "2027-01"

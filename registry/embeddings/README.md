@@ -257,6 +257,7 @@ The embeddings module integrates seamlessly with the search service, which uses 
 # In registry/search/service.py
 from registry.embeddings import create_embeddings_client
 
+
 class SearchService:
     async def _load_embedding_model(self):
         self.embedding_model = create_embeddings_client(
