@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import HTTPException
@@ -136,12 +136,13 @@ def _is_patch_key_caller(claims: dict[str, Any]) -> bool:
     client_id = str(claims.get("client_id") or "").lower()
     if any(marker in (auth_method, client_id) for marker in _PATCH_KEY_MARKERS):
         return True
-    # (2026-10-28) 曾用「带 groups 即 patch-key」当兜底：/validate 其实产出精确
-    # 标记 client_id="patch-key"，且 internal_request_token 原样带到代理跳，
-    # 所以标记从未丢失；而 Logto 平台用户同样带 groups，被误并入免费池人口
-    # （白吃社区额度）并被 tier 门拦在未定向 server 上。免费池身份只认
-    # patch-key provenance。
-    return False
+    # Proxy-token form (ecosystem-bridge 3.3): /validate folds patch-key into
+    # the canonical "oauth2" method, so the mcp_proxy hop cannot see the
+    # marker — but it now carries the RESOLVED groups claim. Treat a caller
+    # whose groups ride the groups claim (non-empty) as the free-tier
+    # population; wire customers and internal users never reach here (their
+    # groups don't intersect the grant set, checked by the caller).
+    return bool(claims.get("groups"))
 
 
 async def enforce_call_grant(claims: dict[str, Any], request_body: bytes | None) -> None:
@@ -166,14 +167,12 @@ async def enforce_call_grant(claims: dict[str, Any], request_body: bytes | None)
         service = await get_call_grant_service()
         verdict = await service.check_and_consume(owner, _monthly_limit())
     except Exception as exc:  # noqa: BLE001 - store down: fail closed, audited
-        _audit(
-            {
-                "ts": datetime.now(UTC).isoformat(),
-                "event": "grant_store_unavailable",
-                "owner": owner,
-                "error": str(exc),
-            }
-        )
+        _audit({
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "event": "grant_store_unavailable",
+            "owner": owner,
+            "error": str(exc),
+        })
         raise HTTPException(
             status_code=503,
             detail={
@@ -183,16 +182,14 @@ async def enforce_call_grant(claims: dict[str, Any], request_body: bytes | None)
         ) from exc
 
     if not verdict.allowed:
-        _audit(
-            {
-                "ts": datetime.now(UTC).isoformat(),
-                "event": "grant_exhausted",
-                "owner": owner,
-                "month": verdict.month,
-                "used": verdict.used,
-                "limit": verdict.limit,
-            }
-        )
+        _audit({
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "event": "grant_exhausted",
+            "owner": owner,
+            "month": verdict.month,
+            "used": verdict.used,
+            "limit": verdict.limit,
+        })
         raise HTTPException(
             status_code=402,
             detail={
