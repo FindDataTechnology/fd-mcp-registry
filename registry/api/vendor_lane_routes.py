@@ -43,8 +43,10 @@ from pydantic import BaseModel, Field
 from ..audit import set_audit_action
 from ..auth.internal import validate_internal_auth  # noqa: F401  (kept for symmetry; token path used)
 from ..constants import DeploymentType  # noqa: F401
-from ..core.config import settings
-from ..services._asset_id import InvalidAssetIdError, check_caller_supplied_id_allowed, resolve_asset_id
+from ..services._asset_id import (
+    InvalidAssetIdError,
+    resolve_asset_id,
+)
 from ..services.registration_gate_service import check_registration_gate
 from ..services.server_service import server_service
 
@@ -80,7 +82,9 @@ async def verify_vendor_lane(authorization: Annotated[str | None, Header()] = No
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing bearer token")
     if not hmac.compare_digest(authorization.removeprefix("Bearer ").strip(), expected):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid vendor lane token")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid vendor lane token"
+        )
     return True
 
 
@@ -103,7 +107,9 @@ class VendorToggleBody(BaseModel):
 
 
 @router.post("/register", status_code=status.HTTP_201_CREATED)
-async def vendor_register(body: VendorRegisterBody, request: Request, _lane: Annotated[bool, Depends(verify_vendor_lane)]):
+async def vendor_register(
+    body: VendorRegisterBody, request: Request, _lane: Annotated[bool, Depends(verify_vendor_lane)]
+):
     """Vendor-remote register. Same persistence+gate path as the console route;
     the registration ALWAYS lands disabled (paas流水线 toggles).
     """
@@ -111,7 +117,9 @@ async def vendor_register(body: VendorRegisterBody, request: Request, _lane: Ann
     try:
         resolved_id = resolve_asset_id(None)
     except InvalidAssetIdError as e:  # pragma: no cover - auto path never raises
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Invalid asset id: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Invalid asset id: {e}"
+        )
 
     server_entry: dict[str, Any] = {
         "id": resolved_id,
@@ -145,7 +153,10 @@ async def vendor_register(body: VendorRegisterBody, request: Request, _lane: Ann
 
     result = await server_service.register_server(server_entry)
     if not result.get("success"):
-        return JSONResponse(status_code=409, content={"error": "Service registration failed", "detail": result.get("message")})
+        return JSONResponse(
+            status_code=409,
+            content={"error": "Service registration failed", "detail": result.get("message")},
+        )
     set_audit_action(
         request,
         "create",
@@ -157,7 +168,9 @@ async def vendor_register(body: VendorRegisterBody, request: Request, _lane: Ann
 
 
 @router.post("/toggle")
-async def vendor_toggle(body: VendorToggleBody, request: Request, _lane: Annotated[bool, Depends(verify_vendor_lane)]):
+async def vendor_toggle(
+    body: VendorToggleBody, request: Request, _lane: Annotated[bool, Depends(verify_vendor_lane)]
+):
     """Vendor-remote toggle. Same state transition as the console route; the
     service must already exist.
     """
@@ -176,5 +189,7 @@ async def vendor_toggle(body: VendorToggleBody, request: Request, _lane: Annotat
         description=f"Vendor lane toggled '{info.get('server_name')}' ({path}) to {bool(body.new_state)}",
     )
     token = _lane_token()
-    logger.info("vendor-lane toggled %s to %s (token fp=%s)", path, body.new_state, _fingerprint(token))
+    logger.info(
+        "vendor-lane toggled %s to %s (token fp=%s)", path, body.new_state, _fingerprint(token)
+    )
     return {"path": path, "enabled": bool(body.new_state)}
