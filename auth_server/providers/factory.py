@@ -48,6 +48,10 @@ def _create_logto_provider() -> LogtoProvider:
     m2m_client_id = os.environ.get("LOGTO_M2M_CLIENT_ID")
     m2m_client_secret = os.environ.get("LOGTO_M2M_CLIENT_SECRET")
     m2m_resource = os.environ.get("LOGTO_M2M_RESOURCE")
+    # Additional bearer-token audiences the gateway must accept — set this to
+    # the canonical REGISTRY_URL: the PRM advertises that value as `resource`
+    # and RFC 8707 clients send it verbatim (token `aud` = bare origin).
+    extra_audiences = os.environ.get("LOGTO_ACCEPTED_AUDIENCES")
 
     missing_vars = []
     if not logto_url:
@@ -74,4 +78,5 @@ def _create_logto_provider() -> LogtoProvider:
         m2m_client_id=m2m_client_id,
         m2m_client_secret=m2m_client_secret,
         m2m_resource=m2m_resource,
+        extra_accepted_audiences=extra_audiences,
     )
