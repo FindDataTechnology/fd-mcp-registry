@@ -13,14 +13,21 @@ import pytest
 
 from registry.services.call_grant_service import CallGrantService, current_month
 
+# 假件的存量月必须跟着服务走：硬编码 "2026-10" 让这三条断言在 11 月
+# check_and_consume()（current_month()=2026-11）查询落空，used 变 1≠4——
+# 跨月即炸的日期炸弹（11-04 CI 实证；修复=动态月）。
+_MONTH = current_month()
+# 独立月窗用例的「别的月份」：取一个固定历史月，任何真实日期下都不同于 _MONTH。
+_OTHER_MONTH = "2001-02"
+
 
 def _collection_with_counter(count: int | None) -> MagicMock:
     """假件按 (owner, month) 过滤查询——月份窗独立性的关键。"""
     collection = MagicMock()
 
     async def _find_one(query):
-        if query.get("month") == "2026-10":
-            return None if count is None else {"owner": "u", "month": "2026-10", "count": count}
+        if query.get("month") == _MONTH:
+            return None if count is None else {"owner": "u", "month": _MONTH, "count": count}
         return None  # 其它月份窗尚无档
 
     collection.find_one = AsyncMock(side_effect=_find_one)
@@ -59,8 +66,8 @@ async def test_at_limit_refuses_without_charging() -> None:
 @pytest.mark.asyncio
 async def test_month_windows_are_independent() -> None:
     service, _ = _service(count=5)
-    verdict = await service.check_and_consume("u", limit=5, month="2026-11")
-    assert verdict.allowed and verdict.month == "2026-11"
+    verdict = await service.check_and_consume("u", limit=5, month=_OTHER_MONTH)
+    assert verdict.allowed and verdict.month == _OTHER_MONTH
 
 
 @pytest.mark.asyncio
