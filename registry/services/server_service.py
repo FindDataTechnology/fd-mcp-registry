@@ -13,7 +13,7 @@ from ..utils.credential_encryption import (
     strip_credentials_from_dict,
 )
 from ..utils.url_guard import (
-    proxy_profile_for_entity_target,
+    validate_client_endpoint_url,
     validate_proxy_pass_url,
     validate_server_path,
     validate_url,
@@ -30,23 +30,23 @@ def _validate_endpoint_fields(
 ) -> None:
     """Validate optional endpoint overrides against the registered target.
 
-    Ordinary servers use the standard proxy profile. The built-in
-    ``airegistry-tools`` record may use its private-host profile only when the
-    actual override has an exact normalized outbound identity approved by that
-    profile; a different host, port, path, or query is rejected.
+    Endpoint overrides are client-visible connection URLs, so ordinary servers
+    get the public-only client-endpoint guard — NOT the proxy profile whose
+    operator allowlist legitimately admits internal ``proxy_pass_url`` targets.
+    The built-in ``airegistry-tools`` record may use its private-host profile
+    only when the actual override has an exact normalized outbound identity
+    approved by that profile; a different host, port, path, or query is
+    rejected.
     """
     for field_name in ("mcp_endpoint", "sse_endpoint"):
         value = server_info.get(field_name)
         if not value:
             continue
-        profile = proxy_profile_for_entity_target(
-            "mcp_server", server_path, registered_target_url, value
-        )
-        validate_url(
+        validate_client_endpoint_url(
             value,
-            profile=profile,
-            reject_nginx_metacharacters=True,
-            resolve=False,
+            entity_type="mcp_server",
+            entity_path=server_path,
+            registered_target_url=registered_target_url,
         )
 
 

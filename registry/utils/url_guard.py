@@ -1161,6 +1161,82 @@ EGRESS_UPSTREAM_PROFILE = _Profile(
 )
 
 
+def validate_client_endpoint_url(
+    url: str,
+    *,
+    entity_type: str,
+    entity_path: str | None,
+    registered_target_url: str | None = None,
+) -> None:
+    """Validate a client-visible explicit endpoint override (fail closed).
+
+    ``mcp_endpoint`` / ``sse_endpoint`` name where CLIENTS connect — unlike
+    ``proxy_pass_url``, which is upstream addressing the registry proxies on
+    the client's behalf. An internal target in an endpoint override maps the
+    internal network to every consumer the registry renders for, so these
+    fields must not inherit ``PROXY_PROFILE``'s operator allowlist relaxation
+    (``SSRF_ALLOWED_HOSTS`` / ``SSRF_ALLOWED_CIDRS``): IP literals are
+    classified against the public internet only, and hostnames matching a
+    deployment-declared private suffix (``client_endpoint_denied_host_suffixes``)
+    are rejected outright. The built-in ``airegistry-tools`` entity keeps its
+    exact-identity private profile: only when the REGISTERED target is the
+    built-in base may the override use it, and the override itself must match
+    the exact approved outbound identities (a different host, port, path, or
+    query fails closed).
+
+    Args:
+        url: The endpoint override URL to validate.
+        entity_type: Entity kind (``mcp_server``).
+        entity_path: Registered entity path (e.g. ``/airegistry-tools/``).
+        registered_target_url: The record's ``proxy_pass_url``, used to select
+            the built-in profile. Callers with the merged record state should
+            always pass it; without it the built-in path cannot be selected.
+
+    Raises:
+        UrlValidationError: On any validation failure.
+    """
+    if is_builtin_airegistry_tools_target(entity_type, entity_path, registered_target_url):
+        # Exact built-in entity: keep the dedicated profile, which enforces the
+        # exact outbound-identity match (rejects any other host/port/path).
+        profile = proxy_profile_for_entity_target(
+            entity_type, entity_path, registered_target_url, url
+        )
+        validate_url(url, profile=profile, reject_nginx_metacharacters=True, resolve=False)
+        return
+
+    # IP literals: public-only, with NO operator allowlist relaxation. A
+    # CGNAT/loopback/private literal is exactly the leak this guard exists
+    # to stop; the proxy target may be allowlisted, the client endpoint is not.
+    if contains_nginx_metacharacters(url):
+        raise UrlValidationError(url, "contains disallowed nginx metacharacters")
+    parsed = urlparse(normalize_url_identity(url))
+    hostname = (parsed.hostname or "").lower()
+    literal = coerce_ip_literal(hostname)
+    if literal is not None and _ip_denial_reason(literal, allow_private=False) is not None:
+        raise UrlValidationError(
+            url, "explicit client endpoint targets a private/loopback/CGNAT address"
+        )
+    for suffix in _client_endpoint_denied_suffixes():
+        if hostname == suffix or hostname.endswith("." + suffix):
+            raise UrlValidationError(
+                url, f"explicit client endpoint targets private host suffix '{suffix}'"
+            )
+
+
+@lru_cache(maxsize=1)
+def _client_endpoint_denied_suffixes() -> tuple[str, ...]:
+    """Return lowercase private-host suffixes denied for client endpoint fields.
+
+    Sourced from ``client_endpoint_denied_host_suffixes`` (comma-separated,
+    empty by default so the upstream default stays deployment-neutral).
+    Cached because settings are immutable per-process.
+    """
+    raw = getattr(_get_settings(), "client_endpoint_denied_host_suffixes", "") or ""
+    return tuple(
+        s.strip().lower() for s in raw.split(",") if s.strip()
+    )
+
+
 def proxy_profile_for_entity_target(
     entity_type: str,
     entity_path: str | None,

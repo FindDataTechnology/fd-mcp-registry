@@ -754,6 +754,18 @@ class Settings(BaseSettings):
             "The cloud metadata address 169.254.169.254 is never permitted."
         ),
     )
+    client_endpoint_denied_host_suffixes: str = Field(
+        default="",
+        description=(
+            "Comma-separated hostname suffixes that explicit client endpoint "
+            "overrides (mcp_endpoint / sse_endpoint) must never target, even "
+            "when the same target would be allowlisted for proxy_pass_url "
+            "(e.g. 'mesh.internal.example'). These fields are client-visible "
+            "connection URLs, so an internal target would map the internal "
+            "network to every consumer the registry renders for. Empty by "
+            "default; deployments with named internal domains should list them."
+        ),
+    )
 
     # Trusted-IdP allowlist for the credential-bearing OAuth token endpoints used
     # by per-user egress consent. Deliberately separate from ssrf_allowed_hosts:

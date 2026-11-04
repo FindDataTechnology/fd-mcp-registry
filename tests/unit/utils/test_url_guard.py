@@ -916,3 +916,154 @@ class TestProxyProfilePrivateTargetToggle:
                     profile=url_guard.PROXY_PROFILE,
                     resolve=False,
                 )
+
+
+class TestClientEndpointGuard:
+    """Explicit client-visible endpoint overrides (mcp_endpoint/sse_endpoint)
+    must never target the internal network — not even when the same target is
+    operator-allowlisted for proxy_pass_url."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_client_endpoint_cache(self):
+        url_guard._client_endpoint_denied_suffixes.cache_clear()
+        yield
+        url_guard._client_endpoint_denied_suffixes.cache_clear()
+
+    def _settings_with(self, ssrf_hosts="", ssrf_cidrs="", denied_suffixes=""):
+        s = _settings(
+            ssrf_allowed_hosts=ssrf_hosts,
+            ssrf_allowed_cidrs=ssrf_cidrs,
+        )
+        s.client_endpoint_denied_host_suffixes = denied_suffixes
+        return s
+
+    def test_cgnat_literal_rejected_even_when_proxy_allowlisted(self):
+        """The exact leak this guard closes: 100.64.x is fine for
+        proxy_pass_url (SSRF_ALLOWED_CIDRS) but must not pass as mcp_endpoint."""
+        s = self._settings_with(ssrf_cidrs="100.64.0.0/10")
+        with patch.object(url_guard, "settings", s):
+            # Sanity: the proxy profile admits it.
+            url_guard.validate_url(
+                "http://100.64.0.11:8090/mcp", profile=url_guard.PROXY_PROFILE, resolve=False
+            )
+            with pytest.raises(UrlValidationError):
+                url_guard.validate_client_endpoint_url(
+                    "http://100.64.0.11:8090/mcp",
+                    entity_type="mcp_server",
+                    entity_path="/some-server",
+                )
+
+    def test_loopback_literal_rejected(self):
+        with patch.object(url_guard, "settings", self._settings_with()):
+            with pytest.raises(UrlValidationError):
+                url_guard.validate_client_endpoint_url(
+                    "http://127.0.0.1:9000/mcp",
+                    entity_type="mcp_server",
+                    entity_path="/some-server",
+                )
+
+    def test_obfuscated_private_literal_rejected(self):
+        with patch.object(url_guard, "settings", self._settings_with()):
+            # 100.64.0.11 in hex spelling: 0x64.0x40.0x00.0x0b
+            with pytest.raises(UrlValidationError):
+                url_guard.validate_client_endpoint_url(
+                    "http://0x6440000b/mcp",
+                    entity_type="mcp_server",
+                    entity_path="/some-server",
+                )
+
+    def test_public_literal_accepted(self):
+        with patch.object(url_guard, "settings", self._settings_with()):
+            assert (
+                url_guard.validate_client_endpoint_url(
+                    "https://mcp.example.com/mcp",
+                    entity_type="mcp_server",
+                    entity_path="/some-server",
+                )
+                is None
+            )
+
+    def test_public_hostname_accepted(self):
+        with patch.object(url_guard, "settings", self._settings_with()):
+            assert (
+                url_guard.validate_client_endpoint_url(
+                    "https://api.vendor.example/mcp",
+                    entity_type="mcp_server",
+                    entity_path="/some-server",
+                )
+                is None
+            )
+
+    def test_denied_host_suffix_rejected(self):
+        s = self._settings_with(
+            ssrf_cidrs="100.64.0.0/10", denied_suffixes="mesh.finddata.cn"
+        )
+        with patch.object(url_guard, "settings", s):
+            with pytest.raises(UrlValidationError):
+                url_guard.validate_client_endpoint_url(
+                    "http://cheap6.mesh.finddata.cn:31893/mcp",
+                    entity_type="mcp_server",
+                    entity_path="/facet-market-mcp",
+                )
+
+    def test_denied_suffix_matches_subdomain_exactly(self):
+        s = self._settings_with(denied_suffixes="mesh.finddata.cn")
+        with patch.object(url_guard, "settings", s):
+            # lookalike domain that merely contains the suffix as a substring
+            assert (
+                url_guard.validate_client_endpoint_url(
+                    "https://mesh.finddata.cn.evil.example/mcp",
+                    entity_type="mcp_server",
+                    entity_path="/x",
+                )
+                is None
+            )
+
+    def test_suffix_check_is_case_insensitive(self):
+        s = self._settings_with(denied_suffixes="Mesh.FindData.CN")
+        with patch.object(url_guard, "settings", s):
+            with pytest.raises(UrlValidationError):
+                url_guard.validate_client_endpoint_url(
+                    "http://CHEAP6.mesh.finddata.cn/mcp",
+                    entity_type="mcp_server",
+                    entity_path="/x",
+                )
+
+    def test_builtin_airegistry_tools_keeps_private_profile(self):
+        """The exact built-in entity/target keeps its dedicated private-host
+        profile — the one sanctioned internal endpoint override."""
+        s = self._settings_with(denied_suffixes="mesh.finddata.cn")
+        with patch.object(url_guard, "settings", s):
+            assert (
+                url_guard.validate_client_endpoint_url(
+                    "http://mcpgw-server:8003/",
+                    entity_type="mcp_server",
+                    entity_path="/airegistry-tools/",
+                    registered_target_url="http://mcpgw-server:8003/",
+                )
+                is None
+            )
+
+    def test_builtin_profile_rejects_a_different_internal_identity(self):
+        s = self._settings_with(denied_suffixes="mesh.finddata.cn")
+        with patch.object(url_guard, "settings", s):
+            with pytest.raises(UrlValidationError):
+                url_guard.validate_client_endpoint_url(
+                    "http://mcpgw-server:9999/",
+                    entity_type="mcp_server",
+                    entity_path="/airegistry-tools/",
+                    registered_target_url="http://mcpgw-server:8003/",
+                )
+
+    def test_empty_settings_default_allows_public(self):
+        """Upstream default (no env configured) stays deployment-neutral:
+        public endpoints pass, no suffix rule exists."""
+        with patch.object(url_guard, "settings", self._settings_with()):
+            assert (
+                url_guard.validate_client_endpoint_url(
+                    "https://public.vendor.example/mcp",
+                    entity_type="mcp_server",
+                    entity_path="/x",
+                )
+                is None
+            )
