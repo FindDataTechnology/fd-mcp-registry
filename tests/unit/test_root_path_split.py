@@ -8,6 +8,10 @@ Contract (specs/registry-product-home):
   the split applies only to the anonymous root request.
 """
 
+import importlib
+import shutil
+import sys
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -21,6 +25,43 @@ _LANDING_MARKERS = (
     "landing-market",
     "landing-dev",
 )
+
+# The root-path split is registered only when ``frontend/build`` exists at
+# import time (registry/main.py guards the whole block with
+# ``if FRONTEND_BUILD_PATH.exists()``). The build directory is produced by the
+# image build and is NOT committed, so a plain source checkout (and the CI test
+# job, which does not build the frontend) sees no "/" route at all -> 404.
+# This fixture materialises a minimal build skeleton and re-imports
+# ``registry.main`` so the contract under test is actually registered.
+_CONSOLE_STUB = (
+    '<!doctype html><html><head>'
+    '<script src="/static/js/main.stub.js"></script>'
+    "</head><body><div id=\"root\"></div></body></html>"
+)
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _frontend_build_skeleton(tmp_path_factory):
+    """Create a stub frontend build and re-import the app with it in place."""
+    from registry import main as _main
+
+    build = _main.FRONTEND_BUILD_PATH
+    created: list = []
+    try:
+        if not build.exists():
+            (build / "static" / "js").mkdir(parents=True, exist_ok=True)
+            (build / "index.html").write_text(_CONSOLE_STUB)
+            (build / "static" / "js" / "main.stub.js").write_text("// stub\n")
+            created.append(build)
+        # The route table is built at import time; reload so the guarded block
+        # runs against the skeleton that now exists.
+        importlib.reload(_main)
+        yield
+    finally:
+        for path in created:
+            shutil.rmtree(path, ignore_errors=True)
+        # Leave the module in a sane state for other test modules.
+        sys.modules.pop("registry.main", None)
 
 
 def _client() -> TestClient:

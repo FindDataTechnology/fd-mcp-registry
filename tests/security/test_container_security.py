@@ -34,6 +34,32 @@ FRONT_DOOR_TARGET_PORTS = {8080, 8443}
 # Expected loopback-default host-bind expression for every other published port.
 LOOPBACK_BIND_PREFIX = "${HOST_BIND_IP:-127.0.0.1}:"
 
+# Tailnet-loopback bindings count as loopback for the exposure invariant: the
+# invariant guards against PUBLIC exposure, and 100.64.0.0/10 is a private
+# overlay network (Tailscale/自建 wireguard mesh) reachable only from inside
+# the tailnet. Since 2026-10-06 the OpenBao vault publishes on the cheap-1
+# tailnet IP (100.64.0.11) for cross-host VaaS credential fetch alongside
+# loopback -- a deliberate deployment fact, recorded in the compose comment.
+TAILNET_BIND_PREFIXES = ("100.64.", "100.65.", "100.66.", "100.67.")
+
+# Literal loopback host prefixes: pinning loopback explicitly (``127.0.0.1:8200:8200``)
+# is strictly tighter than the ``${HOST_BIND_IP:-127.0.0.1}`` template (the
+# operator cannot widen it to 0.0.0.0), so it satisfies the same invariant.
+LITERAL_LOOPBACK_PREFIXES = ("127.0.0.1:", "[::1]:", "::1:")
+
+
+def _is_private_bind(raw: str) -> bool:
+    """True when a compose port mapping binds loopback or the private tailnet.
+
+    The SA-5 invariant is about public exposure, so all three expressible
+    private forms pass: the ``${HOST_BIND_IP:-127.0.0.1}`` template, a literal
+    loopback IP, and a 100.64.0.0/10 tailnet address.
+    """
+    stripped = raw.strip().strip('"').strip("'")
+    return stripped.startswith(
+        (LOOPBACK_BIND_PREFIX, *LITERAL_LOOPBACK_PREFIXES, *TAILNET_BIND_PREFIXES)
+    )
+
 # List of Dockerfiles to test
 DOCKERFILES = [
     "Dockerfile",
@@ -402,8 +428,9 @@ def test_compose_only_front_door_binds_all_interfaces(
         if target in FRONT_DOOR_TARGET_PORTS:
             # Front door is intentionally published on all interfaces.
             continue
-        if not raw.strip().strip('"').strip("'").startswith(LOOPBACK_BIND_PREFIX):
-            offenders.append(f"{service_name}: {raw}")
+        if _is_private_bind(raw):
+            continue
+        offenders.append(f"{service_name}: {raw}")
 
     assert not offenders, (
         f"{compose_filename}: these published ports are not loopback-bound "
@@ -458,8 +485,9 @@ def test_compose_sensitive_ports_are_loopback(
         target = _target_port(raw)
         if target in sensitive_targets:
             seen.add(target)
-            assert raw.startswith(LOOPBACK_BIND_PREFIX), (
-                f"{compose_filename}: sensitive port {target} must be loopback-bound, got {raw!r}"
+            assert _is_private_bind(raw), (
+                f"{compose_filename}: sensitive port {target} must be loopback- or "
+                f"tailnet-bound (never all interfaces), got {raw!r}"
             )
 
     # Not every file publishes both (e.g. some variants omit a service), so we
