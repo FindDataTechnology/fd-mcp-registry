@@ -5052,6 +5052,14 @@ async def validate_request(request: Request):
                         forwarded_for=request.headers.get("X-Forwarded-For"),
                         user_agent=request.headers.get("User-Agent"),
                         correlation_id=audit_correlation_id,
+                        # Wire metering (ecosystem-bridge 3.1) requires this
+                        # stamp: nginx streams the response straight to the
+                        # client, so the audit hook never sees the body and a
+                        # real row count is not computable. 0 = per-call
+                        # metering valid, row-level count absent by design;
+                        # leaving it unset files every event into wire's
+                        # MISSING_ROWS anomaly trail (the 2026-10-08 outage).
+                        rows_returned=0,
                     )
                     logger.debug(f"MCP access logged for {server_name}")
                 except Exception as e:

@@ -129,6 +129,7 @@ class MCPLogger:
         forwarded_for: str | None = None,
         user_agent: str | None = None,
         correlation_id: str | None = None,
+        rows_returned: int | None = None,
     ) -> None:
         """
         Log an MCP server access event.
@@ -151,6 +152,11 @@ class MCPLogger:
             forwarded_for: X-Forwarded-For header value
             user_agent: User-Agent header value
             correlation_id: Optional correlation ID for tracing
+            rows_returned: Row count for wire metering (ecosystem-bridge 3.1).
+                Pass 0 on the success path -- the auth_request hook never sees
+                the streamed response body, so a real row count is not
+                computable here; leaving None on success would push the event
+                into wire's MISSING_ROWS anomaly trail instead of metering.
         """
         # Parse the JSON-RPC body to extract method and tool/resource info
         parsed = self.parse_jsonrpc_body(request_body)
@@ -171,6 +177,7 @@ class MCPLogger:
             duration_ms=duration_ms,
             error_code=error_code,
             error_message=error_message,
+            rows_returned=rows_returned,
         )
 
         # Build optional HTTP request info

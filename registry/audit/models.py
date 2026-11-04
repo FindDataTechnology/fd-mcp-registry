@@ -420,6 +420,21 @@ class MCPResponse(BaseModel):
     error_message: str | None = Field(
         default=None, description="Error message (if status is error)"
     )
+    # Ecosystem-bridge 3.1 metering contract: fd-wire's normalize_event requires
+    # mcp_response.rows_returned (it probes rows_returned / mcp_response.* /
+    # mcp_response.result.* paths and files a MISSING_ROWS anomaly when all are
+    # empty, so every event stays out of metering_records). The auth_request
+    # hook never sees the streamed response body (nginx proxies it straight to
+    # the upstream), so a true row count is architecturally unavailable here --
+    # stamp 0 on the success path (per-call metering is valid, row-level count
+    # is absent by design), leave None on error/refused paths (those belong in
+    # the anomaly trail anyway).
+    rows_returned: int | None = Field(
+        default=None,
+        description="Row count of the tool result; 0 when the row count is "
+        "unavailable (streamed body not visible to the audit hook), null on "
+        "failed/refused requests",
+    )
 
 
 class MCPServerAccessRecord(BaseModel):

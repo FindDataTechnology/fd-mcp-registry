@@ -125,3 +125,105 @@ class TestLogMCPAccess:
         # The credential hint is fully masked: no suffix of the value survives.
         assert record.identity.credential_hint == "***"
         assert "xyz789" not in record.identity.credential_hint
+
+
+class TestRowsReturnedStamp:
+    """Ecosystem-bridge 3.1: wire metering requires mcp_response.rows_returned.
+
+    fd-wire's normalize_event files every mcp_server_access event without the
+    stamp into its MISSING_ROWS anomaly trail, so the metering chain never
+    records anything (2026-10-08 outage). The success path must stamp 0 (the
+    auth_request hook never sees the streamed response body, so a real row
+    count is not computable); error/refused paths stay unset and belong in the
+    anomaly trail by design.
+    """
+
+    @pytest.mark.asyncio
+    async def test_success_path_stamps_rows_returned_zero(self):
+        """Success events carry rows_returned=0 so wire metering accepts them."""
+        from unittest.mock import AsyncMock
+
+        mock_repository = AsyncMock()
+        captured_records = []
+
+        async def capture_insert(record):
+            captured_records.append(record)
+
+        mock_repository.insert.side_effect = capture_insert
+
+        audit_logger = AuditLogger(
+            stream_name="mcp-server-access",
+            mongodb_enabled=True,
+            audit_repository=mock_repository,
+        )
+        mcp_logger = MCPLogger(audit_logger)
+
+        await mcp_logger.log_mcp_access(
+            request_id="req-rows-1",
+            identity=Identity(
+                username="test-user",
+                auth_method="oauth2",
+                credential_type="bearer_token",
+            ),
+            mcp_server=MCPServer(
+                name="weather-server",
+                path="/mcp/weather",
+                proxy_target="http://localhost:8080",
+            ),
+            request_body=b'{"jsonrpc": "2.0", "method": "tools/call", "params": {"name": "get_weather"}, "id": 1}',
+            response_status="success",
+            duration_ms=42.0,
+            rows_returned=0,
+        )
+        await audit_logger.close()
+
+        assert len(captured_records) == 1
+        record = captured_records[0]
+        assert record.mcp_response.rows_returned == 0
+        # The exact shape wire's extract_rows_returned probes.
+        assert record.model_dump()["mcp_response"]["rows_returned"] == 0
+
+    @pytest.mark.asyncio
+    async def test_error_path_leaves_rows_returned_unset(self):
+        """Error/refused events stay unstamped: anomaly trail by design."""
+        from unittest.mock import AsyncMock
+
+        mock_repository = AsyncMock()
+        captured_records = []
+
+        async def capture_insert(record):
+            captured_records.append(record)
+
+        mock_repository.insert.side_effect = capture_insert
+
+        audit_logger = AuditLogger(
+            stream_name="mcp-server-access",
+            mongodb_enabled=True,
+            audit_repository=mock_repository,
+        )
+        mcp_logger = MCPLogger(audit_logger)
+
+        await mcp_logger.log_mcp_access(
+            request_id="req-rows-2",
+            identity=Identity(
+                username="anonymous",
+                auth_method="unknown",
+                credential_type="none",
+            ),
+            mcp_server=MCPServer(
+                name="weather-server",
+                path="/mcp/weather",
+                proxy_target="http://localhost:8080",
+            ),
+            request_body=b'{"jsonrpc": "2.0", "method": "tools/call", "params": {"name": "x"}, "id": 2}',
+            response_status="error",
+            duration_ms=5.0,
+            error_code=-32000,
+            error_message="token validation failed",
+        )
+        await audit_logger.close()
+
+        assert len(captured_records) == 1
+        record = captured_records[0]
+        assert record.mcp_response.rows_returned is None
+        assert record.mcp_response.status == "error"
