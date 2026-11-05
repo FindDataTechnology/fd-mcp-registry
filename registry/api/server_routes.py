@@ -1142,6 +1142,14 @@ async def get_servers_json(
                     # field (#1181). Matches the convention used by agents,
                     # search, and federation responses.
                     "visibility": server_info.get("visibility") or "public",
+                    # Group-carry-through (carry-registry-visibility-through-
+                    # bridge): aggregation planes (facet bridge) compute group
+                    # gating from THIS list instead of a hand-mapped file. The
+                    # write side already enforces non-empty groups for
+                    # group-restricted entries; a restricted entry that still
+                    # lists empty groups is serialized as-is ([]) and the
+                    # bridge treats it fail-closed.
+                    "allowed_groups": server_info.get("allowed_groups") or [],
                     # Federation and lifecycle metadata
                     "status": server_info.get("status", "active"),
                     "provider_organization": (

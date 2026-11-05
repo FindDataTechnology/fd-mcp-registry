@@ -750,6 +750,63 @@ class TestGetServersJSON:
         assert response.status_code == 400
         assert "Invalid status" in response.json()["detail"]
 
+    def test_list_carries_group_carry_through_three_shapes(
+        self, test_client_admin, mock_server_service
+    ):
+        """carry-registry-visibility-through-bridge 1.3：列表逐条携带
+        visibility + allowed_groups 的三形态——public（组恒空）、组闸带组
+        （透传原值）、组闸缺组（原样 []，不静默补组；桥侧 fail-closed 兜底）。"""
+        mock_server_service.get_servers_paginated = AsyncMock(
+            return_value=(
+                {
+                    "/public-one": {
+                        "server_name": "Public One",
+                        "description": "official default-visible entry",
+                        "tags": [],
+                        "num_tools": 1,
+                        "license": "MIT",
+                        "proxy_pass_url": "http://upstream:9001",
+                        # 旧条目无 visibility/allowed_groups 字段的缺省形态
+                    },
+                    "/cell-restricted": {
+                        "server_name": "Cell Restricted",
+                        "description": "per-customer cell",
+                        "tags": [],
+                        "num_tools": 2,
+                        "license": "MIT",
+                        "proxy_pass_url": "http://upstream:9002",
+                        "visibility": "group-restricted",
+                        "allowed_groups": ["wire-cust-acme"],
+                    },
+                    "/restricted-no-groups": {
+                        "server_name": "Restricted No Groups",
+                        "description": "invariant-violating residue",
+                        "tags": [],
+                        "num_tools": 0,
+                        "license": "MIT",
+                        "proxy_pass_url": "http://upstream:9003",
+                        "visibility": "group-restricted",
+                        "allowed_groups": [],
+                    },
+                },
+                3,
+            )
+        )
+
+        response = test_client_admin.get("/api/servers")
+        assert response.status_code == 200
+        by_path = {s["path"]: s for s in response.json()["servers"]}
+
+        assert by_path["/public-one"]["visibility"] == "public"
+        assert by_path["/public-one"]["allowed_groups"] == []
+
+        assert by_path["/cell-restricted"]["visibility"] == "group-restricted"
+        assert by_path["/cell-restricted"]["allowed_groups"] == ["wire-cust-acme"]
+
+        # 不变量：服务端不补组、不吞组——缺组原样 []（桥 fail-closed 判缺陷）
+        assert by_path["/restricted-no-groups"]["visibility"] == "group-restricted"
+        assert by_path["/restricted-no-groups"]["allowed_groups"] == []
+
 
 # =============================================================================
 # TEST POST /toggle/{service_path:path} - Toggle Service
