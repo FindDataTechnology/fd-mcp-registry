@@ -103,9 +103,23 @@ def _document_to_skill(
 
 
 class DocumentDBSkillRepository(SkillRepositoryBase):
-    """MongoDB implementation for skill storage."""
+    """MongoDB implementation for skill storage.
+
+    Retired as a write path in spine replica mode (see
+    ``DocumentDBServerRepository``): construction raises the structural
+    ``SUPPLY_LEGACY_DIRECT_WRITE`` refusal when ``SPINE_REPLICA_MODE=1``.
+    """
 
     def __init__(self):
+        from ...core.config import settings as _settings
+
+        if _settings.spine_replica_mode:
+            raise RuntimeError(
+                "SUPPLY_LEGACY_DIRECT_WRITE: the DocumentDB skill repository is "
+                "retired in spine replica mode — registration writes go through the "
+                "spine write gate (SPINE_REPLICA_MODE=1). Unset SPINE_REPLICA_MODE "
+                "to run the legacy Mongo path."
+            )
         self._collection: AsyncIOMotorCollection | None = None
         self._collection_name = get_collection_name("agent_skills")
         self._indexes_created = False

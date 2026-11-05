@@ -511,6 +511,22 @@ class Settings(BaseSettings):
     )
     health_check_timeout_seconds: int = 2  # Very fast timeout for user-driven actions
 
+    # Supply spine replica mode (add-supply-store-unification, registry side).
+    # SPINE_REPLICA_MODE=1 switches the registration repositories (mcp
+    # servers + skills) to spine-replica implementations: reads serve a local
+    # pull-only replica of the facet spine projection; writes forward to the
+    # spine write gate. Unset/0 keeps the DocumentDB repositories and every
+    # existing behaviour byte-identical.
+    spine_replica_mode: bool = False
+    spine_projection_url: str = ""  # facet gateway base, e.g. http://facet:3200
+    spine_projection_token: str = ""  # Bearer token for the read-only projection channel
+    supply_store_write_url: str = ""  # spine write gate base (same facet gateway)
+    supply_store_write_token: str = ""  # Bearer token for the write-gate channel
+    spine_replica_db_path: str = ""  # local replica SQLite file; empty = data_dir default
+    spine_replica_sync_interval_seconds: int = (
+        0  # pull cadence; 0 = follow health_check_interval_seconds
+    )
+
     # WebSocket performance settings
     max_websocket_connections: int = 100  # Reasonable limit for development/testing
     websocket_send_timeout_seconds: float = 2.0  # Allow slightly more time per connection
@@ -2430,6 +2446,7 @@ class Settings(BaseSettings):
             self.egress_credential_encryption_key
         )
         self._validate_egress_auth_config()
+        self._validate_spine_replica_config()
 
     @staticmethod
     def _validate_credential_encryption_key(value: str | None) -> str:
@@ -2465,6 +2482,47 @@ class Settings(BaseSettings):
                 'print(secrets.token_urlsafe(32))"`).'
             )
         return stripped
+
+    def _validate_spine_replica_config(self) -> None:
+        """Fail fast when SPINE_REPLICA_MODE=1 lacks its required endpoints.
+
+        Follows the egress-vault cross-field precedent: single-field
+        validators can't see siblings, so the completeness check lives here.
+        A half-configured spine mode would otherwise boot into a registry
+        that reads an empty replica and forwards writes to nowhere.
+        """
+        if not self.spine_replica_mode:
+            return
+        missing = [
+            name
+            for name, value in (
+                ("SPINE_PROJECTION_URL", self.spine_projection_url),
+                ("SPINE_PROJECTION_TOKEN", self.spine_projection_token),
+                ("SUPPLY_STORE_WRITE_URL", self.supply_store_write_url),
+                ("SUPPLY_STORE_WRITE_TOKEN", self.supply_store_write_token),
+            )
+            if not value or not value.strip()
+        ]
+        if missing:
+            raise ValueError(
+                "SPINE_REPLICA_MODE=1 requires the spine channel configuration; "
+                f"missing: {', '.join(missing)}. Set the projection (read) and "
+                "write-gate endpoints/tokens of the facet supply spine."
+            )
+
+    @property
+    def spine_replica_db_file(self) -> str:
+        """Resolved local replica SQLite path (explicit override wins)."""
+        if self.spine_replica_db_path and self.spine_replica_db_path.strip():
+            return self.spine_replica_db_path.strip()
+        return str(self.data_dir / "spine_replica.db")
+
+    @property
+    def spine_replica_sync_interval(self) -> int:
+        """Resolved pull cadence: explicit override or the health-check beat."""
+        if self.spine_replica_sync_interval_seconds > 0:
+            return self.spine_replica_sync_interval_seconds
+        return self.health_check_interval_seconds
 
     def _validate_egress_auth_config(self) -> None:
         """Cross-field startup checks for the egress credential vault.

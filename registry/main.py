@@ -915,6 +915,16 @@ async def lifespan(app: FastAPI):
 
         await nginx_reload_scheduler.start()
 
+        # Start the spine replica puller (add-supply-store-unification 2.1):
+        # only in spine replica mode; the first pull runs immediately so the
+        # gateway renders from real registration data on boot.
+        if settings.spine_replica_mode:
+            from registry.repositories.factory import _get_spine_adapter
+
+            spine_adapter = _get_spine_adapter()
+            await spine_adapter.scheduler.start()
+            logger.info("Spine replica sync scheduler started")
+
         logger.info("All services initialized successfully!")
 
         # Initialize and send anonymous startup telemetry (opt-out: MCP_TELEMETRY_DISABLED=1)
@@ -937,6 +947,12 @@ async def lifespan(app: FastAPI):
     # Shutdown tasks
     logger.info("🔄 Shutting down MCP Gateway Registry...")
     try:
+        # Stop the spine replica puller (spine replica mode only)
+        if settings.spine_replica_mode:
+            from registry.repositories.factory import _get_spine_adapter
+
+            await _get_spine_adapter().scheduler.stop()
+
         # Stop agent batch worker (issue #956)
         from registry.services.agent_batch_worker import get_agent_batch_worker
 
@@ -1315,6 +1331,40 @@ async def _url_validation_exception_handler(
 
 
 app.add_exception_handler(UrlValidationError, _url_validation_exception_handler)
+
+# Spine write-gate errors (add-supply-store-unification D3): the compat facade
+# carries the gate's validation result back verbatim. Only the spine
+# repositories raise SpineGateError, so with SPINE_REPLICA_MODE unset this
+# handler is inert and every response shape is unchanged.
+from registry.repositories.spine.write_gate import (  # noqa: E402
+    SpineGateError,
+    SpineGateUnreachableError,
+)
+
+
+async def _spine_gate_error_handler(
+    request: _StarletteRequest,
+    exc: Exception,
+) -> JSONResponse:
+    """Return the spine write gate's status/code/message as-is."""
+    gate_exc = exc if isinstance(exc, SpineGateError) else None
+    if gate_exc is not None:
+        return JSONResponse(
+            status_code=gate_exc.status,
+            content={"error": gate_exc.message, "code": gate_exc.code},
+        )
+    unreachable = exc if isinstance(exc, SpineGateUnreachableError) else None
+    return JSONResponse(
+        status_code=502,
+        content={
+            "error": str(unreachable) if unreachable else "spine write gate unreachable",
+            "code": "SUPPLY_GATE_UNREACHABLE",
+        },
+    )
+
+
+app.add_exception_handler(SpineGateError, _spine_gate_error_handler)
+app.add_exception_handler(SpineGateUnreachableError, _spine_gate_error_handler)
 
 # Register public, anonymous per-record endpoints (ARD catalog url targets, issue #1294)
 app.include_router(public_record_router, prefix="/api", tags=["Public Records"])

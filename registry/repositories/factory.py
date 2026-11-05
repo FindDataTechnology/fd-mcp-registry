@@ -2,7 +2,12 @@
 Repository factory - creates concrete implementations based on configuration.
 
 Since v1.24.8 the only supported storage backend is DocumentDB / MongoDB.
-Every getter unconditionally returns the DocumentDB implementation.
+Every getter unconditionally returns the DocumentDB implementation — except
+when ``SPINE_REPLICA_MODE=1`` (add-supply-store-unification): the server and
+skill registration repositories become spine-replica adapters (reads from
+the pull-only local replica, writes forwarded to the spine write gate). All
+other repositories (sessions, audit, federation, ...) keep DocumentDB: only
+registration records move to the spine.
 """
 
 import logging
@@ -33,6 +38,13 @@ from .interfaces import (
 
 logger = logging.getLogger(__name__)
 
+
+def _get_spine_adapter() -> "Any":
+    """Build/return the shared spine adapter (replica + clients + scheduler)."""
+    from .spine.adapter import get_spine_adapter
+
+    return get_spine_adapter()
+
 # Singleton instances
 _server_repo: ServerRepositoryBase | None = None
 _agent_repo: AgentRepositoryBase | None = None
@@ -54,10 +66,22 @@ _custom_entity_service: Any = None
 
 
 def get_server_repository() -> ServerRepositoryBase:
-    """Get server repository singleton."""
+    """Get server repository singleton.
+
+    Spine replica mode (``SPINE_REPLICA_MODE=1``) returns the spine adapter;
+    the DocumentDB registration repository is never constructed in that mode
+    (structural refusal of the legacy direct write path).
+    """
     global _server_repo
 
     if _server_repo is not None:
+        return _server_repo
+
+    if settings.spine_replica_mode:
+        from .spine.server_repository import SpineServerRepository
+
+        _server_repo = SpineServerRepository(_get_spine_adapter())
+        logger.info("Creating server repository with backend: spine-replica")
         return _server_repo
 
     logger.info(f"Creating server repository with backend: {settings.storage_backend}")
@@ -174,10 +198,17 @@ def get_audit_repository() -> AuditRepositoryBase:
 
 
 def get_skill_repository() -> SkillRepositoryBase:
-    """Get skill repository singleton."""
+    """Get skill repository singleton (spine adapter in replica mode)."""
     global _skill_repo
 
     if _skill_repo is not None:
+        return _skill_repo
+
+    if settings.spine_replica_mode:
+        from .spine.skill_repository import SpineSkillRepository
+
+        _skill_repo = SpineSkillRepository(_get_spine_adapter())
+        logger.info("Creating skill repository with backend: spine-replica")
         return _skill_repo
 
     logger.info(f"Creating skill repository with backend: {settings.storage_backend}")
@@ -344,3 +375,6 @@ def reset_repositories() -> None:
     _custom_type_repo = None
     _custom_entity_repo = None
     _custom_entity_service = None
+    from .spine.adapter import reset_spine_adapter
+
+    reset_spine_adapter()

@@ -634,7 +634,14 @@ async def _resolve_context_from_groups(
     scopes via ``map_cognito_groups_to_scopes`` and then ``_derive_user_context``,
     so a given user produces an identical authorization result regardless of how
     they were authenticated (guards #933).
+
+    Also stamps the spine actor contextvar (add-supply-store-unification): the
+    acting identity the spine repositories carry on forwarded write-gate calls.
+    Inert unless SPINE_REPLICA_MODE=1 repositories are in play.
     """
+    from ..repositories.spine.actor_context import set_acting_actor
+
+    set_acting_actor(email or username or client_id)
     scopes = await map_cognito_groups_to_scopes(groups)
     logger.info(f"User {username} with {len(groups)} groups mapped to {len(scopes)} scopes")
     if not groups:

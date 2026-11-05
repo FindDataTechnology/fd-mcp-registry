@@ -31,9 +31,26 @@ logger = logging.getLogger(__name__)
 
 
 class DocumentDBServerRepository(ServerRepositoryBase):
-    """DocumentDB implementation of server repository."""
+    """DocumentDB implementation of server repository.
+
+    Retired as a write path once the registry runs in spine replica mode
+    (``SPINE_REPLICA_MODE=1``, add-supply-store-unification): constructing
+    this class then raises a structural error (``SUPPLY_LEGACY_DIRECT_WRITE``
+    semantics) so the legacy Mongo registration write path cannot be
+    half-open — the factory serves the spine adapter and nothing else can
+    rebuild this one.
+    """
 
     def __init__(self):
+        from ...core.config import settings as _settings
+
+        if _settings.spine_replica_mode:
+            raise RuntimeError(
+                "SUPPLY_LEGACY_DIRECT_WRITE: the DocumentDB server repository is "
+                "retired in spine replica mode — registration writes go through the "
+                "spine write gate (SPINE_REPLICA_MODE=1). Unset SPINE_REPLICA_MODE "
+                "to run the legacy Mongo path."
+            )
         self._collection: AsyncIOMotorCollection | None = None
         self._collection_name = get_collection_name("mcp_servers")
         # Guards the one-shot index/backfill block so two coroutines

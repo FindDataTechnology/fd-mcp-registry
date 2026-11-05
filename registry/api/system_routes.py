@@ -306,6 +306,14 @@ async def _get_cached_stats() -> dict:
         "registry_card_status": registry_card_status,
     }
 
+    # Spine replica freshness (add-supply-store-unification): present only in
+    # spine replica mode, stating stale/last-good honestly — a failed pull
+    # never renders as a healthy blank.
+    if settings.spine_replica_mode:
+        from registry.repositories.factory import _get_spine_adapter
+
+        stats["spine_replica_status"] = _get_spine_adapter().status()
+
     # Update cache
     _stats_cache = stats
     _stats_cache_time = now

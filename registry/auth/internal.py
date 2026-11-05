@@ -187,6 +187,12 @@ async def validate_internal_auth(request: Request) -> str:
     """
     caller, claims = _validate_authorization_header(request.headers.get("Authorization"))
     await _enforce_single_use(claims)
+    # Stamp the spine actor contextvar: internal service writes forwarded to
+    # the spine write gate audit this caller identity (add-supply-store-
+    # unification). Inert unless spine repositories are in play.
+    from ..repositories.spine.actor_context import set_acting_actor
+
+    set_acting_actor(caller)
     return caller
 
 
