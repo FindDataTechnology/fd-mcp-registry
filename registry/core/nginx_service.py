@@ -19,6 +19,7 @@ from registry.schemas.proxy_mixin import _assert_egress_allowed, build_proxy_cli
 
 from .config import settings
 from .endpoint_utils import get_endpoint_url_from_server_info
+from .transport_guard import normalize_transports
 from .metrics import (
     GATEWAY_GENERIC_BLOCKS_DROPPED,
     NGINX_CONFIG_WRITES,
@@ -2627,7 +2628,20 @@ map "$uri:$http_x_mcp_server_version" $versioned_backend {{
             return blocks
 
         proxy_pass_url = server_info.get("proxy_pass_url", "")
-        supported_transports = server_info.get("supported_transports", ["streamable-http"])
+        # Guard the transports read the same way the health probe does: a
+        # key-present-null declaration must not reach the `in` checks below as
+        # None (A0 2026-11-07 incident). Route GENERATION must stay total
+        # (never throw), so a degraded declaration falls back to
+        # streamable-http routing here; the honest degradation lives in the
+        # health probe, which marks the entry unhealthy instead of 405-ing.
+        supported_transports = normalize_transports(server_info)
+        if not supported_transports:
+            logger.warning(
+                f"Server {path}: no usable supported_transports declaration; "
+                f"routing defaults to streamable-http (health probe will report "
+                f"the entry unhealthy: no transport declaration)"
+            )
+            supported_transports = ["streamable-http"]
 
         # Use the proxy_pass_url exactly as specified in the JSON file
         # Users are responsible for including /mcp, /sse, or any other path in the URL

@@ -18,6 +18,7 @@ class HealthStatus(str, Enum):
     UNHEALTHY_ENDPOINT_CHECK_FAILED = "unhealthy: endpoint check failed"
     UNHEALTHY_MISSING_PROXY_URL = "unhealthy: missing proxy URL"
     UNHEALTHY_URL_BLOCKED = "unhealthy: url blocked by SSRF guard"
+    UNHEALTHY_NO_TRANSPORT_DECLARATION = "unhealthy: no transport declaration"
     CHECKING = "checking"
     UNKNOWN = "unknown"
     LOCAL = "local"

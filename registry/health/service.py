@@ -15,6 +15,7 @@ from ..core.backend_oauth import RESOLVED_BEARER_KEY as _BACKEND_OAUTH_TOKEN_KEY
 from ..core.backend_oauth import with_bearer as _with_backend_oauth
 from ..core.config import settings
 from ..core.endpoint_utils import get_endpoint_url_from_server_info
+from ..core.transport_guard import normalize_transports
 from ..exceptions import UrlValidationError
 from ..utils.url_guard import (
     BUILTIN_AIREGISTRY_TOOLS_PROFILE,
@@ -863,8 +864,21 @@ class HealthMonitoringService:
             )
             return False, HealthStatus.UNHEALTHY_URL_BLOCKED
 
-        # Get transport information from server_info
-        supported_transports = server_info.get("supported_transports", ["streamable-http"])
+        # Get transport information from server_info. The guard normalizes
+        # missing/null/malformed shapes to None — the caller degrades honestly
+        # (UNHEALTHY_NO_TRANSPORT_DECLARATION) instead of handing None into `in`
+        # membership checks (which raised TypeError and took the whole route
+        # down, the 2026-11-04 lex-ops / 2026-11-07 wire-ops+wanxing-ops
+        # incidents). A bare string is accepted as a one-element list with a
+        # warning during the transition window.
+        supported_transports = normalize_transports(server_info)
+        if supported_transports is None:
+            logger.warning(
+                f"Health check for {redact_url(proxy_pass_url)}: no usable "
+                f"supported_transports declaration (missing/null/malformed); "
+                f"degrading honestly instead of probing"
+            )
+            return False, HealthStatus.UNHEALTHY_NO_TRANSPORT_DECLARATION
 
         # If URL already has transport endpoint, use it directly
         # BUT skip this shortcut for streamable-http to ensure proper POST ping is used
