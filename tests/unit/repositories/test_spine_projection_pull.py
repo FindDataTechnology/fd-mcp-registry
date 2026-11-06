@@ -53,6 +53,10 @@ _PROJECTION_PAYLOAD: dict[str, Any] = {
                 "proxy_target_url": "http://upstream:8000",
                 "tool_overrides": {"t2": {"blocked": True}},
                 "registered_by": "ops@finddata",
+                # self-report trio (fix-registry-probe-and-selfreport §2)
+                "surface_source": "self_report",
+                "surface_report_token_hash": "c453d7dc55deadbeef",
+                "last_surface_report_at": "2026-11-05T21:08:24.804784",
             },
             "visibility": "public",
             "groups": [],
@@ -137,6 +141,12 @@ class TestProjectionFeed:
         assert doc["is_proxied"] is True
         assert doc["tool_overrides"] == {"t2": {"blocked": True}}
         assert doc["registered_by"] == "ops@finddata"
+        # self-report trio promotes to the top level (fix-registry-probe-and-
+        # selfreport §2): the report route reads the hash back, health skips
+        # probing self_report entries, and the freshness marker persists.
+        assert doc["surface_source"] == "self_report"
+        assert doc["surface_report_token_hash"] == "c453d7dc55deadbeef"
+        assert doc["last_surface_report_at"] == "2026-11-05T21:08:24.804784"
         # epoch ms -> legacy naive-UTC ISO strings
         assert doc["registered_at"] == "2023-11-14T22:13:20"
         assert doc["updated_at"] == "2023-11-14T22:13:21"

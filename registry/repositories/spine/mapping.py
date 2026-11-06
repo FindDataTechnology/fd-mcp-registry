@@ -141,6 +141,19 @@ MCP_METADATA_PROMOTIONS: frozenset[str] = frozenset(
         "tool_overrides",
         "sync_metadata",
         "mcp_server_version",
+        # Self-reported tool surface (add-self-reported-tool-surface D2/D4;
+        # fix-registry-probe-and-selfreport §2): the report route reads the
+        # token hash back with include_credentials=True and stamps
+        # last_surface_report_at on every accepted report — without these
+        # promotions the replica read drops all three, so every restart
+        # self-report 403s (hash unreachable) and the freshness marker
+        # silently never persists. surface_report_token_hash is already a
+        # SHA-256 digest, and the recursive credential strip
+        # (_token_free_projection) removes it from API responses wherever it
+        # nests, including under metadata.
+        "surface_source",
+        "surface_report_token_hash",
+        "last_surface_report_at",
     }
 )
 
