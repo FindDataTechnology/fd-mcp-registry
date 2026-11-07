@@ -1114,8 +1114,18 @@ class NginxConfigService:
                             path, HealthStatus.UNKNOWN
                         )
 
+                        # Self-reported entries are never probed by design
+                        # (health/service.py skips them: their HTTP layer needs a
+                        # per-user Bearer, so a probe can only ever answer 401).
+                        # No verdict ever arrives, so the status stays UNKNOWN and
+                        # this route would sit in the commented-out branch
+                        # forever. Their liveness is the deployment's own /health
+                        # probe — route them on registration state instead.
+                        self_reported = (
+                            str(server_info.get("surface_source") or "") == "self_report"
+                        )
                         # Include servers that are healthy or just have expired auth (server is up)
-                        if HealthStatus.is_healthy(health_status):
+                        if HealthStatus.is_healthy(health_status) or self_reported:
                             # Generate transport-aware location blocks
                             transport_blocks = self._generate_transport_location_blocks(
                                 path, server_info
