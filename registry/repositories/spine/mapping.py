@@ -132,6 +132,17 @@ MCP_METADATA_PROMOTIONS: frozenset[str] = frozenset(
         "auth_header_name",
         "auth_scheme",
         "auth_provider",
+        # Per-user egress configuration (pat / oauth_user / obo_exchange).
+        # The egress route layer assembles these onto the legacy document and
+        # persists through this mapping; without them here the write path demoted
+        # nothing and the read path promoted nothing, so POST
+        # /servers/<p>/egress-auth answered 200 (echoing the in-memory dict it had
+        # just built) while the replica kept egress_auth_mode=NULL — every
+        # subsequent PUT /egress-pat then 409'd "server is not configured for pat"
+        # and per-user servers were structurally unreachable through the gateway
+        # in replica mode (2026-11-09 production evidence, wire-build-mcp).
+        "egress_auth_mode",
+        "egress_oauth",
         "local_runtime",
         "is_active",
         # Health / scan / tool-management state
