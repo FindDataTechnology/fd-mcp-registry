@@ -7126,3 +7126,46 @@ async def test_callback_uses_pooled_plain_client_not_closed(monkeypatch):
 
     # Pooled client is process-lifetime; never closed by the callback handlers.
     mock_client.aclose.assert_not_called()
+
+
+@pytest.mark.unit
+class TestIngressRelayAllowlistExtension:
+    """``INGRESS_RELAY_SERVERS`` widens the relay allowlist, never narrows it.
+
+    Servers that authenticate the END USER upstream (wire/lex pass the user's
+    Logto ID token through; facet passes its per-user device token) only work if
+    that token reaches them. The designed alternative is the egress vault, which
+    needs a secret store this deployment does not have, so those servers were
+    otherwise reachable only by bypassing the gateway. The knob is additive and
+    empty by default: an unset env var must leave the decision logic identical.
+    """
+
+    def test_unset_is_builtin_only(self, monkeypatch):
+        from auth_server.server import _relay_server_set
+
+        monkeypatch.delenv("INGRESS_RELAY_SERVERS", raising=False)
+        assert _relay_server_set() == frozenset({"airegistry-tools"})
+
+    def test_blank_is_builtin_only(self, monkeypatch):
+        from auth_server.server import _relay_server_set
+
+        monkeypatch.setenv("INGRESS_RELAY_SERVERS", "   ")
+        assert _relay_server_set() == frozenset({"airegistry-tools"})
+
+    def test_names_are_added_and_never_remove_the_builtin(self, monkeypatch):
+        from auth_server.server import _relay_server_set
+
+        monkeypatch.setenv("INGRESS_RELAY_SERVERS", " Wire-Build-MCP , lex-ops-mcp ,,")
+        assert _relay_server_set() == frozenset(
+            {"airegistry-tools", "wire-build-mcp", "lex-ops-mcp"}
+        )
+
+    def test_malformed_entries_are_dropped_with_a_warning(self, monkeypatch, caplog):
+        from auth_server.server import _relay_server_set
+
+        monkeypatch.setenv("INGRESS_RELAY_SERVERS", "ok-server,/etc/passwd,a b")
+        with caplog.at_level("WARNING", logger="auth_server"):
+            effective = _relay_server_set()
+        assert effective == frozenset({"airegistry-tools", "ok-server"})
+        warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+        assert any("malformed entry" in m for m in warnings), warnings

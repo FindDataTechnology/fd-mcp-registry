@@ -7350,6 +7350,59 @@ async def _read_bounded(
 # servers that need an upstream credential use the egress vault.
 _INTERNAL_INGRESS_RELAY_SERVERS: frozenset[str] = frozenset({"airegistry-tools"})
 
+# Operator extension of the relay allowlist: ``INGRESS_RELAY_SERVERS`` is a
+# comma-separated list of registered server paths whose upstream keeps receiving
+# the caller's own ingress Authorization / X-Authorization. The built-in
+# registry-tools entry above is always in the set; this only ADDS to it.
+#
+# Why it exists: a server whose upstream authenticates the END USER (the
+# wire/lex lines pass the user's Logto ID token straight through, facet passes
+# its per-user device token) can only work if that token reaches it. The
+# designed alternative is the egress vault, which requires a secret store this
+# deployment does not have -- so without this knob those servers are reachable
+# only by bypassing the gateway entirely. The knob is deliberately:
+#   * empty by default -> behaviour is byte-identical to before;
+#   * keyed on the VERIFIED, path-validated `server` claim (never a header), so a
+#     caller cannot widen its own relay surface;
+#   * slug-validated, so a typo or junk entry is ignored with a warning instead
+#     of silently matching nothing;
+#   * audited per request at INFO when it actually fires.
+# Every name added here is a server that MUST be trusted to see user
+# credentials; that trust decision belongs to whoever sets the env var.
+_INGRESS_RELAY_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+
+
+def _extra_relay_servers() -> frozenset[str]:
+    """Parse ``INGRESS_RELAY_SERVERS`` into a validated name set.
+
+    Unset/blank -> empty frozenset (no extension). Malformed entries are logged
+    and dropped: a name that cannot be a registered path can never match the
+    verified `server` claim, so failing the request over an operator typo would
+    take a live server down for a configuration mistake.
+    """
+    raw = (os.environ.get("INGRESS_RELAY_SERVERS") or "").strip()
+    if not raw:
+        return frozenset()
+    names: set[str] = set()
+    for part in raw.split(","):
+        name = part.strip().lower()
+        if not name:
+            continue
+        if not _INGRESS_RELAY_SLUG_RE.fullmatch(name):
+            logger.warning(
+                "INGRESS_RELAY_SERVERS: ignoring malformed entry %r "
+                "(expected a server path slug)",
+                part.strip(),
+            )
+            continue
+        names.add(name)
+    return frozenset(names)
+
+
+def _relay_server_set() -> frozenset[str]:
+    """The effective relay allowlist: built-in entry plus the operator extension."""
+    return _INTERNAL_INGRESS_RELAY_SERVERS | _extra_relay_servers()
+
 # Proxy-context headers describe the client -> Gateway hop (scheme, host, port,
 # path prefix as seen by nginx/an ingress LB) and must not be copied onto the
 # separate Gateway -> upstream MCP server hop; an upstream that trusts them can
@@ -8572,7 +8625,13 @@ async def mcp_proxy(
     # Authorization (it is a same-trust-domain component). The decision keys on
     # the verified, path-validated `server` claim, never a forgeable header.
     registered_server = (claims.get("server") or "").lower()
-    relay_ingress_auth = registered_server in _INTERNAL_INGRESS_RELAY_SERVERS
+    relay_ingress_auth = registered_server in _relay_server_set()
+    if relay_ingress_auth:
+        logger.info(
+            "mcp_proxy: relaying caller ingress auth to server=%s "
+            "(allowlisted; the upstream authenticates the end user)",
+            registered_server,
+        )
     forward_headers = _forward_headers(
         dict(request.headers),
         relay_authorization=relay_ingress_auth,
