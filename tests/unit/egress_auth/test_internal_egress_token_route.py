@@ -411,3 +411,99 @@ class TestOboExchangeVendDefense:
         r = _post(client)
         assert r.status_code == 403
         assert "not allowed" in r.json()["detail"]
+
+
+@pytest.mark.unit
+class TestSharedBackendAuthFallback:
+    """Server-level Backend Authentication fallback (shared credential).
+
+    A server that carries its own Backend Auth secret (``auth_scheme`` bearer /
+    api_key + a stored credential) serves EVERY authenticated gateway user with
+    no per-user setup. The producer half lives here (registry); auth_server's
+    mcp_proxy injects ``backend_auth_header``/``backend_auth_value`` on egress.
+    Deployed registry images built without this half returned a plain consent
+    miss, so every backend-auth server 401'd through the gateway even though the
+    credential was stored and decryptable (2026-11-09 production evidence).
+    """
+
+    @staticmethod
+    def _stub_decrypt(monkeypatch, value="s3cret", exc=None):
+        import registry.utils.credential_encryption as cred_enc
+
+        def _fake(encrypted):
+            if exc is not None:
+                raise exc
+            return value
+
+        monkeypatch.setattr(cred_enc, "decrypt_credential", _fake)
+
+    def test_non_per_user_gets_shared_backend_auth(self, make_client, monkeypatch):
+        # network-trusted callers never vend a per-user token; the shared
+        # credential is exactly what makes such a server usable for them.
+        self._stub_decrypt(monkeypatch)
+        server = _server(
+            egress_auth_mode=None,
+            egress_oauth=None,
+            auth_scheme="bearer",
+            auth_credential_encrypted="enc-blob",
+        )
+        client = make_client(_claims(auth_method="network-trusted"), server)
+        r = _post(client)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["consent_required"] is True
+        assert body["access_token"] is None
+        assert body["backend_auth_header"] == "Authorization"
+        assert body["backend_auth_value"] == "Bearer s3cret"
+        assert not client._svc.called
+
+    def test_per_user_without_egress_mode_gets_shared_backend_auth(self, make_client, monkeypatch):
+        self._stub_decrypt(monkeypatch)
+        server = _server(
+            egress_auth_mode=None,
+            egress_oauth=None,
+            auth_scheme="bearer",
+            auth_credential_encrypted="enc-blob",
+        )
+        client = make_client(_claims(), server)
+        r = _post(client)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["consent_required"] is True
+        assert body["backend_auth_value"] == "Bearer s3cret"
+
+    def test_api_key_scheme_injects_bare_value_in_named_header(self, make_client, monkeypatch):
+        self._stub_decrypt(monkeypatch, value="key-123")
+        server = _server(
+            egress_auth_mode=None,
+            egress_oauth=None,
+            auth_scheme="api_key",
+            auth_header_name="X-API-Key",
+            auth_credential_encrypted="enc-blob",
+        )
+        client = make_client(_claims(auth_method="network-trusted"), server)
+        body = _post(client).json()
+        assert body["backend_auth_header"] == "X-API-Key"
+        assert body["backend_auth_value"] == "key-123"
+
+    def test_undecryptable_credential_is_plain_consent(self, make_client, monkeypatch):
+        # A credential the registry cannot decrypt must degrade to the exact
+        # pre-fallback behavior: consent miss with no inject headers.
+        self._stub_decrypt(monkeypatch, exc=ValueError("bad key"))
+        server = _server(
+            egress_auth_mode=None,
+            egress_oauth=None,
+            auth_scheme="bearer",
+            auth_credential_encrypted="enc-blob",
+        )
+        client = make_client(_claims(auth_method="network-trusted"), server)
+        body = _post(client).json()
+        assert body["consent_required"] is True
+        assert body["backend_auth_header"] is None
+        assert body["backend_auth_value"] is None
+
+    def test_server_without_backend_auth_is_plain_consent(self, make_client):
+        client = make_client(_claims(auth_method="network-trusted"), _server())
+        body = _post(client).json()
+        assert body["consent_required"] is True
+        assert body["backend_auth_header"] is None
