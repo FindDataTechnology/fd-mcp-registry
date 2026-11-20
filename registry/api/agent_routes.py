@@ -34,7 +34,7 @@ from ..auth.asset_permissions import user_has_asset_permission
 from ..auth.csrf import verify_csrf_token_flexible
 from ..auth.dependencies import nginx_proxied_auth
 from ..common.log_redaction import redact_headers, redact_mapping, redact_url
-from ..core.a2a_backend import gateway_hosts as _gateway_hosts_fn, resolve_backend_address
+from ..core.a2a_backend import SelfLoopBackendError, gateway_hosts as _gateway_hosts_fn, resolve_backend_address
 from ..core.config import settings
 
 
@@ -1179,6 +1179,16 @@ async def register_agent(
         # re-applied on the PUT/PATCH update paths via this shared helper.
         _apply_a2a_reverse_proxy_split(agent_card, path)
 
+    except SelfLoopBackendError as e:
+        # A self-loop backend is never correct, whatever else the card says —
+        # 409 rather than "invalid input", because the body may be perfectly
+        # well-formed and the operator's remedy is a different ADDRESS, not a
+        # different shape.
+        logger.error("Agent write refused: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "BACKEND_SELF_LOOP", "message": str(e), "path": e.path},
+        )
     except ValueError as e:
         logger.error(f"Invalid agent card data: {e}")
         raise HTTPException(
@@ -2421,6 +2431,16 @@ async def update_agent(
         # desync the advertised gateway url from the stored backend.
         _apply_a2a_reverse_proxy_split(updated_agent, path)
 
+    except SelfLoopBackendError as e:
+        # A self-loop backend is never correct, whatever else the card says —
+        # 409 rather than "invalid input", because the body may be perfectly
+        # well-formed and the operator's remedy is a different ADDRESS, not a
+        # different shape.
+        logger.error("Agent write refused: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "BACKEND_SELF_LOOP", "message": str(e), "path": e.path},
+        )
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,

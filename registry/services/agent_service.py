@@ -11,6 +11,9 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
+from ..core.a2a_backend import assert_writable_backend
+from ..core.a2a_backend import gateway_hosts as _gateway_hosts_fn
+from ..core.config import settings as _settings
 from ..core.metrics import ASSET_ID_CONFLICT_TOTAL
 from ..exceptions import AssetIdConflictError
 from ..repositories.factory import get_agent_repository, get_search_repository
@@ -22,6 +25,18 @@ from ..schemas.proxy_mixin import (
     validate_and_pin_proxy_target,
 )
 from ..utils.url_guard import validate_agent_url
+
+
+def _self_loop_gateway_hosts() -> frozenset[str]:
+    """Hosts meaning "this gateway", for the write-side self-loop refusal.
+
+    Same source as the read face, the nginx generator and the health probe —
+    four call sites, one derivation. Read lazily (not at import) so a settings
+    reload in tests is picked up.
+    """
+    extra = [h for h in (getattr(_settings, "gateway_alias_hosts", None) or []) if h]
+    return _gateway_hosts_fn(getattr(_settings, "registry_url", None), extra)
+
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +120,21 @@ class AgentService:
         if await self._repo.get(path) is not None:
             logger.error(f"Agent registration failed: path '{path}' already exists")
             raise ValueError(f"Agent path '{path}' already exists")
+
+        # Self-loop refusal (change: fix-a2a-agent-backend-self-loop). An A2A
+        # agent whose backend is the gateway re-enters the gateway instead of
+        # reaching its executor — the request still gets a plausible answer from
+        # the caller's point of view, so nothing looks wrong until someone
+        # counts the executor's log lines. Refused at write time so the bad
+        # shape never enters the registry again. `missing` is NOT refused here:
+        # a registrant may register the card first and point the backend later.
+        if (getattr(agent_card, "supported_protocol", "") or "").lower() == "a2a":
+            assert_writable_backend(
+                path=path,
+                proxy_pass_url=getattr(agent_card, "proxy_pass_url", None),
+                url=getattr(agent_card, "url", None),
+                gateway_hosts=_self_loop_gateway_hosts(),
+            )
 
         # Gateway-proxy SSRF layer 2 + transport guard (no-op unless is_proxied).
         await _validate_and_pin_agent_proxy(agent_card)
@@ -246,6 +276,26 @@ class AgentService:
         # updates are unaffected.
         if updates.get("url"):
             validate_agent_url(str(updates["url"]))
+
+        # Self-loop refusal, ALSO gated on the write touching the addressing
+        # fields (change: fix-a2a-agent-backend-self-loop). Health-status and
+        # enable/disable updates run through this method constantly; judging
+        # them would reject an unrelated write because of a pre-existing bad
+        # address, which is how a guard like this gets reverted. The merged-card
+        # check below covers "clears proxy_pass_url back to a self-loop url".
+        if "url" in updates or "proxy_pass_url" in updates:
+            _existing = await self._repo.get(path)
+            if _existing is not None and (
+                (getattr(_existing, "supported_protocol", "") or "").lower() == "a2a"
+            ):
+                assert_writable_backend(
+                    path=path,
+                    proxy_pass_url=updates.get(
+                        "proxy_pass_url", getattr(_existing, "proxy_pass_url", None)
+                    ),
+                    url=updates.get("url", getattr(_existing, "url", None)),
+                    gateway_hosts=_self_loop_gateway_hosts(),
+                )
 
         existing_agent = await self._repo.get(path)
         if existing_agent is None:

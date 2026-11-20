@@ -148,3 +148,61 @@ def test_three_classes_are_distinguishable_in_one_pass():
     # Every non-ok class carries a reason; ok carries none.
     assert all(v.reason for v in verdicts if not v.ok)
     assert verdicts[-1].reason is None
+
+
+# ── 写侧拒绝（tasks 3.1–3.2）─────────────────────────────────────────────────
+
+from registry.core.a2a_backend import SelfLoopBackendError, assert_writable_backend  # noqa: E402
+
+
+def test_registering_a_self_loop_backend_is_refused_by_name():
+    hosts = gateway_hosts("https://mcp.finddatatech.cloud")
+    with pytest.raises(SelfLoopBackendError) as exc:
+        assert_writable_backend(
+            path="/packs/X/reception",
+            proxy_pass_url=None,
+            url="https://mcp.finddatatech.cloud/agent/packs/X/reception/",
+            gateway_hosts=hosts,
+        )
+    # The refusal names the agent and the reason, not just "invalid input".
+    assert exc.value.path == "/packs/X/reception"
+    assert "gateway itself" in str(exc.value)
+
+
+def test_a_missing_backend_is_allowed_on_write():
+    # Register the card first, point the backend later — the read face labels it
+    # `missing`. Refusing this would block a legitimate onboarding order.
+    hosts = gateway_hosts("https://gw.example.com")
+    v = assert_writable_backend(path="/p", proxy_pass_url=None, url=None, gateway_hosts=hosts)
+    assert v.status == BACKEND_MISSING
+
+
+def test_a_real_backend_passes():
+    hosts = gateway_hosts("https://gw.example.com")
+    v = assert_writable_backend(
+        path="/p", proxy_pass_url="http://10.0.0.5:8899", url=None, gateway_hosts=hosts
+    )
+    assert v.status == BACKEND_OK
+
+
+def test_self_loop_error_is_a_value_error_so_existing_handlers_still_catch_it():
+    # Backward compatibility: routes that only catch ValueError must not leak a
+    # 500 just because the error grew a dedicated type.
+    assert issubclass(SelfLoopBackendError, ValueError)
+
+
+# ── 1.1 红证：读面契约（改动前无 backend 字段）────────────────────────────────
+
+def test_agent_info_exposes_a_three_class_backend_block():
+    """The read face must carry `backend`, and only for A2A agents.
+
+    Before this change `AgentInfo` had no `backend` field at all — a caller could
+    not tell a working agent from one whose backend is the gateway. This is the
+    contract the read face now keeps.
+    """
+    from registry.schemas.agent_models import AgentInfo
+
+    fields = AgentInfo.model_fields
+    assert "backend" in fields
+    assert fields["backend"].default is None
+    assert "ok / missing / self_loop" in (fields["backend"].description or "")

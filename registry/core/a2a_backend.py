@@ -145,3 +145,47 @@ def resolve_backend_address(
         return BackendVerdict(BACKEND_SELF_LOOP, chosen, REASONS[BACKEND_SELF_LOOP])
 
     return BackendVerdict(BACKEND_OK, chosen, None)
+
+
+class SelfLoopBackendError(ValueError):
+    """A write tried to make an A2A agent's backend the gateway itself.
+
+    Its own exception type so the route can map it to 4xx with the reason intact,
+    instead of a generic `ValueError` that reads like "invalid input" and sends
+    the operator looking for a malformed URL rather than a wrong address.
+    """
+
+    def __init__(self, path: str, verdict: BackendVerdict) -> None:
+        self.path = path
+        self.verdict = verdict
+        super().__init__(
+            f"agent '{path}' backend points at the gateway itself: {verdict.reason}"
+        )
+
+
+def assert_writable_backend(
+    *,
+    path: str,
+    proxy_pass_url: object,
+    url: object,
+    gateway_hosts: frozenset[str],
+) -> BackendVerdict:
+    """Refuse a write that would leave an A2A agent with a self-loop backend.
+
+    CALLED ONLY WHEN THE WRITE TOUCHES THE ADDRESSING FIELDS. Health-status and
+    enable/disable updates run through the same ``update_agent`` dozens of times
+    an hour; judging them here would reject an unrelated write because of a
+    pre-existing bad address the operator has not fixed yet — and that is how a
+    fix like this gets reverted.
+
+    A ``missing`` backend is ALLOWED on write: a registrant may legitimately
+    register the card first and point the backend later, and the read face
+    already labels it. Only the self-loop is refused — that value is never
+    correct, no sequence of later writes makes it work.
+    """
+    verdict = resolve_backend_address(
+        proxy_pass_url=proxy_pass_url, url=url, gateway_hosts=gateway_hosts
+    )
+    if verdict.status == BACKEND_SELF_LOOP:
+        raise SelfLoopBackendError(path, verdict)
+    return verdict
