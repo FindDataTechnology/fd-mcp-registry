@@ -764,6 +764,17 @@ class AgentInfo(BaseModel):
         ...,
         description="Agent endpoint URL",
     )
+    backend: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Judged backend addressing (change: fix-a2a-agent-backend-self-loop). "
+            "`status` is one of ok / missing / self_loop; `reason` is the operator-"
+            "facing why. Three classes, never a boolean: `missing` is unfinished "
+            "configuration, `self_loop` is a known value filled in wrong. A "
+            "self-loop backend re-enters this gateway instead of reaching the "
+            "agent's executor, so the agent is not usable even though it lists."
+        ),
+    )
     tags: list[str] = Field(
         default_factory=list,
         description="Categorization tags",

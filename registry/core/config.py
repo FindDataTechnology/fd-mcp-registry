@@ -898,6 +898,15 @@ class Settings(BaseSettings):
         default="http://localhost:8000",
         description="Base URL of this registry instance (HTTPS required in production)",
     )
+    gateway_alias_hosts: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Additional URLs/hostnames this gateway answers under (change: "
+            "fix-a2a-agent-backend-self-loop). Used only by the A2A self-loop "
+            "judgment: a backend addressing ANY of these (plus registry_url) is "
+            "the gateway itself, not an agent. Empty = only registry_url counts."
+        ),
+    )
     registry_organization_name: str = Field(
         default="ACME Inc.",
         description="Organization that operates this registry",

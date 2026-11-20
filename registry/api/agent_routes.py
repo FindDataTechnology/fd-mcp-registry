@@ -34,7 +34,10 @@ from ..auth.asset_permissions import user_has_asset_permission
 from ..auth.csrf import verify_csrf_token_flexible
 from ..auth.dependencies import nginx_proxied_auth
 from ..common.log_redaction import redact_headers, redact_mapping, redact_url
+from ..core.a2a_backend import gateway_hosts as _gateway_hosts_fn, resolve_backend_address
 from ..core.config import settings
+
+
 from ..core.metrics import ASSET_ID_SUPPLIED_TOTAL
 from ..exceptions import AssetIdConflictError, UrlValidationError
 from ..repositories.factory import get_search_repository
@@ -87,6 +90,33 @@ from ._etag_utils import (
     weak_etag_for_timestamp,
 )
 
+
+def request_gateway_hosts() -> frozenset[str]:
+    """Hosts meaning "this gateway" — the same set the nginx generator uses.
+
+    One definition for both call sites: the day they disagree is the day a route
+    exists while its health check says the backend is unreachable (or the
+    reverse). Issue #1724 is the sibling of this bug.
+    """
+    extra = [h for h in (getattr(settings, "gateway_alias_hosts", None) or []) if h]
+    return _gateway_hosts_fn(getattr(settings, "registry_url", None), extra)
+
+
+def _backend_block_for(agent: Any) -> dict[str, Any]:
+    """The three-class backend verdict for one agent row, or ``None`` for non-A2A.
+
+    Only A2A agents get this: an MCP server has no `/agent/...` route, so a
+    backend verdict there would be a number nobody reads (and a self-loop is
+    meaningless without the A2A proxy path).
+    """
+    if (getattr(agent, "supported_protocol", "") or "").lower() != "a2a":
+        return None
+    verdict = resolve_backend_address(
+        proxy_pass_url=getattr(agent, "proxy_pass_url", None),
+        url=getattr(agent, "url", None),
+        gateway_hosts=request_gateway_hosts(),
+    )
+    return {"status": verdict.status, "url": verdict.url, "reason": verdict.reason}
 
 def get_search_repo() -> SearchRepositoryBase:
     """Get search repository instance."""
@@ -276,8 +306,27 @@ async def _probe_agent_backend_health(
         response_time_ms, health_check_url, last_checked (datetime),
         last_checked_iso.
     """
-    backend_url = getattr(agent_card, "proxy_pass_url", None) or agent_card.url
-    base_url = str(backend_url).rstrip("/")
+    # Same rule, same source as the nginx generator (change:
+    # fix-a2a-agent-backend-self-loop). Two call sites deriving the backend
+    # independently is how "the health check says fine" and "the route works"
+    # came to disagree before (issue #1724); a self-loop makes it worse — the
+    # probe would hit the gateway, which answers 200 forever.
+    verdict = resolve_backend_address(
+        proxy_pass_url=getattr(agent_card, "proxy_pass_url", None),
+        url=agent_card.url,
+        gateway_hosts=request_gateway_hosts(),
+    )
+    if not verdict.ok:
+        return {
+            "status": "unhealthy",
+            "status_code": None,
+            "detail": f"backend {verdict.status}: {verdict.reason}",
+            "response_time_ms": None,
+            "health_check_url": verdict.url,
+            "last_checked": datetime.now(UTC),
+            "last_checked_iso": datetime.now(UTC).isoformat(),
+        }
+    base_url = str(verdict.url).rstrip("/")
     health_urls = _build_agent_health_urls(base_url)
     timeout_seconds = max(1, settings.health_check_timeout_seconds)
 
@@ -1430,6 +1479,11 @@ async def list_agents(
                 is_proxied=getattr(agent, "is_proxied", False),
                 proxy_target_url=getattr(agent, "proxy_target_url", None),
                 proxy_client_url=getattr(agent, "proxy_client_url", None),
+                # Judged backend addressing (change: fix-a2a-agent-backend-self-loop).
+                # Computed at READ time so rows registered before the fix are
+                # labelled too — refusing only new writes would leave the old
+                # self-loops looking like normal backends forever.
+                backend=_backend_block_for(agent),
             )
             filtered_agents.append(agent_info)
 

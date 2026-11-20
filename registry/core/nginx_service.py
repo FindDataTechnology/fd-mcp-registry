@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import urlparse
 
+from registry.core.a2a_backend import gateway_hosts as _gateway_hosts_fn, resolve_backend_address
+
 import httpx
 
 from registry.common.log_redaction import redact_url
@@ -18,6 +20,7 @@ from registry.constants import REGISTRY_CONSTANTS, DeploymentType, HealthStatus
 from registry.schemas.proxy_mixin import _assert_egress_allowed, build_proxy_client_path
 
 from .config import settings
+
 from .endpoint_utils import get_endpoint_url_from_server_info
 from .transport_guard import normalize_transports
 from .metrics import (
@@ -25,6 +28,13 @@ from .metrics import (
     NGINX_CONFIG_WRITES,
     NGINX_UPDATES_SKIPPED,
 )
+#: Hosts that mean "this gateway" for the A2A self-loop judgment
+#: (change: fix-a2a-agent-backend-self-loop). One primary + any declared
+#: aliases; a set, because a deployment can answer under more than one name.
+def _gateway_hosts() -> frozenset[str]:
+    extra = [h for h in (getattr(settings, "gateway_alias_hosts", None) or []) if h]
+    return _gateway_hosts_fn(getattr(settings, "registry_url", None), extra)
+
 
 logger = logging.getLogger(__name__)
 
@@ -2395,12 +2405,30 @@ map "$uri:$http_x_mcp_server_version" $versioned_backend {{
                 # url is the gateway-facing address, so the registrant's backend
                 # lives in proxy_pass_url; fall back to url for agents registered
                 # before the flag was on (proxy_pass_url unset).
-                backend_url = (getattr(agent, "proxy_pass_url", None) or agent.url or "").rstrip(
-                    "/"
+                # Three-class judgment, not a boolean (change:
+                # fix-a2a-agent-backend-self-loop). The bare `proxy_pass_url or
+                # url` fallback below is what produced a gateway-pointing backend
+                # for EVERY agent in this deployment (2026-11-21): proxy_pass_url
+                # was unset, and url is the gateway's own public entry. The
+                # request then re-enters this gateway instead of reaching the
+                # executor, and the runner logs the A2A method zero times.
+                verdict = resolve_backend_address(
+                    proxy_pass_url=getattr(agent, "proxy_pass_url", None),
+                    url=agent.url,
+                    gateway_hosts=_gateway_hosts(),
                 )
-                if not backend_url:
-                    logger.warning(f"Agent '{path}' has no backend url; skipping nginx block")
+                if not verdict.ok:
+                    # Visible at default level on purpose: the agent silently
+                    # loses its route while remaining in the registry, so the two
+                    # read faces disagree and only this line can say why.
+                    logger.warning(
+                        "Agent '%s' backend is %s (%s); skipping nginx block",
+                        path,
+                        verdict.status,
+                        verdict.reason,
+                    )
                     continue
+                backend_url = verdict.url or ""
 
                 # Only proxy true A2A agents. A non-A2A agent that happens to
                 # carry a URL must not get a JSON-RPC proxy route.
