@@ -1715,8 +1715,8 @@ class Settings(BaseSettings):
         description=(
             "Override for the UI title shown in the header, login, and logout pages. "
             "When unset (or empty/whitespace-only), the title defaults to "
-            "'AI Gateway & Registry' for with-gateway mode and 'AI Registry' for "
-            "registry-only mode."
+            "'Yizuo Agent Materials Plaza' in every mode "
+            "(native-lexicon v5 brand; 壹座·智能体素材广场)."
         ),
     )
 
@@ -1730,9 +1730,7 @@ class Settings(BaseSettings):
         """
         if self.ui_title and self.ui_title.strip():
             return self.ui_title
-        if self.deployment_mode == DeploymentMode.REGISTRY_ONLY:
-            return "AI Registry"
-        return "AI Gateway & Registry"
+        return "Yizuo Agent Materials Plaza"
 
     # Registration deduplication. Advisory checks that surface
     # likely-duplicate entities (servers, agents, skills) before a user
