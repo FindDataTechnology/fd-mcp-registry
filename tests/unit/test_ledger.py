@@ -1,0 +1,160 @@
+"""Unit tests for the unified call ledger primitives (task group 3).
+
+No DB, no network: the JSONL sink writes to a tmp path; budget verdict is pure;
+the shipper's row coercion is pure; the Mongo counter is exercised via a mocked
+collection.
+"""
+
+import json
+from datetime import UTC, datetime
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+from registry.ledger import events as ledger_events
+from registry.ledger.events import (
+    BudgetCounter,
+    LedgerEvent,
+    check_budget,
+    emit,
+)
+from registry.ledger.mongo_counter import MongoBudgetCounter
+from registry.ledger.shipper import _coerce_row
+
+
+def test_emit_writes_jsonl(tmp_path, monkeypatch):
+    sink = tmp_path / "ledger.jsonl"
+    monkeypatch.setenv("LEDGER_SINK_PATH", str(sink))
+    e = LedgerEvent(
+        run="r1", principal="agent:1", actor="user:9", tenant="t1",
+        audience="svcA", tool="read", outcome="ok", grant_jti="j1",
+        rows=120, latency_ms=42,
+    )
+    emit(e)
+    line = sink.read_text().strip()
+    rec = json.loads(line)
+    assert rec["run"] == "r1"
+    assert rec["rows"] == 120
+    assert rec["actor"] == "user:9"
+    assert rec["grant_jti"] == "j1"
+    assert rec["span_id"]  # auto-minted
+
+
+def test_emit_never_raises_on_io_error(monkeypatch):
+    # Point the sink at an unwritable path; emit must swallow and keep going.
+    monkeypatch.setenv("LEDGER_SINK_PATH", "/proc/nonexistent/ledger.jsonl")
+    e = LedgerEvent(
+        run="r", principal="p", actor=None, tenant="t", audience="a",
+        tool="x", outcome="ok", grant_jti="j",
+    )
+    emit(e)  # no exception
+
+
+def test_check_budget_allow_and_refuse():
+    assert check_budget({"calls": 10}, {"calls": 9}).allowed is True
+    v = check_budget({"calls": 10}, {"calls": 10})
+    assert v.allowed is False
+    assert v.remaining["calls"] == 0
+    # rows dimension
+    assert check_budget({"rows": 100}, {"rows": 50}).allowed is True
+    assert check_budget({"rows": 100}, {"rows": 100}).allowed is False
+
+
+def test_check_budget_none_means_tenant_bounded_not_infinite():
+    # No per-grant budget => allowed at this layer; tenant quota is enforced elsewhere.
+    assert check_budget(None, {"calls": 99999}).allowed is True
+
+
+@pytest.mark.asyncio
+async def test_budget_counter_accumulates():
+    c = BudgetCounter()
+    await c.consume("run:r1", rows=10, calls=1)
+    await c.consume("run:r1", rows=5, calls=1)
+    used = await c.peek("run:r1")
+    assert used == {"calls": 2, "rows": 15, "tokens": 0}
+
+
+def test_shipper_coerces_row():
+    ev = {
+        "grant_jti": "j", "span_id": "s", "run": "r", "principal": "p",
+        "actor": None, "tenant": "t", "audience": "a", "tool": "x",
+        "outcome": "ok", "rows": 3, "tokens": None, "latency_ms": 7,
+        "source": "resource", "ts": datetime.now(UTC).isoformat(),
+    }
+    row = _coerce_row(ev)
+    assert row["principal"] == "p"
+    assert row["actor"] is None
+    assert isinstance(row["ts"], datetime)
+
+
+def test_shipper_rejects_incomplete_row():
+    with pytest.raises(ValueError):
+        _coerce_row({"grant_jti": "j", "span_id": "s"})  # missing run/principal/etc
+
+
+@pytest.mark.asyncio
+async def test_mongo_counter_available_on_ping():
+    col = MagicMock()
+    col.database.command = AsyncMock(return_value={"ok": 1})
+    db = MagicMock()
+    db.__getitem__ = MagicMock(return_value=col)
+    c = MongoBudgetCounter(db)
+    assert await c.available() is True
+
+
+@pytest.mark.asyncio
+async def test_mongo_counter_unavailable_on_error():
+    col = MagicMock()
+    col.database.command = AsyncMock(side_effect=RuntimeError("down"))
+    db = MagicMock()
+    db.__getitem__ = MagicMock(return_value=col)
+    c = MongoBudgetCounter(db)
+    assert await c.available() is False
+
+
+@pytest.mark.asyncio
+async def test_mongo_counter_consume_upserts():
+    col = MagicMock()
+    col.find_one_and_update = AsyncMock()
+    db = MagicMock()
+    db.__getitem__ = MagicMock(return_value=col)
+    c = MongoBudgetCounter(db)
+    await c.consume("tenant:t1:2026-11", rows=5, calls=1)
+    col.find_one_and_update.assert_awaited_once()
+    call = col.find_one_and_update.await_args
+    assert call.args[0] == {"scope": "tenant:t1:2026-11"}
+    assert call.args[1]["$inc"]["rows"] == 5
+
+
+def test_retention_ddl_has_snapshot_and_log_tables():
+    from registry.ledger import retention
+
+    assert "ledger_retention_snapshot" in retention._SNAPSHOT_DDL
+    assert "ledger_retention_log" in retention._LOG_DDL
+    # Snapshot is keyed so a second clear of the same period is a no-op aggregate.
+    assert "PRIMARY KEY (tenant_id, month)" in retention._SNAPSHOT_DDL
+
+
+def test_retention_requires_dsn_math_only(monkeypatch):
+    # run_retention imports psycopg lazily; with no DSN and a fake driver absent
+    # it should still compute, but we only assert the default-days source here
+    # without touching PG.
+    from registry.ledger import retention
+
+    assert retention.DEFAULT_RETENTION_DAYS == 400
+
+
+def test_shipper_backlog_counts_unshipped_bytes(tmp_path):
+    from registry.ledger.shipper import backlog
+
+    sink = tmp_path / "ledger.jsonl"
+    cursor = tmp_path / "cursor"
+    sink.write_text("line1\nline2\n")
+    # no cursor yet => full backlog
+    assert backlog(str(sink), str(cursor)) > 0
+    cursor.write_text(str(sink.stat().st_size))
+    assert backlog(str(sink), str(cursor)) == 0
+    # a new line grows the backlog again
+    with sink.open("a") as fh:
+        fh.write("line3\n")
+    assert backlog(str(sink), str(cursor)) > 0

@@ -45,6 +45,9 @@ from registry.api.m2m_management_routes import router as m2m_management_router
 from registry.api.management_routes import router as management_router
 from registry.api.okta_m2m_routes import router as okta_m2m_router
 from registry.api.patch_key_routes import router as patch_key_router
+from registry.api.principal_routes import router as principal_router
+from registry.api.grant_routes import router as grant_router
+from registry.api.ledger_routes import router as ledger_router
 from registry.api.peer_management_routes import router as peer_management_router
 from registry.api.public_record_routes import router as public_record_router
 from registry.api.rate_limit_routes import router as rate_limit_router
@@ -1280,6 +1283,16 @@ app.include_router(proxied_entities_router)
 # verification switch on/off together.
 if settings.patch_key_auth_enabled:
     app.include_router(patch_key_router)
+# Principal + tenant registration (establish-agent-principal-plane). Admin-gated
+# mutations; tenant-scoped listing. Ships alongside the grant plane; the routes
+# are harmless without a configured caller (they only touch principals/tenants).
+app.include_router(principal_router)
+# Delegation-grant issuance + JWKS (establish-agent-principal-plane). Mounted
+# always; every handler 404s while GRANT_PLANE_ENABLED is off.
+app.include_router(grant_router)
+# Ledger read face (establish-agent-principal-plane). 503s without LEDGER_PG_DSN;
+# attribution only, never the settlement authority.
+app.include_router(ledger_router)
 # vendor lane (fd-vendor-lane; paas add-vendor-supply-open 4.2): 受控注册通道
 # （env 令牌未配时端点如实 503, 非隐藏 —— 见 vendor_lane_routes 的 lane gate）。
 app.include_router(vendor_lane_router)

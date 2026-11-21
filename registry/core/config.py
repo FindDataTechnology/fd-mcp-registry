@@ -1111,6 +1111,42 @@ class Settings(BaseSettings):
         ),
     )
 
+    # Delegation-grant plane (establish-agent-principal-plane). The gateway signs
+    # short-lived, single-audience grants (Ed25519) so downstream lines verify
+    # OFFLINE; per-audience signing keys are HKDF-derived from GRANT_MASTER_SEED.
+    # Inert until a seed is set; a missing seed only fails when issuance is asked
+    # for, not at import (so the registry still boots without the plane).
+    grant_plane_enabled: bool = Field(
+        default=False,
+        description=(
+            "Master switch for the delegation-grant plane: the /validate Grant "
+            "branch, /v1/grants issuance, and JWKS. Off = bit-for-bit prior "
+            "behavior. Ships inert."
+        ),
+    )
+    grant_master_seed: str = Field(
+        default="",
+        description=(
+            "Base64 of a >=32-byte master seed for grant signing. Per-audience "
+            "Ed25519 keys are HKDF-derived from it. Required only when the plane "
+            "is enabled. NEVER log or return this value."
+        ),
+    )
+    grant_key_generation: int = Field(
+        default=1,
+        ge=1,
+        description=(
+            "Key generation counter, folded into the signing kid. Bump on seed "
+            "rotation; old kids stay in JWKS until the longest grant exp passes."
+        ),
+    )
+    grant_default_ttl_seconds: int = Field(
+        default=3600,
+        ge=1,
+        le=3600,
+        description="Default grant lifetime; capped at 3600s per the spec.",
+    )
+
     # User-to-group fallback for IdPs that don't carry groups in JWTs (issue #1127).
     # Auth server consults the idp_user_groups collection only when the JWT's
     # groups claim is empty AND the token's provider name appears in this list.
