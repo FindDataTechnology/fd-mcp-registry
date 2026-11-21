@@ -11,6 +11,7 @@ import {
 } from '@heroicons/react/24/outline';
 import CloudProviderBanner from './CloudProviderBanner';
 import UpdateBanner from './UpdateBanner';
+import CatalogDeprecationBanner from './CatalogDeprecationBanner';
 import Sidebar from './Sidebar';
 import LanguageSwitcher from './LanguageSwitcher';
 import ThemeToggle from './ThemeToggle';
@@ -227,6 +228,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
         <main className={`flex-1 flex flex-col transition-all duration-300 ${
           sidebarOpen ? 'md:ml-64 lg:ml-72 xl:ml-80' : ''
         }`}>
+          <CatalogDeprecationBanner />
           {user?.is_admin && <CloudProviderBanner />}
           {user?.is_admin && <UpdateBanner />}
           <div className="flex-1 flex flex-col px-4 sm:px-6 lg:px-8 py-4 md:py-8 overflow-y-auto">
