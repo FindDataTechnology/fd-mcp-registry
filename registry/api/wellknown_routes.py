@@ -47,6 +47,34 @@ OAUTH_DISCOVERY_CACHE_HEADERS: dict[str, str] = {
 }
 
 
+@router.get("/grant-jwks.json")
+async def get_grant_jwks(request: Request) -> JSONResponse:
+    """Public JWKS for delegation-grant verification (establish-agent-principal-plane).
+
+    A downstream line verifies a grant OFFLINE against these keys, so this must be
+    anonymous — a `.well-known` document is public by definition (same rationale
+    as ai-catalog.json). Audiences are taken from ?aud= (repeatable); an empty set
+    is rejected rather than dumping every audience's key.
+
+    Returns an empty key set (200) when the grant plane is disabled, so a caller
+    that probes this endpoint gets "no keys" rather than a confusing 404.
+    """
+    auds = request.query_params.getlist("aud")
+    if not auds:
+        raise HTTPException(status_code=400, detail="at least one ?aud= is required")
+    from registry.core.config import settings as _s
+
+    if not getattr(_s, "grant_plane_enabled", False):
+        return JSONResponse({"keys": []}, headers=OAUTH_DISCOVERY_CACHE_HEADERS)
+    try:
+        from registry.api.grant_routes import _SIGNER_CACHE
+
+        signer = _SIGNER_CACHE.get()
+    except Exception:  # noqa: BLE001 - no seed configured => no keys, not an error
+        return JSONResponse({"keys": []}, headers=OAUTH_DISCOVERY_CACHE_HEADERS)
+    return JSONResponse(signer.jwks(auds), headers=OAUTH_DISCOVERY_CACHE_HEADERS)
+
+
 @router.get("/ai-catalog.json")
 async def get_ai_catalog(
     request: Request,
