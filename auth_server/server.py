@@ -122,6 +122,8 @@ from registry.core.config import settings
 from registry.exceptions import UrlValidationError
 from registry.repositories.factory import get_scope_repository, get_server_repository
 from registry.services.patch_key_service import PATCH_KEY_PREFIX
+# grant_accept is imported lazily (flat-in-container vs packaged-in-repo split);
+# the /validate grant branch does the try/except-ImportError dance itself.
 from registry.utils.logging_setup import setup_logging as _setup_logging
 from registry.utils.request_utils import get_client_ip
 from registry.utils.url_guard import PROXY_PROFILE, guarded_async_client
@@ -733,6 +735,7 @@ def _attach_mcp_proxy_token(
     egress_user: str = "",
     audit_identity: dict | None = None,
     groups: list[str] | None = None,
+    upstream_override: str | None = None,
 ) -> None:
     """Mint and attach the X-Internal-Token for the /mcp-proxy hop.
 
@@ -762,6 +765,8 @@ def _attach_mcp_proxy_token(
     resolved_upstream = request.headers.get("X-Resolved-Upstream", "")
     if not resolved_upstream:
         return
+    if upstream_override:
+        resolved_upstream = upstream_override
 
     marker = settings.auth_server_nginx_marker_secret
     if marker and not secrets.compare_digest(
@@ -784,6 +789,61 @@ def _attach_mcp_proxy_token(
         )
     except ValueError as exc:
         logger.error(f"/validate: could not mint mcp-proxy token: {exc}")
+
+
+async def _tenant_upstream_for(request: "Request", validation_result: dict) -> str | None:
+    """Return a tenant-specific upstream for a dedicated-tier grant caller, or None.
+
+    No-op (None) for everyone else. Best-effort: any miss/error returns None and
+    the caller keeps the nginx-resolved default.
+    """
+    if validation_result.get("method") != "grant":
+        return None
+    try:
+        from grant_accept import grant_claims_from_request
+
+        claims = grant_claims_from_request(request)
+        if not claims:
+            return None
+        tenant = claims.get("tenant")
+        if not tenant:
+            return None
+        from registry.services.principal_service import get_principal_service
+
+        ps = await get_principal_service()
+        tier = await ps.resolve_isolation_tier(tenant)
+        if tier not in ("dedicated_cell", "dedicated_fleet"):
+            return None
+        default_upstream = request.headers.get("X-Resolved-Upstream", "")
+        if not default_upstream:
+            return None
+        aud = claims.get("aud") or ""
+        registered = aud.split("/", 1)[0] if aud else ""
+        if not registered:
+            return None
+        from registry.repositories.factory import get_server_repository
+
+        repo = get_server_repository()
+        entry = await repo.get(f"/{registered}") or await repo.get(registered)
+        metadata = (entry or {}).get("metadata") or {}
+        try:
+            from tenant_routing import select_upstream
+        except ImportError:
+            from auth_server.tenant_routing import select_upstream
+
+        chosen = select_upstream(
+            default_upstream=default_upstream,
+            entry_metadata=metadata,
+            tenant_id=tenant,
+            isolation_tier=tier,
+        )
+        return chosen if chosen != default_upstream else None
+    except Exception as exc:  # noqa: BLE001 - best-effort, never fatal
+        logger.warning("tenant upstream resolution failed (%s); using default", exc)
+        return None
+
+
+
 
 
 def _attach_generic_proxy_token(
@@ -2574,6 +2634,67 @@ def _is_sse_content_type(content_type: str) -> bool:
     return "text/event-stream" in (content_type or "").lower()
 
 
+
+def _emit_gateway_ledger_event(
+    *,
+    bearer_request,
+    server_name: str,
+    tool_name: str | None,
+    status_code: int,
+    body_bytes: bytes,
+    content_type: str,
+    started_at: float,
+) -> None:
+    """Best-effort gateway-side ledger line for a forwarded grant call.
+
+    Reads the grant claims from the request bearer (verified one hop earlier),
+    parses rows_returned from a JSON result when present, and emits one event.
+    Never raises.
+    """
+    try:
+        from grant_accept import grant_claims_from_request
+    except ImportError:
+        from auth_server.grant_accept import grant_claims_from_request
+
+    claims = grant_claims_from_request(bearer_request)
+    if not claims:
+        return
+    rows: int | None = None
+    if "application/json" in (content_type or ""):
+        try:
+            doc = json.loads(body_bytes.decode("utf-8"))
+            result = doc.get("result") if isinstance(doc, dict) else None
+            if isinstance(result, dict):
+                for key in ("rows_returned", "rows", "count", "total"):
+                    if isinstance(result.get(key), int):
+                        rows = result[key]
+                        break
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            pass
+    try:
+        from registry.ledger.events import LedgerEvent, emit
+
+        emit(
+            LedgerEvent(
+                run=claims.get("run", ""),
+                principal=claims.get("sub", ""),
+                actor=(claims.get("act") or {}).get("sub"),
+                tenant=claims.get("tenant", ""),
+                audience=claims.get("aud", ""),
+                tool=tool_name or "",
+                outcome="ok" if 200 <= status_code < 300 else "error",
+                grant_jti=claims.get("jti", ""),
+                rows=rows,
+                latency_ms=int((time.perf_counter() - started_at) * 1000),
+                source="gateway",
+            )
+        )
+    except Exception as exc:  # noqa: BLE001 - ledger must never break the call
+        logger.warning("gateway ledger emit failed (%s); call unaffected", exc)
+
+
+@app.post("/mcp-proxy/{server_name:path}", dependencies=[Depends(verify_mcp_proxy_token)])
+
 def _should_filter_tools_list(
     filter_enabled: bool,
     incoming_method: str,
@@ -4311,6 +4432,53 @@ async def validate_request(request: Request):
                     validation_result = await _validate_patch_key_token(access_token)
                     logger.info("Token validated as patch key (prefix=wgk-)")
 
+                # Delegation grant (establish-agent-principal-plane). A grant is a
+                # single-audience Ed25519 JWT whose iss is the gateway; it is
+                # verified OFFLINE against the registry JWKS. The cheap iss
+                # prefilter means every non-grant (patch key, provider JWT) falls
+                # straight through unchanged. Off unless GRANT_PLANE_ENABLED.
+                if not validation_result and getattr(settings, "grant_plane_enabled", False):
+                    try:
+                        from grant_accept import (
+                            GrantUnavailable,
+                            looks_like_grant,
+                            validate_grant_token,
+                        )
+                    except ImportError:
+                        from auth_server.grant_accept import (
+                            GrantUnavailable,
+                            looks_like_grant,
+                            validate_grant_token,
+                        )
+
+                    if looks_like_grant(access_token):
+                        try:
+                            validation_result = await validate_grant_token(access_token)
+                            logger.info(
+                                "Token validated as delegation grant (aud=%s)",
+                                validation_result.get("grant_aud"),
+                            )
+                        except GrantUnavailable as exc:
+                            # JWKS/verification infra down: 503 (retry), never a 401
+                            # that would send the caller to re-mint needlessly.
+                            logger.error("Grant verification unavailable: %s", exc)
+                            raise HTTPException(
+                                status_code=503,
+                                detail="Grant verification temporarily unavailable",
+                                headers={"Connection": "close"},
+                            )
+                        except ValueError:
+                            # Invalid/expired/wrong-audience grant -> 401 below, same
+                            # as any other rejected bearer.
+                            raise HTTPException(
+                                status_code=401,
+                                detail="Invalid or expired delegation grant",
+                                headers={
+                                    "WWW-Authenticate": "Bearer",
+                                    "Connection": "close",
+                                },
+                            )
+
                 # Try self-signed token first (tokens minted by this auth server).
                 # This must run before provider-specific validation because the
                 # Connect button generates locally-signed JWTs with iss=mcp-auth-server
@@ -4760,8 +4928,40 @@ async def validate_request(request: Request):
                         headers={"X-Tier-Required": _tier, "Connection": "close"},
                     )
 
+            # Delegation grant: the grant's own signed scope list is the authority.
+            # A grant is not present in the per-server scope documents, so the
+            # registry-scope FGAC below would always deny it. We enforce the
+            # grant's aud == the requested server here instead, then let the
+            # remaining gates (blocked-tool list, preflight/budget) run. A grant
+            # whose aud does not match the server it is presented to is rejected.
+            if validation_result.get("method") == "grant":
+                grant_aud = validation_result.get("grant_aud")
+                if grant_aud != server_name:
+                    logger.warning(
+                        "Grant aud mismatch: grant aud=%s presented to server=%s",
+                        grant_aud,
+                        server_name,
+                    )
+                    raise HTTPException(
+                        status_code=403,
+                        detail="Grant audience does not match the requested server",
+                        headers={"Connection": "close"},
+                    )
+                if not user_scopes:
+                    raise HTTPException(
+                        status_code=403,
+                        detail=f"Access denied to {server_name}.{method} - grant has no scopes",
+                        headers={"Connection": "close"},
+                    )
+                logger.debug(
+                    "Grant scope accepted for %s.%s (aud matched, %d scope(s)); "
+                    "registry-scope FGAC bypassed by grant",
+                    server_name,
+                    method,
+                    len(user_scopes),
+                )
             # Check if user has any scopes - if not, deny access (fail closed)
-            if not user_scopes:
+            elif not user_scopes:
                 logger.warning(
                     f"Access denied for user {hash_username(validation_result.get('username', ''))} to {server_name}.{method} (tool: {actual_tool_name}) - no scopes configured"
                 )
@@ -4771,7 +4971,7 @@ async def validate_request(request: Request):
                     headers={"Connection": "close"},
                 )
 
-            if not await validate_server_tool_access(
+            if validation_result.get("method") != "grant" and not await validate_server_tool_access(
                 server_name,
                 method,
                 actual_tool_name,
@@ -5081,6 +5281,12 @@ async def validate_request(request: Request):
         # the browser-consent and bearer-vend paths miss on Entra.
         _egress_user = _canonical_egress_user(validation_result)
 
+        # Tenant-aware upstream (establish-agent-principal-plane 4.3): a
+        # dedicated-tier grant caller lands on its tenant's instance when the
+        # registry entry carries metadata.tenant_upstreams. None for everyone
+        # else; best-effort and never fatal.
+        _tenant_upstream = await _tenant_upstream_for(request, validation_result)
+
         _attach_mcp_proxy_token(
             request,
             response,
@@ -5089,6 +5295,7 @@ async def validate_request(request: Request):
             server_name=server_name or "",
             auth_method=_canon_auth_method,
             egress_user=_egress_user,
+            upstream_override=_tenant_upstream,
             # Sign the audit identity resolved from the VERIFIED claims so the
             # mcp-proxy hop attributes its OBO mint record from this, not from
             # the raw ingress header it also receives. `request_id` rides along
@@ -8408,6 +8615,9 @@ async def mcp_proxy(
     claims = request.state.mcp_proxy_claims
     upstream_url = claims["upstream_url"]
     user_scopes: list[str] = list(claims.get("scopes") or [])
+    # Ledger latency baseline (establish-agent-principal-plane 3.2). Set before
+    # any upstream work so the emitted event carries a real round-trip.
+    _proxy_started_at = time.perf_counter()
 
     # Append the MCP sub-path from the request. server_name captures the full
     # path after /mcp-proxy/ (e.g. "airegistry-tools/mcp"). The first segment
@@ -8538,6 +8748,29 @@ async def mcp_proxy(
         from auth_server.call_grant import enforce_call_grant
 
     await enforce_call_grant(claims, request_body)
+
+    # Delegation-grant budget (establish-agent-principal-plane 4.2). A grant
+    # with a budget is a hard cap; tools/call is refused 402 once the run's
+    # counter is spent, 503 if the counter store is down (fail-closed). The
+    # grant was already signature-verified at /validate, so re-reading its
+    # budget/run/jti claims here is safe and keeps the token mint untouched.
+    # Runs only for grant callers and only when the plane is on.
+    if claims.get("auth_method") == "grant":
+        try:
+            from grant_budget import enforce_grant_budget
+            from grant_accept import grant_claims_from_request
+        except ImportError:
+            from auth_server.grant_budget import enforce_grant_budget
+            from auth_server.grant_accept import grant_claims_from_request
+
+        _grant_claims = grant_claims_from_request(request)
+        if _grant_claims:
+            await enforce_grant_budget(
+                _grant_claims,
+                server_name=server_name,
+                tool_name=claims.get("tool_name"),
+                request_body=request_body,
+            )
 
     # True once we inject a vaulted egress token below. An egress upstream is
     # itself an OAuth resource server: if it rejects our injected token it 401s
@@ -8938,6 +9171,23 @@ async def mcp_proxy(
         status_code=status_code,
         content_type=content_type,
     )
+
+    # Ledger emit (establish-agent-principal-plane 3.2): the gateway records one
+    # event per forwarded call so every call leaves a line even if the resource
+    # service does not report. rows_returned is read from the JSON-RPC result
+    # when the upstream provides it (the settlement caliber). Best-effort: emit()
+    # never raises and never blocks. Only when the grant plane is on and this was
+    # a grant-authenticated call.
+    if getattr(settings, "grant_plane_enabled", False) and claims.get("auth_method") == "grant":
+        _emit_gateway_ledger_event(
+            bearer_request=request,
+            server_name=server_name,
+            tool_name=claims.get("tool_name"),
+            status_code=status_code,
+            body_bytes=body_bytes,
+            content_type=content_type,
+            started_at=_proxy_started_at,
+        )
 
     # Apply the response-header allowlist. Anything outside
     # _FORWARDED_RESPONSE_HEADERS (Set-Cookie, Location, HSTS, CSP,

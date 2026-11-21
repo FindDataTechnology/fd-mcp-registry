@@ -55,6 +55,7 @@ class LogtoProvider(AuthProvider):
         m2m_client_id: str | None = None,
         m2m_client_secret: str | None = None,
         m2m_resource: str | None = None,
+        extra_accepted_audiences: str | None = None,
     ):
         """Initialize Logto provider.
 
@@ -69,6 +70,16 @@ class LogtoProvider(AuthProvider):
             m2m_client_secret: Optional M2M application client secret.
             m2m_resource: API resource indicator required by Logto on
                 client_credentials requests (the resulting token ``aud``).
+            extra_accepted_audiences: Comma-separated list of ADDITIONAL
+                ``aud`` values a user bearer token may carry (env
+                ``LOGTO_ACCEPTED_AUDIENCES``). Needed because the gateway's
+                RFC 9728 PRM advertises ``resource`` as the canonical
+                REGISTRY_URL, and RFC 8707 spec-compliant MCP clients send
+                that value verbatim — the resulting token's ``aud`` is the
+                bare origin, which is NOT the configured ``m2m_resource``
+                (typically the origin plus a path). A resource server MUST
+                accept the identifiers it itself advertises. Empty/None
+                (default) keeps the legacy three-audience set unchanged.
         """
         self.logto_url = logto_url.rstrip("/")
         self.logto_external_url = (logto_external_url or logto_url).rstrip("/")
@@ -77,6 +88,10 @@ class LogtoProvider(AuthProvider):
         self.m2m_client_id = m2m_client_id or client_id
         self.m2m_client_secret = m2m_client_secret or client_secret
         self.m2m_resource = m2m_resource
+        # Operator-configured additional audiences (see __init__ docstring).
+        self.extra_accepted_audiences: list[str] = [
+            a.strip() for a in (extra_accepted_audiences or "").split(",") if a.strip()
+        ]
 
         # Cache for JWKS and configuration
         self._jwks_cache: dict[str, Any] | None = None
@@ -142,10 +157,15 @@ class LogtoProvider(AuthProvider):
             #   - client_id / m2m_client_id (the gateway's own applications)
             #   - m2m_resource (Logto client_credentials tokens carry the
             #     API resource indicator as their audience)
+            #   - extra_accepted_audiences: the canonical origin the gateway
+            #     itself advertises as PRM ``resource`` — RFC 8707 clients
+            #     (WorkBuddy et al.) send it verbatim, so the token ``aud``
+            #     is that origin and not the path-qualified m2m_resource.
             accepted_audiences = [
                 self.client_id,
                 self.m2m_client_id,
                 self.m2m_resource,
+                *self.extra_accepted_audiences,
             ]
 
             claims = None
