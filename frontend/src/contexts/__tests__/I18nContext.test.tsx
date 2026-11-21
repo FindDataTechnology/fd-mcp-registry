@@ -34,7 +34,7 @@ describe('I18nProvider', () => {
     expect(screen.getByTestId('locale')).toHaveTextContent('zh');
     expect(screen.getByTestId('translated')).toHaveTextContent('退出登录');
     expect(document.documentElement.lang).toBe('zh-CN');
-    expect(document.title).toBe('壹座·智能体素材广场');  // zh 轨：字典把品牌串译成中文主轨
+    expect(document.title).toBe('注册处 · Registry');  // 操作员命名：控制台不再挂产品品牌串
   });
 
   it('defaults to en for en browsers', () => {
@@ -46,7 +46,7 @@ describe('I18nProvider', () => {
     expect(screen.getByTestId('locale')).toHaveTextContent('en');
     expect(screen.getByTestId('translated')).toHaveTextContent('Sign out');
     expect(document.documentElement.lang).toBe('en');
-    expect(document.title).toBe('Yizuo Agent Materials Plaza');
+    expect(document.title).toBe('注册处 · Registry');
   });
 
   it('switches language, persists the choice and re-translates', async () => {

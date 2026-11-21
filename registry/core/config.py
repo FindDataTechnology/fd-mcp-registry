@@ -1715,8 +1715,11 @@ class Settings(BaseSettings):
         description=(
             "Override for the UI title shown in the header, login, and logout pages. "
             "When unset (or empty/whitespace-only), the title defaults to "
-            "'Yizuo Agent Materials Plaza' in every mode "
-            "(native-lexicon v5 brand; 壹座·智能体素材广场)."
+            "'注册处 · Registry' — the operator name. The registry console is an "
+            "operator surface as of unify-supply-spine-lineage (2026-11-21), not a "
+            "customer-facing product entrance: the product brand lives on the supply "
+            "domain's front door, and a second product brand here made the same "
+            "inventory speak with two names."
         ),
     )
 
@@ -1730,7 +1733,7 @@ class Settings(BaseSettings):
         """
         if self.ui_title and self.ui_title.strip():
             return self.ui_title
-        return "Yizuo Agent Materials Plaza"
+        return "注册处 · Registry"
 
     # Registration deduplication. Advisory checks that surface
     # likely-duplicate entities (servers, agents, skills) before a user

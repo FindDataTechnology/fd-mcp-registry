@@ -1,7 +1,9 @@
 import { useState, useEffect } from 'react';
 import axios from 'axios';
 
-const DEFAULT_UI_TITLE = 'Yizuo Agent Materials Plaza';
+// Operator name, not a product brand: the registry console stopped being a
+// customer-facing entrance in unify-supply-spine-lineage (2026-11-21).
+const DEFAULT_UI_TITLE = '注册处 · Registry';
 
 interface VersionResponse {
   version: string;
