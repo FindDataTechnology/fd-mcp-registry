@@ -2693,8 +2693,6 @@ def _emit_gateway_ledger_event(
         logger.warning("gateway ledger emit failed (%s); call unaffected", exc)
 
 
-@app.post("/mcp-proxy/{server_name:path}", dependencies=[Depends(verify_mcp_proxy_token)])
-
 def _should_filter_tools_list(
     filter_enabled: bool,
     incoming_method: str,
