@@ -23,6 +23,12 @@ from registry.ledger.shipper import _coerce_row
 
 
 def test_emit_writes_jsonl(tmp_path, monkeypatch):
+    from registry.ledger import events as _ev
+
+    async def _noop(_e):
+        return None
+
+    monkeypatch.setattr(_ev, "_write_mongo", _noop)
     sink = tmp_path / "ledger.jsonl"
     monkeypatch.setenv("LEDGER_SINK_PATH", str(sink))
     e = LedgerEvent(
@@ -41,6 +47,12 @@ def test_emit_writes_jsonl(tmp_path, monkeypatch):
 
 
 def test_emit_never_raises_on_io_error(monkeypatch):
+    from registry.ledger import events as _ev
+
+    async def _noop(_e):
+        return None
+
+    monkeypatch.setattr(_ev, "_write_mongo", _noop)
     # Point the sink at an unwritable path; emit must swallow and keep going.
     monkeypatch.setenv("LEDGER_SINK_PATH", "/proc/nonexistent/ledger.jsonl")
     e = LedgerEvent(
@@ -158,3 +170,36 @@ def test_shipper_backlog_counts_unshipped_bytes(tmp_path):
     with sink.open("a") as fh:
         fh.write("line3\n")
     assert backlog(str(sink), str(cursor)) > 0
+
+
+@pytest.mark.asyncio
+async def test_write_mongo_inserts_and_dedups(monkeypatch):
+    """_write_mongo persists the event; a duplicate (same grant_jti,span_id) is
+    swallowed by the unique index, not raised."""
+    from registry.ledger import events as _ev
+    from unittest.mock import AsyncMock, MagicMock
+
+    inserted = []
+
+    col = MagicMock()
+    col.create_index = AsyncMock()
+    col.insert_one = AsyncMock(side_effect=lambda d: inserted.append(d))
+
+    db = MagicMock()
+    db.__getitem__ = MagicMock(return_value=col)
+
+    async def _getdb():
+        return db
+
+    monkeypatch.setattr(
+        "registry.repositories.documentdb.client.get_documentdb_client", _getdb
+    )
+    _ev._mongo_index_ready = False
+    e = LedgerEvent(
+        run="r1", principal="agent:1", actor="user:9", tenant="t1",
+        audience="svcA", tool="read", outcome="ok", grant_jti="jX",
+    )
+    await _ev._write_mongo(e)
+    assert len(inserted) == 1
+    assert inserted[0]["grant_jti"] == "jX"
+    assert inserted[0]["principal"] == "agent:1"

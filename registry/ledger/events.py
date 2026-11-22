@@ -2,10 +2,12 @@
 
 Two responsibilities, deliberately split from any database driver:
 
-1. **Event append** — every authorized call produces one line on a local JSONL
-   sink (mirror-first, best-effort, never fails the request). A separate shipper
-   (out of this process, no gateway dependency) batches these into the durable PG
-   ledger. The gateway image therefore needs no Postgres driver.
+1. **Event append** — every authorized call produces one durable record in the
+   Mongo ``mcp_registry.ledger_events`` collection (Mongo already has a
+   persistent volume and the gateway already holds credentials — no new
+   component, no PG driver). A local JSONL mirror is kept for pod-log
+   shippability. The write is fire-and-forget so the request path never awaits
+   the ledger; a Mongo failure never fails the call.
 
 2. **Budget pre-check** — the hot-path "is this grant/tenant over its cap?" query.
    It reads a fast counter. This module keeps the counter abstract and ships a
@@ -13,9 +15,9 @@ Two responsibilities, deliberately split from any database driver:
    cluster-wide; the replay store proves the fail-closed pattern). The counter is
    a *derived* index over the ledger, not a second source of truth.
 
-Idempotency: the durable ledger dedups on ``(grant_jti, span_id)``. ``span_id``
-is minted here (one per call) and carried both in the JSONL line and the
-counter check, so the shipper and the aggregator agree on identity.
+Idempotency: the durable ledger dedups on ``(grant_jti, span_id)`` via a unique
+Mongo index. ``span_id`` is minted here (one per call) and carried in the JSONL
+line too, so a double-emit (gateway + resource sharing span_id) collapses.
 
 Field set matches spec ``unified-call-ledger``: run / principal / actor / tenant /
 audience / tool / outcome / rows / tokens / latency / ts / grant_jti.
@@ -62,14 +64,61 @@ def _ledger_path() -> str:
     return (os.getenv("LEDGER_SINK_PATH") or "logs/audit/ledger_events.jsonl").strip()
 
 
-def emit(event: LedgerEvent) -> None:
-    """Append one ledger line. Mirror to logger first, then best-effort file.
+MONGO_COLLECTION: str = "ledger_events"
+_mongo_index_ready = False
 
-    Never raises: a ledger I/O failure must not fail the call it records. The
-    mirrored line keeps the loss visible (and shippable from container logs).
+
+async def _ensure_mongo_index(db) -> None:
+    global _mongo_index_ready
+    if _mongo_index_ready:
+        return
+    # Idempotency: one row per (grant_jti, span_id). Unique index makes a
+    # double-emit (gateway + resource sharing span_id) collapse, not duplicate.
+    await db[MONGO_COLLECTION].create_index(
+        [("grant_jti", 1), ("span_id", 1)], unique=True, name="uniq_grant_span"
+    )
+    await db[MONGO_COLLECTION].create_index([("run", 1), ("ts", 1)], name="ix_run_ts")
+    await db[MONGO_COLLECTION].create_index([("tenant", 1), ("ts", 1)], name="ix_tenant_ts")
+    await db[MONGO_COLLECTION].create_index(
+        [("principal", 1), ("audience", 1), ("ts", 1)], name="ix_principal_aud_ts"
+    )
+    _mongo_index_ready = True
+
+
+async def _write_mongo(event: LedgerEvent) -> None:
+    """Persist one event to Mongo (durable, no new component). Best-effort."""
+    try:
+        from registry.repositories.documentdb.client import get_documentdb_client
+
+        db = await get_documentdb_client()
+        await _ensure_mongo_index(db)
+        doc = asdict(event)
+        ts = doc.get("ts")
+        if isinstance(ts, str):
+            doc["ts"] = datetime.fromisoformat(ts)
+        # ON CONFLICT-equivalent: unique index rejects a dup; swallow it (it is
+        # the resource-service side of a call we already recorded).
+        try:
+            await db[MONGO_COLLECTION].insert_one(doc)
+        except Exception as exc:  # noqa: BLE001 - DuplicateKeyError = same call twice
+            if "duplicate" not in str(exc).lower() and "E11000" not in str(exc):
+                raise
+    except Exception as exc:  # noqa: BLE001 - ledger never breaks the call
+        logger.error("ledger Mongo write failed (%s); JSONL mirror retains the event", exc)
+
+
+def emit(event: LedgerEvent) -> None:
+    """Record one ledger line: durable Mongo write + JSONL mirror.
+
+    Never raises. The Mongo write is the durable record (Mongo has a persistent
+    volume and the gateway already holds credentials); JSONL is a local mirror
+    for pod-log shippability. Mongo is written via a fire-and-forget task so the
+    request path never awaits the ledger. If Mongo fails, the JSONL line + the
+    mirrored log remain as evidence.
     """
     line = event.to_jsonl()
     logger.info("ledger: %s", line)
+    # JSONL mirror first (cheap, local, survives a Mongo blip).
     try:
         path = _ledger_path()
         parent = os.path.dirname(path)
@@ -79,6 +128,21 @@ def emit(event: LedgerEvent) -> None:
             fh.write(line + "\n")
     except OSError as exc:
         logger.error("ledger JSONL write failed (%s); event logged above", exc)
+    # Durable Mongo write, fire-and-forget on the running loop.
+    try:
+        import asyncio
+
+        loop = asyncio.get_running_loop()
+        loop.create_task(_write_mongo(event))
+    except RuntimeError:
+        # No running loop (sync context, e.g. some unit paths): best-effort
+        # synchronous run so the event is still persisted.
+        import asyncio
+
+        try:
+            asyncio.run(_write_mongo(event))
+        except Exception as exc:  # noqa: BLE001
+            logger.error("ledger Mongo write (sync path) failed: %s", exc)
 
 
 # ---------------------------------------------------------------------------
