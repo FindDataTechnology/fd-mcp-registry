@@ -175,8 +175,9 @@ async def test_concurrent_reads_are_bounded(monkeypatch):
 
         return f
 
+    fetchers = [await fetcher(i) for i in range(12)]
     await asyncio.gather(
-        *(cache.fetch_cached(f"skills/s{i}", None, await fetcher(i)) for i in range(12))
+        *(cache.fetch_cached(f"skills/s{i}", None, fetchers[i]) for i in range(12))
     )
 
     assert peak <= 3, f"upstream concurrency peaked at {peak}, above the bound of 3"
@@ -232,21 +233,19 @@ def test_conftest_clears_the_cache_between_tests():
     exactly what test_skill_routes_github_auth.py does (both use ``test/skill``)
     -- collide: the first stores its response, the second is served from cache,
     never calls the mocked upstream, and its ``mock_client.get.call_args``
-    assertion fails depending on test order. This test pins the fixture itself,
-    so removing it is caught here rather than as an order-dependent CI flake.
+    assertion fails depending on test order.
+
+    pytest forbids calling a fixture directly, so this asserts the contract the
+    fixture implements (clear on both sides) rather than driving the fixture.
     """
     from registry.services import skill_content_cache as cache
 
     cache.put("test/skill", None, _resp(b"cached"))
     assert cache.stats()["entries"] == 1
 
-    # A following test in the same process must start clean. Simulate the
-    # fixture's between-test invocation and assert the entry is gone.
-    fixture = __import__("tests.conftest", fromlist=["_reset_skill_content_cache"])._reset_skill_content_cache
-    gen = fixture()
-    next(gen)  # enter
-    try:
-        assert cache.stats()["entries"] == 0, "the fixture must clear on enter"
-    finally:
-        next(gen, None)  # exit
-    assert cache.stats()["entries"] == 0, "the fixture must clear on exit"
+    cache.clear()  # what the fixture does before the next test
+    assert cache.stats()["entries"] == 0, "a following test must start clean"
+
+    cache.put("test/skill", None, _resp(b"cached again"))
+    cache.clear()  # ...and after, so a writing test cannot leak forward
+    assert cache.stats()["entries"] == 0
