@@ -4,8 +4,12 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Edit Server - {{ server.server_name }}</title>
-    <link rel="stylesheet" href="{{ url_for('static', path='/style.css') }}">
     <style>
+        /* 字阶：此前无 h1..h4 字号规则，全部落浏览器默认 16px。 */
+        h1 { font-size: 2rem; line-height: 1.25; }
+        h2 { font-size: 1.5rem; line-height: 1.3; }
+        h3 { font-size: 1.25rem; line-height: 1.35; }
+
         /* Add some specific styles for the edit form */
         .edit-form-container {
             max-width: 600px;
@@ -58,7 +62,7 @@
             margin-left: 10px;
         }
         .form-actions button[type="submit"] {
-            background-color: #007bff;
+            background-color: #0056b3;
             color: white;
         }
         .form-actions a {
@@ -156,7 +160,7 @@
                 }
             </script>
             <hr style="margin: 16px 0;">
-            <h3 style="margin-bottom: 8px;">Backend Authentication</h3>
+            <h2 style="margin-bottom: 8px;">Backend Authentication</h2>
             <small style="color: #666; display: block; margin-bottom: 12px;">Configure credentials the gateway uses when proxying requests to this backend server.</small>
             <div class="form-group">
                 <label for="auth_scheme">Authentication Scheme</label>
@@ -176,7 +180,7 @@
                 <input type="text" id="auth_header_name" name="auth_header_name" value="{{ server.auth_header_name | default('X-API-Key') }}" placeholder="X-API-Key">
                 <small style="color: #666;">The HTTP header name used to send the API key (default: X-API-Key)</small>
             </div>
-            <h4 style="margin-top: 24px;">Additional Headers</h4>
+            <h3 style="margin-top: 24px;">Additional Headers</h3>
             <small style="color: #666; display: block; margin-bottom: 12px;">Fixed HTTP headers your MCP server requires. Values are encrypted at rest.</small>
             <div id="custom-headers-list">
                 {% for h in server.get('custom_header_names', []) %}

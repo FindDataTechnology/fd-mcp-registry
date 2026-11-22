@@ -4,8 +4,15 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Generate API Token - MCP Registry</title>
-    <link rel="stylesheet" href="{{ url_for('static', path='/style.css') }}">
     <style>
+        /* 字阶：此前没有任何 h1..h4 字号规则，全部落在浏览器默认 16px，
+           与正文同大。这一组 1.25× 起的阶梯是 impeccable 的 flat-type-hierarchy
+           判据要求的（largest adjacent step 1.00:1 → 现在 h1 2rem / h2 1.5rem /
+           h3 1.25rem / body 1rem）。 */
+        h1 { font-size: 2rem; line-height: 1.25; }
+        h2 { font-size: 1.5rem; line-height: 1.3; }
+        h3 { font-size: 1.25rem; line-height: 1.35; }
+
         .token-form {
             max-width: 800px;
             margin: 0 auto;
@@ -25,7 +32,7 @@
             border-bottom: none;
         }
 
-        .form-section h3 {
+        .form-section h2 {
             margin-bottom: 1rem;
             color: #333;
         }
@@ -67,7 +74,7 @@
 
         .scope-item {
             display: inline-block;
-            background: #007bff;
+            background: #0056b3;
             color: white;
             padding: 0.25rem 0.75rem;
             border-radius: 15px;
@@ -77,7 +84,7 @@
 
         .token-result {
             background: #f8f9fa;
-            border: 1px solid #28a745;
+            border: 1px solid #1e7e34;
             border-radius: 4px;
             padding: 1.5rem;
             margin-top: 2rem;
@@ -118,7 +125,7 @@
             position: absolute;
             top: 0.5rem;
             right: 0.5rem;
-            background: #007bff;
+            background: #0056b3;
             color: white;
             border: none;
             padding: 0.25rem 0.5rem;
@@ -146,7 +153,7 @@
         }
 
         .submit-button {
-            background: #28a745;
+            background: #1e7e34;
             color: white;
             border: none;
             padding: 1rem 2rem;
@@ -199,7 +206,7 @@
         }
 
         .breadcrumbs a {
-            color: #007bff;
+            color: #0056b3;
             text-decoration: none;
         }
 
@@ -238,7 +245,7 @@
 
         .back-button:hover {
             color: #007bff;
-            border-color: #007bff;
+            border-color: #0056b3;
             text-decoration: none;
         }
 
@@ -297,7 +304,7 @@
 
             <div class="token-form">
                 <div class="form-section">
-                    <h3>Your Current Permissions</h3>
+                    <h2>Your Current Permissions</h2>
                     <div class="current-scopes">
                         <strong>Current Scopes:</strong><br>
                         {% for scope in user_scopes %}
@@ -307,7 +314,7 @@
                     <p><em>Generated tokens can have the same or fewer permissions than your current scopes.</em></p>
 
                     <div class="usage-instructions">
-                        <h4>Token Lifetime Configuration</h4>
+                        <h3>Token Lifetime Configuration</h3>
                         <p><strong>Note:</strong> Tokens have a default short lifetime (typically 5-15 minutes) for security.</p>
                         <p>If you need longer-lived tokens for automation or extended use:</p>
                         <ul>
@@ -320,7 +327,7 @@
 
                 <form id="tokenForm">
                     <div class="form-section">
-                        <h3>Token Configuration</h3>
+                        <h2>Token Configuration</h2>
 
                         <div class="form-group">
                             <label for="description">Description (optional)</label>
@@ -338,7 +345,7 @@
                     </div>
 
                     <div class="form-section">
-                        <h3>Scope Configuration</h3>
+                        <h2>Scope Configuration</h2>
 
                         <div class="radio-group">
                             <div class="radio-option">
@@ -366,7 +373,7 @@
                 </form>
 
                 <div id="tokenResult" class="token-result">
-                    <h3>✅ Token Generated Successfully</h3>
+                    <h2>✅ Token Generated Successfully</h2>
                     <p><strong>Access Token:</strong></p>
                     <div class="token-field">
                         <span id="generatedToken" onclick="selectToken()" title="Click to select token"></span>
@@ -374,7 +381,7 @@
                     </div>
                     <div id="tokenDetails"></div>
                     <div class="usage-instructions">
-                        <h4>📋 Usage Instructions</h4>
+                        <h3>📋 Usage Instructions</h3>
                         <p>Use this token in your API requests:</p>
                         <code>Authorization: Bearer YOUR_TOKEN_HERE</code>
                         <p><small>Replace YOUR_TOKEN_HERE with the token above.</small></p>
@@ -489,7 +496,7 @@
                 if (navigator.clipboard && window.isSecureContext) {
                     await navigator.clipboard.writeText(token);
                     button.textContent = 'Copied!';
-                    button.style.backgroundColor = '#28a745';
+                    button.style.backgroundColor = '#1e7e34';
                     setTimeout(() => {
                         button.textContent = originalText;
                         button.style.backgroundColor = '';
@@ -512,7 +519,7 @@
 
                 if (successful) {
                     button.textContent = 'Copied!';
-                    button.style.backgroundColor = '#28a745';
+                    button.style.backgroundColor = '#1e7e34';
                     setTimeout(() => {
                         button.textContent = originalText;
                         button.style.backgroundColor = '';
