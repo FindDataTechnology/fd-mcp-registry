@@ -561,6 +561,28 @@ def _reset_os_environ():
 
 
 @pytest.fixture(autouse=True)
+def _reset_skill_content_cache():
+    """Clear the process-wide skill-content TTL cache around every test.
+
+    ``skill_content_cache`` (openspec: cache-skill-content-reads) keys entries by
+    ``(normalized skill path, resource)`` and lives for the whole process. Two
+    tests that exercise ``get_skill_content`` with the SAME path -- as the GitHub
+    auth tests in ``test_skill_routes_github_auth.py`` do, both using
+    ``test/skill`` -- otherwise collide: the first stores its response, the second
+    is served from cache, never calls the mocked upstream, and its assertion on
+    ``mock_client.get.call_args`` fails depending on test order. Clearing before
+    and after keeps each test's upstream expectations hermetic.
+    """
+    from registry.services import skill_content_cache
+
+    skill_content_cache.clear()
+    try:
+        yield
+    finally:
+        skill_content_cache.clear()
+
+
+@pytest.fixture(autouse=True)
 def _reset_url_guard_allowlist_caches():
     """Reset url_guard's process-wide allowlist caches around every test.
 

@@ -223,3 +223,30 @@ async def test_leader_failure_wakes_every_follower(monkeypatch):
     assert all(isinstance(r, RuntimeError) for r in results)
     assert calls == 1, "followers must await the leader, not retry the upstream"
     assert cache._INFLIGHT == {}, "a failed fetch must not leave an in-flight entry"
+
+
+def test_conftest_clears_the_cache_between_tests():
+    """The autouse fixture in tests/conftest.py must keep tests hermetic.
+
+    Without it, two tests that call ``get_skill_content`` with the same path --
+    exactly what test_skill_routes_github_auth.py does (both use ``test/skill``)
+    -- collide: the first stores its response, the second is served from cache,
+    never calls the mocked upstream, and its ``mock_client.get.call_args``
+    assertion fails depending on test order. This test pins the fixture itself,
+    so removing it is caught here rather than as an order-dependent CI flake.
+    """
+    from registry.services import skill_content_cache as cache
+
+    cache.put("test/skill", None, _resp(b"cached"))
+    assert cache.stats()["entries"] == 1
+
+    # A following test in the same process must start clean. Simulate the
+    # fixture's between-test invocation and assert the entry is gone.
+    fixture = __import__("tests.conftest", fromlist=["_reset_skill_content_cache"])._reset_skill_content_cache
+    gen = fixture()
+    next(gen)  # enter
+    try:
+        assert cache.stats()["entries"] == 0, "the fixture must clear on enter"
+    finally:
+        next(gen, None)  # exit
+    assert cache.stats()["entries"] == 0, "the fixture must clear on exit"
