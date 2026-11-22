@@ -8468,6 +8468,8 @@ async def _authorize_forwarded_mcp_body(
     server_name: str,
     request_body: bytes,
     user_scopes: list[str],
+    *,
+    is_grant: bool = False,
 ) -> None:
     """Re-authorize the caller's scopes against the EXACT body being forwarded.
 
@@ -8564,6 +8566,29 @@ async def _authorize_forwarded_mcp_body(
             detail="Access denied: no scopes configured",
             headers={"Connection": "close"},
         )
+
+    # Delegation grant: the grant's signed scope list is the authority, exactly
+    # as at /validate. A grant is not in the per-server scope documents, so the
+    # registry-scope FGAC would always deny it. We already verified aud==server
+    # at /validate (the signed audience); here we only require the grant to
+    # carry at least one scope. Blocked-tool lists and the budget gate still run
+    # downstream. Without this branch every grant call 403s on the second hop
+    # (proven by acceptance: /validate passed, this hop denied).
+    if is_grant:
+        if not user_scopes:
+            raise HTTPException(
+                status_code=403,
+                detail="Access denied: grant carries no scopes",
+                headers={"Connection": "close"},
+            )
+        logger.debug(
+            "mcp_proxy: grant authorized %s.%s (tool=%s) by signed scope, "
+            "registry-scope FGAC bypassed",
+            registered_server,
+            effective_method,
+            actual_tool_name,
+        )
+        return
 
     if not await validate_server_tool_access(
         registered_server, effective_method, actual_tool_name, user_scopes
@@ -8711,7 +8736,12 @@ async def mcp_proxy(
     # by a billing verdict. The tier gate above is the one deliberate
     # exception: it answers a question the scope check cannot (which tier),
     # and only for callers who could never pass that scope anyway.
-    await _authorize_forwarded_mcp_body(server_name, request_body, user_scopes)
+    await _authorize_forwarded_mcp_body(
+        server_name,
+        request_body,
+        user_scopes,
+        is_grant=(claims.get("auth_method") == "grant"),
+    )
 
     # wire-platform-v1 task 2.2 (patch-preflight): zero-cost sub2api quota
     # probe for callers mapped in SUB2API_CALLER_MAP, run before ANY outbound
