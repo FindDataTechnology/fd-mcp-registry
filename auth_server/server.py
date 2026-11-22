@@ -9207,10 +9207,19 @@ async def mcp_proxy(
     # never raises and never blocks. Only when the grant plane is on and this was
     # a grant-authenticated call.
     if getattr(settings, "grant_plane_enabled", False) and claims.get("auth_method") == "grant":
+        # Derive the tool label from the FORWARDED body, not claims.tool_name
+        # (that is only set for tools/call and empty for tools/list/initialize,
+        # which made the ledger's tool column blank for handshake calls).
+        _ledger_tool = ""
+        if isinstance(incoming_payload, dict):
+            _lp = incoming_payload.get("params")
+            _ln = _lp.get("name") if isinstance(_lp, dict) else None
+            _method = incoming_payload.get("method") or ""
+            _ledger_tool = f"{_method}:{_ln}" if _ln else _method
         _emit_gateway_ledger_event(
             bearer_request=request,
             server_name=server_name,
-            tool_name=claims.get("tool_name"),
+            tool_name=_ledger_tool,
             status_code=status_code,
             body_bytes=body_bytes,
             content_type=content_type,
