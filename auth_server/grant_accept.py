@@ -42,7 +42,7 @@ async def validate_grant_token(token: str) -> dict[str, Any]:
     """Verify a grant offline and return a validation_result-shaped dict.
 
     The verifier is constructed against the PUBLIC registry base so the JWKS URL
-    matches what every downstream line also uses (mcp.finddatatech.cloud/api/jwks).
+    matches what every downstream line also uses (mcp.finddatatech.cloud/.well-known/grant-jwks.json).
     Raises ValueError on any failure — the /validate caller maps that to a 401,
     the same as a bad patch key.
 
@@ -72,7 +72,7 @@ async def validate_grant_token(token: str) -> dict[str, Any]:
 
     from registry.auth.grant_verify import GrantVerifier
 
-    verifier = GrantVerifier(jwks_url=f"{base.rstrip('/')}/api/jwks", aud=aud)
+    verifier = GrantVerifier(jwks_url=f"{base.rstrip('/')}/.well-known/grant-jwks.json", aud=aud)
     try:
         claims = await verifier.verify(token)
     except JWKSUnavailable as exc:
