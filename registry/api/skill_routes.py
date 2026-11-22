@@ -61,6 +61,7 @@ from ..schemas.skill_models import (
     ToolValidationResult,
     VisibilityEnum,
 )
+from ..services import skill_content_cache
 from ..services.duplicate_check_service import get_duplicate_check_service
 from ..services.lifecycle_events import (
     EnforcedStatusError,
@@ -674,10 +675,14 @@ async def get_skill_content(
             from ..utils.url_utils import derive_resource_url
 
             resource_url = derive_resource_url(str(raw_url), resource)
-            response = await _fetch_authenticated_content(
-                resource_url,
-                skill,
-                max_size=MAX_RESOURCE_SIZE,
+            response = await skill_content_cache.fetch_cached(
+                normalized_path,
+                resource,
+                lambda: _fetch_authenticated_content(
+                    resource_url,
+                    skill,
+                    max_size=MAX_RESOURCE_SIZE,
+                ),
             )
 
             drift_task = asyncio.create_task(
@@ -692,7 +697,11 @@ async def get_skill_content(
                 "url": resource_url,
             }
 
-        response = await _fetch_authenticated_content(str(raw_url), skill)
+        response = await skill_content_cache.fetch_cached(
+            normalized_path,
+            None,
+            lambda: _fetch_authenticated_content(str(raw_url), skill),
+        )
 
         drift_task = asyncio.create_task(
             _check_drift_inline(service, normalized_path, skill, "SKILL.md", response.content)
@@ -1118,6 +1127,9 @@ async def register_skill(
 
     try:
         skill = await service.register_skill(request=request, owner=owner, validate_url=True)
+        # A re-registration of a previously deleted name must not read the old
+        # bytes still sitting in the TTL cache (cache-skill-content-reads D4).
+        skill_content_cache.invalidate(normalize_skill_path(skill.path or request.name))
         logger.info(f"Registered skill: {skill.name} by {owner}")
         if request.id is not None:
             ASSET_ID_SUPPLIED_TOTAL.labels(asset_type="skill").inc()
@@ -1299,6 +1311,11 @@ async def update_skill(
             status_code=status.HTTP_404_NOT_FOUND, detail=f"Skill not found: {normalized_path}"
         )
 
+    # Repointing skill_md_url must take effect on the very next read, not after
+    # the TTL -- stale-until-expiry is the "UI says it changed but it did not"
+    # failure that content-drift detection exists to prevent (D4).
+    skill_content_cache.invalidate(normalized_path)
+
     return updated
 
 
@@ -1405,6 +1422,8 @@ async def delete_skill(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=f"Skill not found: {normalized_path}"
         )
+
+    skill_content_cache.invalidate(normalized_path)
 
     asyncio.create_task(
         send_registration_webhook(

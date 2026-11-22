@@ -743,6 +743,25 @@ class Settings(BaseSettings):
         default="https://api.github.com",
         description="GitHub API base URL for App token exchange (for GHES: https://github.mycompany.com/api/v3)",
     )
+    skill_content_cache_ttl_seconds: int = Field(
+        default=300,
+        ge=0,
+        description=(
+            "Seconds a skill-content read stays cached in-process. Measured 2026-11-22: "
+            "the same SKILL.md re-downloaded every call cost 0.9s-30s and made batched reads "
+            "time out together. 0 disables the cache (use it when chasing drift). "
+            "See openspec change cache-skill-content-reads."
+        ),
+    )
+    skill_content_fetch_concurrency: int = Field(
+        default=8,
+        ge=1,
+        description=(
+            "Max simultaneous upstream skill-content fetches per process. A burst queues "
+            "here instead of stampeding the forge and timing out together. Does not affect "
+            "single-request latency."
+        ),
+    )
 
     # SSRF guard allowlist for server/agent targets that legitimately live on
     # private networks (e.g. self-hosted MCP servers behind Docker service DNS
