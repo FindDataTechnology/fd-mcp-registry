@@ -8872,10 +8872,13 @@ async def mcp_proxy(
                     )
                     return _egress_unavailable_response(req_id)
                 try:
-                    from auth_server.line_token_mint import (
-                        LineTokenKeyMissing,
-                        mint_line_token,
-                    )
+                    try:
+                        from line_token_mint import LineTokenKeyMissing, mint_line_token
+                    except ImportError:
+                        from auth_server.line_token_mint import (
+                            LineTokenKeyMissing,
+                            mint_line_token,
+                        )
 
                     # The verified caller sub is the shared Logto identity; carry it
                     # both as sub and logto_sub so the line resolves by the key it
