@@ -5,6 +5,7 @@ Tests the NginxConfigService for configuration generation and reload.
 """
 
 import asyncio
+import hashlib
 import re
 from unittest.mock import AsyncMock, MagicMock, mock_open, patch
 from urllib.parse import urlparse
@@ -2007,6 +2008,34 @@ def _scheduler_settings(live):
     s.deployment_mode = MagicMock()
     s.deployment_mode.value = "with-gateway"
     return s
+
+
+@pytest.mark.asyncio
+async def test_scheduler_writes_mappings_even_when_config_hash_unchanged(monkeypatch, tmp_path):
+    """A scope-only change leaves the rendered nginx config identical, so the
+    scheduler's hash short-circuit must NOT skip writing the virtual server
+    mappings (scopes live in the mapping JSON, not the nginx block)."""
+    from registry.core.nginx_service import NginxReloadScheduler
+
+    scheduler = NginxReloadScheduler(debounce_seconds=0.0, poll_external=False)
+    # Pretend the current config hash is already applied, so new_hash ==
+    # _last_config_hash and the early return would fire without the fix.
+    scheduler._last_config_hash = hashlib.sha256(b"# same config\n").hexdigest()
+
+    async def _fake_fetch():
+        return {}
+
+    commit = AsyncMock()
+    monkeypatch.setattr(nginx_module, "settings", _scheduler_settings(tmp_path / "x.conf"))
+    monkeypatch.setattr(nginx_module, "_fetch_all_enabled_servers", _fake_fetch)
+    monkeypatch.setattr(
+        nginx_module.nginx_service, "render_config", AsyncMock(return_value="# same config\n")
+    )
+    monkeypatch.setattr(nginx_module.nginx_service, "_commit_virtual_server_mappings", commit)
+
+    await scheduler._do_reload_if_changed()
+
+    commit.assert_awaited_once()
 
 
 @pytest.mark.asyncio

@@ -3093,12 +3093,18 @@ class NginxReloadScheduler:
                 if config_text is None:
                     return
 
+                # Write virtual server Lua mappings BEFORE the config-hash
+                # short-circuit. Per-server scopes (required_scopes,
+                # tool_scope_overrides) live in the mapping JSON, not in the
+                # rendered nginx location block, so a scope-only change yields an
+                # identical config hash. Gating the mapping write behind that
+                # hash skipped it, leaving the on-disk mapping stale until an
+                # unrelated change (e.g. a toggle) forced a rewrite.
+                await nginx_service._commit_virtual_server_mappings()
+
                 new_hash = hashlib.sha256(config_text.encode()).hexdigest()
                 if new_hash == self._last_config_hash:
                     return
-
-                # Config changed: write virtual server Lua mappings, then nginx config
-                await nginx_service._commit_virtual_server_mappings()
 
                 async with nginx_service.reload_lock:
                     # Validate the candidate in-tree before it can persist as
