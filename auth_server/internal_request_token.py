@@ -183,6 +183,7 @@ def mint_mcp_proxy_token(
     egress_user: str = "",
     audit_identity: dict | None = None,
     groups: list[str] | None = None,
+    oidc_sub: str = "",
 ) -> str:
     """Mint the per-request /mcp-proxy token in /validate's 200 path.
 
@@ -233,6 +234,11 @@ def mint_mcp_proxy_token(
     }
     if audit_identity:
         extra_claims["audit_identity"] = audit_identity
+    if oidc_sub:
+        # The raw OIDC sub (distinct from the human username carried in `sub`).
+        # A line_token mint signs this so the line resolves the caller by the
+        # shared Logto identity it already trusts.
+        extra_claims["oidc_sub"] = oidc_sub
     return _mint_internal_token(
         audience=MCP_PROXY_AUDIENCE,
         subject=subject,

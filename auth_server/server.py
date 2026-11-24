@@ -736,6 +736,7 @@ def _attach_mcp_proxy_token(
     audit_identity: dict | None = None,
     groups: list[str] | None = None,
     upstream_override: str | None = None,
+    oidc_sub: str = "",
 ) -> None:
     """Mint and attach the X-Internal-Token for the /mcp-proxy hop.
 
@@ -786,6 +787,7 @@ def _attach_mcp_proxy_token(
             auth_method=auth_method,
             egress_user=egress_user,
             audit_identity=audit_identity,
+            oidc_sub=oidc_sub,
         )
     except ValueError as exc:
         logger.error(f"/validate: could not mint mcp-proxy token: {exc}")
@@ -5300,6 +5302,10 @@ async def validate_request(request: Request):
             # as `rid` so that hop's token_mint record can be joined to the
             # mcp_server_access record this request writes above.
             audit_identity=_audit_identity_token_claim(validation_result, request_id),
+            # The OIDC sub (raw IdP `sub`, e.g. pih8r05mwh8w) distinct from the
+            # human `username`. A line_token mint signs this so the line resolves
+            # the customer by the shared Logto identity it already trusts.
+            oidc_sub=str((validation_result.get("data") or {}).get("sub") or ""),
         )
 
         # Generic-proxy hop token (proxied non-MCP entities). Keyed on the
@@ -8841,7 +8847,60 @@ async def mcp_proxy(
                     exc,
                 )
                 return _egress_unavailable_response(req_id)
-            if vend and vend.get("mode") == "obo_exchange":
+            if vend and vend.get("mode") == "line_token":
+                # Line token: mint a 门K token for THIS caller (the /validate-
+                # verified sub) targeting the vend-declared line, and inject it as
+                # the egress Authorization. The mint holds the line signing key;
+                # the line's backend (wire) validates it offline against the
+                # line's public key. The caller's own gateway token is stripped
+                # (never relayed); we Mint, not relay. Requires EGRESS_AUTH on
+                # (vend only happens then) and a server-declared line.
+                req_id = incoming_payload.get("id") if isinstance(incoming_payload, dict) else None
+                line_name = (vend.get("line_token_name") or "").strip().lower()
+                # Prefer the OIDC sub (the shared Logto identity the line resolves
+                # by); the token's `sub` is the human username, not wire's key.
+                caller_sub = (
+                    str((claims or {}).get("oidc_sub") or "").strip()
+                    or str((claims or {}).get("sub") or "").strip()
+                )
+                if not line_name or not caller_sub:
+                    logger.warning(
+                        "mcp_proxy: line_token server=%s missing line=%r or sub=%r; refusing",
+                        server_name,
+                        line_name,
+                        bool(caller_sub),
+                    )
+                    return _egress_unavailable_response(req_id)
+                try:
+                    from auth_server.line_token_mint import (
+                        LineTokenKeyMissing,
+                        mint_line_token,
+                    )
+
+                    # The verified caller sub is the shared Logto identity; carry it
+                    # both as sub and logto_sub so the line resolves by the key it
+                    # trusts (the Logto track) rather than an ambiguous billing id.
+                    line_tok = mint_line_token(
+                        line=line_name,
+                        subject=caller_sub,
+                        logto_sub=caller_sub,
+                    )
+                except LineTokenKeyMissing:
+                    logger.error(
+                        "mcp_proxy: line_token server=%s has no signing key for line=%s "
+                        "(fail closed)",
+                        server_name,
+                        line_name,
+                    )
+                    return _egress_unavailable_response(req_id)
+                forward_headers = {
+                    k: v
+                    for k, v in forward_headers.items()
+                    if k.lower() not in _EGRESS_STRIP_HEADERS
+                }
+                forward_headers["Authorization"] = f"Bearer {line_tok}"
+                egress_token_injected = True
+            elif vend and vend.get("mode") == "obo_exchange":
                 # OBO exchange: re-audience the user's ingress JWT to the internal
                 # MCP server's app via the gateway's OWN IdP credentials. The
                 # registry returned only the DIRECTIVE (target_audience+scopes),

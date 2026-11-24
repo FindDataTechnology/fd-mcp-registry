@@ -363,6 +363,13 @@ class EgressTokenResponse(BaseModel):
         default=None,
         description="obo_exchange: audience-scoped scopes for the exchange request.",
     )
+    # line_token directive: the target line whose 门K line token auth_server mints
+    # for the verified caller (e.g. "wire"). Returned instead of a token; the
+    # mint runs in auth_server, which holds the line signing key.
+    line_token_name: str | None = Field(
+        default=None,
+        description="line_token: the line to mint a 门K line token for (aud/source).",
+    )
     # pat: the header the vended PAT is injected into and its value prefix,
     # derived at vend time from the server's Backend Auth scheme, so mcp_proxy
     # can build "<pat_header_name>: <pat_value_prefix><PAT>" instead of the
@@ -766,7 +773,9 @@ async def vend_egress_token(
     # per-user token -- but its shared Backend Auth credential (if configured)
     # still applies, keeping the server zero-setup for every gateway user.
     egress_mode = server.get("egress_auth_mode")
-    if egress_mode not in ("oauth_user", "obo_exchange", "pat") or not server.get("egress_oauth"):
+    if egress_mode not in ("oauth_user", "obo_exchange", "pat", "line_token") or not server.get(
+        "egress_oauth"
+    ):
         return _consent_with_backend_auth(server)
 
     # The bound upstream MUST match a registered upstream for this server. This
@@ -793,7 +802,7 @@ async def vend_egress_token(
     # this is self-healing. Log it -- the previous cross-namespace fallback made
     # this failure completely invisible. obo_exchange is exempt: it is stateless,
     # never reads the vault, and the exchange keys on the raw ingress JWT.
-    if not sub and egress_mode != "obo_exchange":
+    if not sub and egress_mode not in ("obo_exchange", "line_token"):
         logger.warning(
             "egress vend: per-user auth_method %r with no egress_user claim for %s "
             "-> consent (refusing to key the vault on the token's username sub)",
@@ -832,6 +841,23 @@ async def vend_egress_token(
     # token exchange runs in auth_server (which holds the gateway's own IdP
     # credentials and the raw ingress JWT); the registry never sees the JWT and
     # holds no per-user token for this mode. Stateless -- no vault lookup.
+    # line_token: return the DIRECTIVE (line name); the actual 门K mint runs in
+    # auth_server, which holds the line signing key and the verified caller sub.
+    # Stateless -- no vault, no per-user token stored. The line must be one the
+    # directive declares; downstream mints only for that line.
+    if egress_mode == "line_token":
+        line_name = (egress_oauth.get("target_audience") or "").strip().lower()
+        if not line_name:
+            logger.warning(
+                "egress vend REFUSED: line_token server %s has no target_audience (line)",
+                server_path,
+            )
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                detail="line_token server is missing its target line",
+            )
+        return EgressTokenResponse(mode="line_token", line_token_name=line_name)
+
     if egress_mode == "obo_exchange":
         # Defense in depth: re-validate the STORED directive before vending it to
         # the exchange engine. The write path validates on persist, but a directive
