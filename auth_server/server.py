@@ -786,6 +786,11 @@ def _attach_mcp_proxy_token(
             auth_method=auth_method,
             egress_user=egress_user,
             audit_identity=audit_identity,
+            # Consumed only here, from the nginx-internal marker (set by the
+            # virtual router for credential_ref backends). A client cannot set
+            # this header: /_vs_validate force-sets it from the lua-supplied
+            # value, and the client never reaches /_vs_validate directly.
+            relay_caller_auth=request.headers.get("X-Vs-Relay-Caller-Auth", "") == "1",
         )
     except ValueError as exc:
         logger.error(f"/validate: could not mint mcp-proxy token: {exc}")
@@ -7568,6 +7573,11 @@ _INTERNAL_HOP_TOKEN_HEADERS: frozenset[str] = frozenset(
         "x-internal-token",
         "x-internal-token-generic",
         "x-internal-token-registry",
+        # Virtual-face internal markers (consumed by /validate at mint time; must
+        # never reach a registrant backend).
+        "x-vs-relay-caller-auth",
+        "x-vs-backend-path",
+        "x-vs-backend-mcp-url",
     }
 )
 
@@ -8693,7 +8703,16 @@ async def mcp_proxy(
     # Authorization (it is a same-trust-domain component). The decision keys on
     # the verified, path-validated `server` claim, never a forgeable header.
     registered_server = (claims.get("server") or "").lower()
-    relay_ingress_auth = registered_server in _INTERNAL_INGRESS_RELAY_SERVERS
+    # Relay the caller's Authorization for (a) the built-in registry-tools server
+    # (same-trust-domain), or (b) a face backend bound with relay_caller_auth in
+    # the verified token (face-passthrough-credential-relay). (b) is only ever
+    # true when /validate minted it from the nginx-internal marker, which the lua
+    # router sets from the mapping's credential_ref flag — a client cannot forge
+    # it. Keyed on the token claim, never an inbound header.
+    relay_ingress_auth = (
+        registered_server in _INTERNAL_INGRESS_RELAY_SERVERS
+        or claims.get("relay_caller_auth") is True
+    )
     forward_headers = _forward_headers(
         dict(request.headers),
         relay_authorization=relay_ingress_auth,
