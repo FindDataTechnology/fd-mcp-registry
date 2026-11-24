@@ -68,6 +68,15 @@ class TestMint:
         assert claims["aud"] == "mcp-proxy"
         assert claims["iss"] == "mcp-auth-server"
 
+    def test_mint_oidc_sub_claim(self) -> None:
+        """oidc_sub binds the raw IdP sub (distinct from the username `sub`)."""
+        off = mint_mcp_proxy_token("alice", ["s"], "srv/mcp", "https://u.example/mcp")
+        assert "oidc_sub" not in _decode_internal_token(off, audience=MCP_PROXY_AUDIENCE)
+        on = mint_mcp_proxy_token(
+            "alice", ["s"], "srv/mcp", "https://u.example/mcp", oidc_sub="pih8r05mwh8w"
+        )
+        assert _decode_internal_token(on, audience=MCP_PROXY_AUDIENCE)["oidc_sub"] == "pih8r05mwh8w"
+
     def test_mint_empty_subject_raises(self) -> None:
         # An empty subject would mint an anonymous-but-valid token; refuse so the
         # proxy fails closed instead of trusting "".
