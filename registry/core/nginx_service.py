@@ -2203,19 +2203,18 @@ map "$uri:$http_x_mcp_server_version" $versioned_backend {{
                 # Route the backend subrequest through the auth-server mcp-proxy
                 # hop so it injects the server-level (or per-user) backend
                 # credential, exactly like a top-level server location. Proxying
-                # the backend directly with `Authorization ""` left every
-                # backend that needs its own token returning 401 through a
-                # virtual face (tools/list aggregated, tools/call 401'd).
+                # the backend directly with `Authorization ""` left every backend
+                # that needs its own token returning 401 through a virtual face.
                 #
                 # The mcp-proxy hop requires a /validate-minted internal token
-                # bound to THIS backend. We mint it here, not via the shared
-                # `location = /validate` (which hardcodes X-Original-URL to the
-                # incoming $request_uri = /_vs_backend_*). Instead the dedicated
-                # `location = /_vs_validate` (emitted once below) reads the vars
-                # this block sets ($vs_backend_path / $vs_backend_mcp_url). A
-                # location-scope `set` reaches the auth_request subrequest the
-                # same way the top-level block's `set $backend_url` reaches the
-                # shared /validate.
+                # bound to THIS backend. virtual_router.lua mints it: before the
+                # backend capture it sets X-Vs-Backend-Path / X-Vs-Backend-Mcp-Url
+                # as request headers and captures /_vs_validate, reads the returned
+                # X-Internal-Token, and sets it as X-Internal-Token on the request.
+                # Request headers survive into subrequests; location-scope `set`
+                # vars do not (they are clobbered in the auth subrequest), which is
+                # why the mint is driven by headers, not `set`. This block just
+                # forwards the token lua provided.
                 backend_name = backend_path.strip("/")
                 mcp_proxy_target = f"{settings.auth_server_url}/mcp-proxy/{backend_name}/"
                 resolver_directive = ""
@@ -2229,15 +2228,10 @@ map "$uri:$http_x_mcp_server_version" $versioned_backend {{
 
                 proxy_directive = (
                     f"{resolver_directive}"
-                    f'        set $vs_backend_path "/{backend_name}";\n'
-                    f'        set $vs_backend_mcp_url "{safe_mcp_proxy_url}";\n'
-                    f"        # Mint the per-backend mcp-proxy token, then forward to\n"
-                    f"        # the mcp-proxy hop carrying it. The hop injects the\n"
-                    f"        # backend credential; the caller's credential stays\n"
-                    f"        # stripped (Authorization cleared below).\n"
-                    f"        auth_request /_vs_validate;\n"
-                    f"        auth_request_set $vs_internal_token $upstream_http_x_internal_token;\n"
-                    f"        proxy_set_header X-Internal-Token $vs_internal_token;\n"
+                    f"        # X-Internal-Token is set by virtual_router.lua from the\n"
+                    f"        # /_vs_validate mint (bound to this backend). Forward it to\n"
+                    f"        # the mcp-proxy hop, which injects the backend credential.\n"
+                    f"        proxy_set_header X-Internal-Token $http_x_internal_token;\n"
                     f"        proxy_set_header X-Upstream-Url {safe_mcp_proxy_url};\n"
                     f"        proxy_pass {mcp_proxy_target};"
                 )
@@ -2319,6 +2313,20 @@ map "$uri:$http_x_mcp_server_version" $versioned_backend {{
                     description = tm.description_override or ""
                     input_schema: dict[str, Any] = {}
 
+                    # The backend's MCP endpoint URL, used by virtual_router.lua to
+                    # mint the per-backend mcp-proxy token (bound to this exact
+                    # upstream). Derived the same way the location block computes
+                    # mcp_proxy_url so the minted token and the forwarded request
+                    # agree.
+                    backend_mcp_url = ""
+                    if server_info:
+                        _ppu = server_info.get("proxy_pass_url", "") or ""
+                        if _ppu:
+                            _ep = get_endpoint_url_from_server_info(server_info)
+                            _epath = urlparse(_ep).path.rstrip("/")
+                            _pp = urlparse(_ppu)
+                            backend_mcp_url = f"{_pp.scheme}://{_pp.netloc}{_epath}"
+
                     if server_info:
                         server_tools = server_info.get("tool_list", [])
                         for st in server_tools:
@@ -2340,6 +2348,8 @@ map "$uri:$http_x_mcp_server_version" $versioned_backend {{
                             "inputSchema": input_schema,
                             "backend_location": backend_location,
                             "backend_version": tm.backend_version,
+                            "backend_mcp_url": backend_mcp_url,
+                            "backend_name": tm.backend_server_path.strip("/"),
                             "required_scopes": required_scopes,
                         }
                     )
@@ -2348,6 +2358,8 @@ map "$uri:$http_x_mcp_server_version" $versioned_backend {{
                         "backend_location": backend_location,
                         "original_name": tm.tool_name,
                         "backend_version": tm.backend_version,
+                        "backend_mcp_url": backend_mcp_url,
+                        "backend_name": tm.backend_server_path.strip("/"),
                     }
 
                 mapping_data = {

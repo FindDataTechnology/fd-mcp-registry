@@ -193,15 +193,12 @@ class TestGenerateVirtualBackendLocations:
 
         assert "/_vs_backend" in result
         assert "internal;" in result
-        # Backend calls are routed through the auth-server mcp-proxy hop (so it
-        # injects the backend credential) rather than proxied directly to the
-        # backend, which left every credential-gated backend returning 401.
+        # Backend calls route through the auth-server mcp-proxy hop (which injects
+        # the backend credential) rather than proxied directly, which left every
+        # credential-gated backend returning 401. The mcp-proxy token is minted by
+        # virtual_router.lua and arrives as the X-Internal-Token request header.
         assert "/mcp-proxy/github/" in result
-        assert "auth_request /_vs_validate;" in result
-        assert "proxy_set_header X-Internal-Token $vs_internal_token;" in result
-        # The backend URL rides in the variable + X-Upstream-Url, not a literal
-        # proxy_pass.
-        assert 'set $vs_backend_mcp_url "https://api.github.com/mcp";' in result
+        assert "proxy_set_header X-Internal-Token $http_x_internal_token;" in result
         assert "proxy_set_header X-Upstream-Url https://api.github.com/mcp;" in result
         # A resolvable host needs no resolver directive.
         assert "resolver " not in result
@@ -219,7 +216,7 @@ class TestGenerateVirtualBackendLocations:
         service = NginxConfigService()
         result = await service._generate_virtual_backend_locations([vs])
 
-        assert 'set $vs_backend_mcp_url "https://insights.example.com/mcp/http";' in result
+        assert "proxy_set_header X-Upstream-Url https://insights.example.com/mcp/http;" in result
         assert "/mcp/http/mcp" not in result
 
     @pytest.mark.asyncio
@@ -236,7 +233,10 @@ class TestGenerateVirtualBackendLocations:
         service = NginxConfigService()
         result = await service._generate_virtual_backend_locations([vs])
 
-        assert 'set $vs_backend_mcp_url "http://insights-service:8000/custom/mcp/http";' in result
+        assert (
+            "proxy_set_header X-Upstream-Url http://insights-service:8000/custom/mcp/http;"
+            in result
+        )
         assert "public.example.com" not in result
 
     @pytest.mark.asyncio
@@ -314,8 +314,8 @@ class TestGenerateVirtualBackendLocations:
         # Resolver + variable form means nginx resolves at request time, turning an
         # unresolvable backend into a per-request 502 instead of a startup crash.
         assert "resolver " in result
-        assert 'set $vs_backend_mcp_url "http://currenttime-server:8000/mcp";' in result
-        # Routed through the mcp-proxy hop (backend URL carried in the var).
+        assert "proxy_set_header X-Upstream-Url http://currenttime-server:8000/mcp;" in result
+        # Routed through the mcp-proxy hop (backend URL carried in X-Upstream-Url).
         assert "/mcp-proxy/github/" in result
 
     @pytest.mark.asyncio

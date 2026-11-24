@@ -745,6 +745,49 @@ end
 
 -- Proxy a single request to a specific backend with session management and stale retry.
 -- Returns the response body directly. Used for tools/call, resources/read, prompts/get.
+-- Mint the per-backend mcp-proxy token so the backend call can route through the
+-- auth-server mcp-proxy hop (which injects the backend credential). The token is
+-- bound to (backend name, backend MCP url); it is requested from the internal
+-- /_vs_validate route, which forwards these as the /validate X-Original-URL /
+-- X-Resolved-Upstream that mint the token. We pass them as REQUEST HEADERS
+-- (X-Vs-Backend-Path / X-Vs-Backend-Mcp-Url) because location-scope `set` vars
+-- are clobbered inside the nested auth subrequest, while request headers survive.
+-- Returns the token string, or nil when the mint fails.
+local function _mint_backend_token(backend_name, backend_mcp_url)
+    if not backend_name or backend_name == "" or not backend_mcp_url or backend_mcp_url == "" then
+        return nil
+    end
+    -- Carry the caller's auth so /validate can identify the user. These headers
+    -- are the ones the incoming client request already holds; set them explicitly
+    -- on the capture (subrequests do not inherit the parent's headers).
+    local hdrs = {
+        ["X-Vs-Backend-Path"] = "/" .. backend_name,
+        ["X-Vs-Backend-Mcp-Url"] = backend_mcp_url,
+        ["Content-Type"] = "application/json",
+    }
+    local auth = ngx.var.http_authorization
+    if auth and auth ~= "" then hdrs["Authorization"] = auth end
+    local xauth = ngx.var.http_x_authorization
+    if xauth and xauth ~= "" then hdrs["X-Authorization"] = xauth end
+
+    local res = ngx.location.capture("/_vs_validate", {
+        method = ngx.HTTP_GET,
+        headers = hdrs,
+    })
+    if not res or res.status ~= 200 then
+        ngx.log(ngx.ERR, "virtual-face token mint failed for ", backend_name,
+            ": status=", res and res.status or "nil")
+        return nil
+    end
+    local tok = res.header["X-Internal-Token"] or res.header["x-internal-token"]
+    if not tok or tok == "" then
+        ngx.log(ngx.ERR, "virtual-face token mint returned no X-Internal-Token for ", backend_name)
+        return nil
+    end
+    return tok
+end
+
+
 local function _proxy_to_backend(request_id, method_name, proxied_params,
                                   backend_location, client_session_id, server_id,
                                   backend_version, label)
@@ -1001,6 +1044,17 @@ local function _handle_tools_call(request_id, mapping, params, user_scopes_str, 
         ngx.status = 200
         ngx.say(_jsonrpc_error(request_id, -32603, "No backend location for tool: " .. tool_name))
         return
+    end
+
+    -- Mint the per-backend mcp-proxy token so the backend call routes through the
+    -- auth-server mcp-proxy hop (which injects the backend credential). Set it as
+    -- a request header; the _vs_backend_* location forwards $http_x_internal_token
+    -- to the hop. On failure we still proxy, but the backend will 401 as before.
+    local backend_token = _mint_backend_token(tool_info.backend_name, tool_info.backend_mcp_url)
+    if backend_token then
+        ngx.req.set_header("X-Internal-Token", backend_token)
+    else
+        ngx.req.clear_header("X-Internal-Token")
     end
 
     -- Build the proxied params with original tool name
