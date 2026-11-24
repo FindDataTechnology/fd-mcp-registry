@@ -1,5 +1,10 @@
 """Unit tests for the face manifest importer's pure planner (capability ``tool-face``)."""
 
+from unittest.mock import AsyncMock, patch
+
+import pytest
+
+from registry.exceptions import VirtualServerValidationError
 from registry.schemas.face_manifest import BrandPolicy, FaceManifest, ToolSelection
 from registry.schemas.virtual_server_models import (
     ToolMapping,
@@ -139,3 +144,45 @@ def test_reconcile_stale_face_is_drift():
     r = reconcile_face(m, current)
     assert r.drift is True
     assert r.reason == "stale"
+
+
+# --- closure: a face's (server, tool) must exist in the backend tool surface ---
+
+
+@pytest.mark.asyncio
+async def test_face_mappings_closed_against_backend_index():
+    """A face mapping to a tool the backend does not expose is rejected by name.
+
+    The importer reuses VirtualServerService._validate_tool_mappings; this pins
+    that a face whose backend lacks the tool fails closure validation and names
+    the offending server.
+    """
+    from registry.services.virtual_server_service import VirtualServerService
+
+    manifest = _manifest(
+        tools=[
+            ToolSelection(
+                backend="/wire-ops-mcp",
+                tool_name="does_not_exist",
+                alias="does_not_exist",
+            )
+        ]
+    )
+    server_repo = AsyncMock()
+    server_repo.get.return_value = {
+        "server_name": "wire-ops",
+        "tool_list": [{"name": "wire_demands_list", "description": ""}],
+    }
+    with (
+        patch(
+            "registry.services.virtual_server_service.get_virtual_server_repository",
+            return_value=AsyncMock(),
+        ),
+        patch(
+            "registry.services.virtual_server_service.get_server_repository",
+            return_value=server_repo,
+        ),
+    ):
+        service = VirtualServerService()
+        with pytest.raises(VirtualServerValidationError, match="not found in backend"):
+            await service._validate_tool_mappings(_manifest_tool_mappings(manifest))
