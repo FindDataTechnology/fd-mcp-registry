@@ -72,6 +72,7 @@ def mint_line_token(
     line: str,
     subject: str,
     email: str | None = None,
+    logto_sub: str | None = None,
     ttl_seconds: int = LINE_TOKEN_TTL_SECONDS,
     now: float | None = None,
 ) -> str:
@@ -115,5 +116,10 @@ def mint_line_token(
     }
     if email:
         claims["email"] = str(email)
+    # Optional shared-identity claim: a line that prefers the platform Logto sub
+    # (wire) resolves the customer by it, the same key the Logto track trusts.
+    ls = (logto_sub or "").strip()
+    if ls:
+        claims["logto_sub"] = ls
     headers = {"kid": kid, "typ": "JWT"}
     return pyjwt.encode(claims, private_key, algorithm="ES256", headers=headers)
