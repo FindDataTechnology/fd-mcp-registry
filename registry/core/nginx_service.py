@@ -2200,18 +2200,6 @@ map "$uri:$http_x_mcp_server_version" $versioned_backend {{
                 safe_mcp_proxy_url = self._sanitize_for_nginx_set(mcp_proxy_url)
                 safe_upstream_host = self._sanitize_for_nginx_set(upstream_host)
 
-                # Pass-through backends (metadata.credential_ref set) need the
-                # CALLER's own credential, so this location forwards
-                # $http_authorization; every other backend keeps the strip-
-                # and-inject-shared model. The value is bound into the mcp-proxy
-                # token (see _vs_validate), so forwarding is only honored when the
-                # gateway minted a relay-capable token for this exact backend.
-                _backend_relay = bool((server_info or {}).get("metadata", {}).get("credential_ref"))
-                if _backend_relay:
-                    auth_set_header = "proxy_set_header Authorization $http_authorization;"
-                else:
-                    auth_set_header = 'proxy_set_header Authorization "";'
-
                 # Route the backend subrequest through the auth-server mcp-proxy
                 # hop so it injects the server-level (or per-user) backend
                 # credential, exactly like a top-level server location. Proxying
@@ -2257,12 +2245,11 @@ map "$uri:$http_x_mcp_server_version" $versioned_backend {{
         # Host is the mcp-proxy target (auth-server); the backend host rides in
         # X-Upstream-Url and is cryptographically bound into the internal token.
         proxy_set_header Host {safe_upstream_host};
-        # Credential policy by backend model: a pass-through backend
-        # (credential_ref) receives the caller's own Authorization; everyone else
-        # has it stripped and the mcp-proxy hop injects the shared backend
-        # credential. Forwarding is gated by the mcp-proxy token claim, so a
-        # forged header cannot turn it on for a shared-credential backend.
-        {auth_set_header}
+        # SECURITY: never relay the caller's registry credential to the backend.
+        # The auth-server mcp-proxy hop injects the backend's own credential
+        # downstream; the caller's gateway bearer / session cookie never leaves
+        # this hop.
+        proxy_set_header Authorization "";
         proxy_set_header Cookie "";
         # Forward the validated caller identity so backends can attribute
         # write operations to the authenticated user.  These are set as
@@ -2340,16 +2327,6 @@ map "$uri:$http_x_mcp_server_version" $versioned_backend {{
                             _pp = urlparse(_ppu)
                             backend_mcp_url = f"{_pp.scheme}://{_pp.netloc}{_epath}"
 
-                    # A backend that declares metadata.credential_ref expects the
-                    # CALLER's own per-user credential (pass-through; e.g. the wire
-                    # line's Logto ID token), not the gateway's shared one. Flag it
-                    # so virtual_router.lua requests a pass-through-capable token
-                    # and _vs_backend forwards the caller's Authorization. Backends
-                    # without credential_ref keep the strip-and-inject-shared model.
-                    relay_caller_auth = bool(
-                        (server_info or {}).get("metadata", {}).get("credential_ref")
-                    )
-
                     if server_info:
                         server_tools = server_info.get("tool_list", [])
                         for st in server_tools:
@@ -2373,7 +2350,6 @@ map "$uri:$http_x_mcp_server_version" $versioned_backend {{
                             "backend_version": tm.backend_version,
                             "backend_mcp_url": backend_mcp_url,
                             "backend_name": tm.backend_server_path.strip("/"),
-                            "relay_caller_auth": relay_caller_auth,
                             "required_scopes": required_scopes,
                         }
                     )
@@ -2384,7 +2360,6 @@ map "$uri:$http_x_mcp_server_version" $versioned_backend {{
                         "backend_version": tm.backend_version,
                         "backend_mcp_url": backend_mcp_url,
                         "backend_name": tm.backend_server_path.strip("/"),
-                        "relay_caller_auth": relay_caller_auth,
                     }
 
                 mapping_data = {

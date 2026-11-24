@@ -753,7 +753,7 @@ end
 -- (X-Vs-Backend-Path / X-Vs-Backend-Mcp-Url) because location-scope `set` vars
 -- are clobbered inside the nested auth subrequest, while request headers survive.
 -- Returns the token string, or nil when the mint fails.
-local function _mint_backend_token(backend_name, backend_mcp_url, relay_caller_auth)
+local function _mint_backend_token(backend_name, backend_mcp_url)
     if not backend_name or backend_name == "" or not backend_mcp_url or backend_mcp_url == "" then
         return nil
     end
@@ -765,14 +765,6 @@ local function _mint_backend_token(backend_name, backend_mcp_url, relay_caller_a
         ["X-Vs-Backend-Mcp-Url"] = backend_mcp_url,
         ["Content-Type"] = "application/json",
     }
-    -- A pass-through backend (mapping relay_caller_auth) asks /validate to mint a
-    -- token that permits relaying the caller's own credential to it. The marker is
-    -- an internal hop header consumed by /validate; the resulting claim in the
-    -- signed token is what actually authorizes the egress relay (a forgeable
-    -- header on the client request cannot reach this point).
-    if relay_caller_auth then
-        hdrs["X-Vs-Relay-Caller-Auth"] = "1"
-    end
     local auth = ngx.var.http_authorization
     if auth and auth ~= "" then hdrs["Authorization"] = auth end
     local xauth = ngx.var.http_x_authorization
@@ -1058,8 +1050,7 @@ local function _handle_tools_call(request_id, mapping, params, user_scopes_str, 
     -- auth-server mcp-proxy hop (which injects the backend credential). Set it as
     -- a request header; the _vs_backend_* location forwards $http_x_internal_token
     -- to the hop. On failure we still proxy, but the backend will 401 as before.
-    local backend_token = _mint_backend_token(
-        tool_info.backend_name, tool_info.backend_mcp_url, tool_info.relay_caller_auth)
+    local backend_token = _mint_backend_token(tool_info.backend_name, tool_info.backend_mcp_url)
     if backend_token then
         ngx.req.set_header("X-Internal-Token", backend_token)
     else

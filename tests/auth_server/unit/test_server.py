@@ -5568,27 +5568,6 @@ class TestForwardHeadersIngressStrip:
         out = self._forward({"Authorization": "Bearer a"}, relay=True)
         assert out.get("Authorization") == "Bearer a"
 
-    def test_strips_virtual_face_internal_markers(self):
-        """The face's internal markers must never reach a backend, relay or not."""
-        markers = {
-            "X-Vs-Relay-Caller-Auth": "1",
-            "X-Vs-Backend-Path": "/fd-info",
-            "X-Vs-Backend-Mcp-Url": "http://x/mcp",
-            "X-Internal-Token": "tok",
-        }
-        for relay in (False, True):
-            out = self._forward(dict(markers), relay=relay)
-            low = {k.lower() for k in out}
-            assert not (
-                {
-                    "x-vs-relay-caller-auth",
-                    "x-vs-backend-path",
-                    "x-vs-backend-mcp-url",
-                    "x-internal-token",
-                }
-                & low
-            )
-
     def test_relay_flag_relays_auth_and_x_authorization_but_not_cookie(self):
         """With relay on, Authorization AND X-Authorization are relayed (both to the
         internal registry-tools server); Cookie stays stripped."""

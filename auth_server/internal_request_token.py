@@ -183,7 +183,6 @@ def mint_mcp_proxy_token(
     egress_user: str = "",
     audit_identity: dict | None = None,
     groups: list[str] | None = None,
-    relay_caller_auth: bool = False,
 ) -> str:
     """Mint the per-request /mcp-proxy token in /validate's 200 path.
 
@@ -234,14 +233,6 @@ def mint_mcp_proxy_token(
     }
     if audit_identity:
         extra_claims["audit_identity"] = audit_identity
-    # Pass-through relay authorization (face-passthrough-credential-relay): when
-    # the target backend is a credential_ref backend, /validate was told so via
-    # the nginx-internal X-Vs-Relay-Caller-Auth marker (set only by the lua
-    # router from the mapping, never by a client). Binding it into the signed
-    # token is what lets mcp_proxy relay the caller's own Authorization to that
-    # backend; a forgeable client header cannot set this claim.
-    if relay_caller_auth:
-        extra_claims["relay_caller_auth"] = True
     return _mint_internal_token(
         audience=MCP_PROXY_AUDIENCE,
         subject=subject,

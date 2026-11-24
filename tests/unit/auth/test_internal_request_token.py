@@ -68,21 +68,6 @@ class TestMint:
         assert claims["aud"] == "mcp-proxy"
         assert claims["iss"] == "mcp-auth-server"
 
-    def test_mint_relay_caller_auth_claim(self) -> None:
-        """relay_caller_auth=True binds a claim; default omits it (no relay)."""
-        tok_off = mint_mcp_proxy_token("alice", ["s"], "wire-ops-mcp/mcp", "https://u.example/mcp")
-        off = _decode_internal_token(tok_off, audience=MCP_PROXY_AUDIENCE)
-        assert "relay_caller_auth" not in off
-        tok_on = mint_mcp_proxy_token(
-            "alice",
-            ["s"],
-            "wire-ops-mcp/mcp",
-            "https://u.example/mcp",
-            relay_caller_auth=True,
-        )
-        on = _decode_internal_token(tok_on, audience=MCP_PROXY_AUDIENCE)
-        assert on["relay_caller_auth"] is True
-
     def test_mint_empty_subject_raises(self) -> None:
         # An empty subject would mint an anonymous-but-valid token; refuse so the
         # proxy fails closed instead of trusting "".
