@@ -1,0 +1,12 @@
+# Fixture face manifest used by the loader tests. Not a real deployment face.
+face: test-face
+server_name: Test Face
+audience: test
+exposure: internal
+tools:
+  - backend: /fd-info
+    tool_name: search_info
+    alias: search_info
+  - backend: /fd-info
+    tool_name: get_item
+    alias: info_get_item

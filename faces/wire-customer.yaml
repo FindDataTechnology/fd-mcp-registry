@@ -1,0 +1,109 @@
+# Wire customer face: the paying-customer tool surface for the Wire (柏讯) line,
+# served at /virtual/wire-customer. It aggregates the Wire operation/build MCPs,
+# the info-stream index, and the business MCP (branded shared reads plus domain
+# federation) into one stable entry so a customer agent connects once instead of
+# to four servers.
+#
+# Shared read tools (read / ai_search / graph_search / list_concepts) are served
+# by the business backend with finddata branding, so the face references the
+# business tools rather than the open-data originals. This is the brand policy
+# realized by backend choice (see design D3).
+face: wire-customer
+server_name: Wire Customer
+description: "Paying-customer tool surface for the Wire line: demands, datasets, market, artifacts, info stream, and domain federation."
+audience: paying-customer
+exposure: commercial
+brand_policy:
+  strip_provenance: true
+  brand: finddata
+required_scopes:
+  - mcp-wire-execute
+is_enabled: false
+tools:
+  - {backend: /wire-ops-mcp, tool_name: wire_action_list, alias: wire_action_list}
+  - {backend: /wire-ops-mcp, tool_name: wire_action_propose, alias: wire_action_propose}
+  - {backend: /wire-ops-mcp, tool_name: wire_action_status, alias: wire_action_status}
+  - {backend: /wire-ops-mcp, tool_name: wire_claim_resolve, alias: wire_claim_resolve}
+  - {backend: /wire-ops-mcp, tool_name: wire_content_browse, alias: wire_content_browse}
+  - {backend: /wire-ops-mcp, tool_name: wire_content_search, alias: wire_content_search}
+  - {backend: /wire-ops-mcp, tool_name: wire_dataset_aggregate, alias: wire_dataset_aggregate}
+  - {backend: /wire-ops-mcp, tool_name: wire_dataset_query, alias: wire_dataset_query}
+  - {backend: /wire-ops-mcp, tool_name: wire_dataset_rows, alias: wire_dataset_rows}
+  - {backend: /wire-ops-mcp, tool_name: wire_datasets_list, alias: wire_datasets_list}
+  - {backend: /wire-ops-mcp, tool_name: wire_demand_read, alias: wire_demand_read}
+  - {backend: /wire-ops-mcp, tool_name: wire_demand_submit, alias: wire_demand_submit}
+  - {backend: /wire-ops-mcp, tool_name: wire_demands_list, alias: wire_demands_list}
+  - {backend: /wire-ops-mcp, tool_name: wire_market_browse, alias: wire_market_browse}
+  - {backend: /wire-ops-mcp, tool_name: wire_market_subscribe, alias: wire_market_subscribe}
+  - {backend: /wire-ops-mcp, tool_name: wire_market_unsubscribe, alias: wire_market_unsubscribe}
+  - {backend: /wire-ops-mcp, tool_name: wire_object_get, alias: wire_object_get}
+  - {backend: /wire-ops-mcp, tool_name: wire_object_relations, alias: wire_object_relations}
+  - {backend: /wire-ops-mcp, tool_name: wire_object_search, alias: wire_object_search}
+  - {backend: /wire-ops-mcp, tool_name: wire_pack_subscribe, alias: wire_pack_subscribe}
+  - {backend: /wire-ops-mcp, tool_name: wire_pack_unsubscribe, alias: wire_pack_unsubscribe}
+  - {backend: /wire-ops-mcp, tool_name: wire_packs_list, alias: wire_packs_list}
+  - {backend: /wire-ops-mcp, tool_name: wire_self_action_list, alias: wire_self_action_list}
+  - {backend: /wire-ops-mcp, tool_name: wire_self_action_propose, alias: wire_self_action_propose}
+  - {backend: /wire-ops-mcp, tool_name: wire_self_action_status, alias: wire_self_action_status}
+  - {backend: /wire-ops-mcp, tool_name: wire_subject_add_channel, alias: wire_subject_add_channel}
+  - {backend: /wire-ops-mcp, tool_name: wire_subject_archive, alias: wire_subject_archive}
+  - {backend: /wire-ops-mcp, tool_name: wire_subject_create, alias: wire_subject_create}
+  - {backend: /wire-ops-mcp, tool_name: wire_subject_get, alias: wire_subject_get}
+  - {backend: /wire-ops-mcp, tool_name: wire_subject_list, alias: wire_subject_list}
+  - {backend: /wire-ops-mcp, tool_name: wire_subject_read, alias: wire_subject_read}
+  - {backend: /wire-ops-mcp, tool_name: wire_subject_remove_channel, alias: wire_subject_remove_channel}
+  - {backend: /wire-ops-mcp, tool_name: wire_subject_snapshot, alias: wire_subject_snapshot}
+  - {backend: /wire-build-mcp, tool_name: wire_artifact_archive, alias: wire_artifact_archive}
+  - {backend: /wire-build-mcp, tool_name: wire_artifact_form_create, alias: wire_artifact_form_create}
+  - {backend: /wire-build-mcp, tool_name: wire_artifact_get, alias: wire_artifact_get}
+  - {backend: /wire-build-mcp, tool_name: wire_artifact_list, alias: wire_artifact_list}
+  - {backend: /wire-build-mcp, tool_name: wire_artifact_publish, alias: wire_artifact_publish}
+  - {backend: /wire-build-mcp, tool_name: wire_artifact_record_view_create, alias: wire_artifact_record_view_create}
+  - {backend: /wire-build-mcp, tool_name: wire_artifact_restore, alias: wire_artifact_restore}
+  - {backend: /wire-build-mcp, tool_name: wire_artifact_update, alias: wire_artifact_update}
+  - {backend: /wire-build-mcp, tool_name: wire_dataset_correct, alias: wire_dataset_correct}
+  - {backend: /wire-build-mcp, tool_name: wire_dataset_correction_revert, alias: wire_dataset_correction_revert}
+  - {backend: /wire-build-mcp, tool_name: wire_dataset_corrections_list, alias: wire_dataset_corrections_list}
+  - {backend: /wire-build-mcp, tool_name: wire_dataset_create, alias: wire_dataset_create}
+  - {backend: /wire-build-mcp, tool_name: wire_dataset_export, alias: wire_dataset_export}
+  - {backend: /wire-build-mcp, tool_name: wire_dataset_rows_read, alias: wire_dataset_rows_read}
+  - {backend: /wire-build-mcp, tool_name: wire_dataset_schema, alias: wire_dataset_schema}
+  - {backend: /fd-info, tool_name: get_item, alias: info_get_item}
+  - {backend: /fd-info, tool_name: list_since, alias: info_list_since}
+  - {backend: /fd-info, tool_name: locate_evidence, alias: info_locate_evidence}
+  - {backend: /fd-info, tool_name: search_info, alias: info_search_info}
+  - {backend: /fd-info, tool_name: stream_health, alias: info_stream_health}
+  - {backend: /fd-find-data-business-mcp, tool_name: ai_search, alias: ai_search}
+  - {backend: /fd-find-data-business-mcp, tool_name: city_read, alias: city_read}
+  - {backend: /fd-find-data-business-mcp, tool_name: city_search_variables, alias: city_search_variables}
+  - {backend: /fd-find-data-business-mcp, tool_name: daas_get_entity, alias: daas_get_entity}
+  - {backend: /fd-find-data-business-mcp, tool_name: daas_get_function_detail, alias: daas_get_function_detail}
+  - {backend: /fd-find-data-business-mcp, tool_name: daas_get_indicator, alias: daas_get_indicator}
+  - {backend: /fd-find-data-business-mcp, tool_name: daas_list_indicators, alias: daas_list_indicators}
+  - {backend: /fd-find-data-business-mcp, tool_name: daas_list_rules, alias: daas_list_rules}
+  - {backend: /fd-find-data-business-mcp, tool_name: daas_list_sources, alias: daas_list_sources}
+  - {backend: /fd-find-data-business-mcp, tool_name: daas_search_entities, alias: daas_search_entities}
+  - {backend: /fd-find-data-business-mcp, tool_name: daas_search_functions, alias: daas_search_functions}
+  - {backend: /fd-find-data-business-mcp, tool_name: graph_search, alias: graph_search}
+  - {backend: /fd-find-data-business-mcp, tool_name: gta_read, alias: gta_read}
+  - {backend: /fd-find-data-business-mcp, tool_name: gta_search_variables, alias: gta_search_variables}
+  - {backend: /fd-find-data-business-mcp, tool_name: guide_cases_read, alias: guide_cases_read}
+  - {backend: /fd-find-data-business-mcp, tool_name: guide_cases_search, alias: guide_cases_search}
+  - {backend: /fd-find-data-business-mcp, tool_name: ia35_company_search, alias: ia35_company_search}
+  - {backend: /fd-find-data-business-mcp, tool_name: ia35_reg_counts_read, alias: ia35_reg_counts_read}
+  - {backend: /fd-find-data-business-mcp, tool_name: indicator_series_read, alias: indicator_series_read}
+  - {backend: /fd-find-data-business-mcp, tool_name: law_read, alias: law_read}
+  - {backend: /fd-find-data-business-mcp, tool_name: law_search, alias: law_search}
+  - {backend: /fd-find-data-business-mcp, tool_name: legal_docs_read, alias: legal_docs_read}
+  - {backend: /fd-find-data-business-mcp, tool_name: legal_docs_search, alias: legal_docs_search}
+  - {backend: /fd-find-data-business-mcp, tool_name: list_concepts, alias: list_concepts}
+  - {backend: /fd-find-data-business-mcp, tool_name: read, alias: read}
+  - {backend: /fd-find-data-business-mcp, tool_name: read_range, alias: read_range}
+  - {backend: /fd-find-data-business-mcp, tool_name: registry_coverage, alias: registry_coverage}
+  - {backend: /fd-find-data-business-mcp, tool_name: wb_read, alias: wb_read}
+  - {backend: /fd-find-data-business-mcp, tool_name: wb_search_indicators, alias: wb_search_indicators}
+  - {backend: /fd-find-data-business-mcp, tool_name: wenshu_read, alias: wenshu_read}
+  - {backend: /fd-find-data-business-mcp, tool_name: wenshu_search, alias: wenshu_search}
+  - {backend: /fd-find-data-business-mcp, tool_name: yearbook_read, alias: yearbook_read}
+  - {backend: /fd-find-data-business-mcp, tool_name: yearbook_regions, alias: yearbook_regions}
+  - {backend: /fd-find-data-business-mcp, tool_name: yearbook_search_indicators, alias: yearbook_search_indicators}
