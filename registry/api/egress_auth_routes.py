@@ -1156,6 +1156,23 @@ async def configure_egress_auth(
         # time (see _derive_pat_inject_header), since it is the same upstream.
         server["egress_auth_mode"] = "pat"
         server["egress_oauth"] = {"provider": provider, "scopes": body.scopes or []}
+    elif body.egress_auth_mode == "line_token":
+        # line_token: the gateway mints a per-line 门K token for the caller at the
+        # mcp-proxy hop. No per-user vault, no IdP client — only the target line
+        # name (stored in target_audience, mirroring obo's field). The line must
+        # be a simple slug; the minting key lives in auth-server's Secret.
+        line = (body.target_audience or "").strip().lower()
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,31}", line):
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                detail="line_token mode requires target_audience = the line slug "
+                "(e.g. 'wire')",
+            )
+        server["egress_auth_mode"] = "line_token"
+        server["egress_oauth"] = {
+            "target_audience": line,
+            "scopes": body.scopes or [],
+        }
     else:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="invalid egress_auth_mode")
 

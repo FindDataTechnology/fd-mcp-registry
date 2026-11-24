@@ -974,15 +974,24 @@ class ServerInfo(ProxyableMixin):
           rather than at the first live request.
         """
         mode = self.egress_auth_mode
-        if mode not in ("none", "oauth_user", "obo_exchange", "pat"):
+        if mode not in ("none", "oauth_user", "obo_exchange", "pat", "line_token"):
             raise ValueError(
                 f"invalid egress_auth_mode {mode!r}; expected 'none', 'oauth_user', "
-                "'obo_exchange', or 'pat'"
+                "'obo_exchange', 'pat', or 'line_token'"
             )
         if mode == "none":
             return self
         if self.egress_oauth is None:
             raise ValueError(f"egress_auth_mode={mode!r} requires egress_oauth config")
+        if mode == "line_token":
+            # Per-line 门K mint at the gateway: egress_oauth.target_audience holds
+            # the line slug (e.g. 'wire'); the signing key lives in auth-server.
+            if not (self.egress_oauth.target_audience or "").strip():
+                raise ValueError(
+                    "egress_auth_mode='line_token' requires egress_oauth.target_audience "
+                    "= the line slug (e.g. 'wire')"
+                )
+            return self
         if mode == "oauth_user":
             if not self.egress_oauth.provider:
                 raise ValueError("egress_auth_mode='oauth_user' requires egress_oauth.provider")
