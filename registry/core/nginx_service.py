@@ -28,6 +28,8 @@ from .metrics import (
     NGINX_CONFIG_WRITES,
     NGINX_UPDATES_SKIPPED,
 )
+
+
 #: Hosts that mean "this gateway" for the A2A self-loop judgment
 #: (change: fix-a2a-agent-backend-self-loop). One primary + any declared
 #: aliases; a set, because a deployment can answer under more than one name.
@@ -2198,19 +2200,47 @@ map "$uri:$http_x_mcp_server_version" $versioned_backend {{
                 safe_mcp_proxy_url = self._sanitize_for_nginx_set(mcp_proxy_url)
                 safe_upstream_host = self._sanitize_for_nginx_set(upstream_host)
 
-                if host_is_resolvable_at_startup:
-                    proxy_directive = f"proxy_pass {safe_mcp_proxy_url};"
-                else:
-                    # sanitized is already underscore-safe (valid nginx var name).
-                    backend_var = f"$vs_backend{sanitized}"
+                # Route the backend subrequest through the auth-server mcp-proxy
+                # hop so it injects the server-level (or per-user) backend
+                # credential, exactly like a top-level server location. Proxying
+                # the backend directly with `Authorization ""` left every
+                # backend that needs its own token returning 401 through a
+                # virtual face (tools/list aggregated, tools/call 401'd).
+                #
+                # The mcp-proxy hop requires a /validate-minted internal token
+                # bound to THIS backend. We mint it here, not via the shared
+                # `location = /validate` (which hardcodes X-Original-URL to the
+                # incoming $request_uri = /_vs_backend_*). Instead the dedicated
+                # `location = /_vs_validate` (emitted once below) reads the vars
+                # this block sets ($vs_backend_path / $vs_backend_mcp_url). A
+                # location-scope `set` reaches the auth_request subrequest the
+                # same way the top-level block's `set $backend_url` reaches the
+                # shared /validate.
+                backend_name = backend_path.strip("/")
+                mcp_proxy_target = f"{settings.auth_server_url}/mcp-proxy/{backend_name}/"
+                resolver_directive = ""
+                if not host_is_resolvable_at_startup:
                     dns_resolver = os.environ.get("NGINX_DNS_RESOLVER", "8.8.8.8 8.8.4.4")
                     dns_resolver_timeout = os.environ.get("NGINX_DNS_RESOLVER_TIMEOUT", "5")
-                    proxy_directive = (
+                    resolver_directive = (
                         f"resolver {dns_resolver} valid=10s;\n"
                         f"        resolver_timeout {dns_resolver_timeout}s;\n"
-                        f'        set {backend_var} "{safe_mcp_proxy_url}";\n'
-                        f"        proxy_pass {backend_var};"
                     )
+
+                proxy_directive = (
+                    f"{resolver_directive}"
+                    f'        set $vs_backend_path "/{backend_name}";\n'
+                    f'        set $vs_backend_mcp_url "{safe_mcp_proxy_url}";\n'
+                    f"        # Mint the per-backend mcp-proxy token, then forward to\n"
+                    f"        # the mcp-proxy hop carrying it. The hop injects the\n"
+                    f"        # backend credential; the caller's credential stays\n"
+                    f"        # stripped (Authorization cleared below).\n"
+                    f"        auth_request /_vs_validate;\n"
+                    f"        auth_request_set $vs_internal_token $upstream_http_x_internal_token;\n"
+                    f"        proxy_set_header X-Internal-Token $vs_internal_token;\n"
+                    f"        proxy_set_header X-Upstream-Url {safe_mcp_proxy_url};\n"
+                    f"        proxy_pass {mcp_proxy_target};"
+                )
 
                 block = f"""
     location {location_path} {{
@@ -2218,17 +2248,13 @@ map "$uri:$http_x_mcp_server_version" $versioned_backend {{
         {proxy_directive}
         proxy_http_version 1.1;
         proxy_ssl_server_name on;
+        # Host is the mcp-proxy target (auth-server); the backend host rides in
+        # X-Upstream-Url and is cryptographically bound into the internal token.
         proxy_set_header Host {safe_upstream_host};
-        # SECURITY: this location proxies directly to a registrant-controlled
-        # (not fully trusted) MCP backend. Never relay the caller's registry
-        # credential here -- clearing Authorization AND Cookie prevents a
-        # malicious registered upstream from capturing and replaying the
-        # caller's gateway bearer token or registry session cookie against the
-        # registry API. This location is reached via a Lua subrequest that
-        # inherits the parent request's headers, so Cookie must be explicitly
-        # cleared or the user's session cookie would be forwarded verbatim.
-        # The gateway authenticates the upstream via its own mechanism, not by
-        # forwarding the caller's credential.
+        # SECURITY: never relay the caller's registry credential to the backend.
+        # The auth-server mcp-proxy hop injects the backend's own credential
+        # downstream; the caller's gateway bearer / session cookie never leaves
+        # this hop.
         proxy_set_header Authorization "";
         proxy_set_header Cookie "";
         # Forward the validated caller identity so backends can attribute
