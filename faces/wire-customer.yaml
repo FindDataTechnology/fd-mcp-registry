@@ -54,8 +54,6 @@ tools:
   - {backend: /wire-ops-mcp, tool_name: wire_subject_remove_channel, alias: wire_subject_remove_channel}
   - {backend: /wire-ops-mcp, tool_name: wire_subject_snapshot, alias: wire_subject_snapshot}
   - {backend: /wire-build-mcp, tool_name: wire_artifact_archive, alias: wire_artifact_archive}
-  - {backend: /wire-build-mcp, tool_name: wire_artifact_dashboard_create, alias: wire_artifact_dashboard_create}
-  - {backend: /wire-build-mcp, tool_name: wire_artifact_doc_create, alias: wire_artifact_doc_create}
   - {backend: /wire-build-mcp, tool_name: wire_artifact_form_create, alias: wire_artifact_form_create}
   - {backend: /wire-build-mcp, tool_name: wire_artifact_get, alias: wire_artifact_get}
   - {backend: /wire-build-mcp, tool_name: wire_artifact_list, alias: wire_artifact_list}
@@ -70,7 +68,6 @@ tools:
   - {backend: /wire-build-mcp, tool_name: wire_dataset_export, alias: wire_dataset_export}
   - {backend: /wire-build-mcp, tool_name: wire_dataset_rows_read, alias: wire_dataset_rows_read}
   - {backend: /wire-build-mcp, tool_name: wire_dataset_schema, alias: wire_dataset_schema}
-  - {backend: /fd-info, tool_name: get_body, alias: info_get_body}
   - {backend: /fd-info, tool_name: get_item, alias: info_get_item}
   - {backend: /fd-info, tool_name: list_since, alias: info_list_since}
   - {backend: /fd-info, tool_name: locate_evidence, alias: info_locate_evidence}
