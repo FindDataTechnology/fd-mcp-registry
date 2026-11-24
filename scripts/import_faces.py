@@ -43,6 +43,7 @@ from registry.schemas.face_manifest import FaceManifest, load_face_manifest  # n
 from registry.services.face_manifest_service import (  # noqa: E402
     FaceImportPlan,
     apply_face_import,
+    reconcile_faces,
 )
 
 _DEFAULT_FACES_DIR = _REPO_ROOT / "faces"
@@ -74,6 +75,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--apply",
         action="store_true",
         help="Write changes. Without this flag the script only prints the plan.",
+    )
+    parser.add_argument(
+        "--reconcile",
+        action="store_true",
+        help="Read-only drift report; exit 1 when any face drifts. Overrides --apply.",
     )
     parser.add_argument(
         "--debug",
@@ -116,6 +122,16 @@ async def _run(manifests: list[FaceManifest], apply: bool) -> int:
     return exit_code
 
 
+async def _reconcile(manifests: list[FaceManifest]) -> int:
+    """Report drift for each face; return non-zero when any face drifted."""
+    drifted = False
+    for r in await reconcile_faces(manifests):
+        tag = "DRIFT" if r.drift else "OK"
+        print(f"[{tag:5}] {r.face:24} {r.reason}")
+        drifted = drifted or r.drift
+    return 1 if drifted else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     import logging
@@ -125,6 +141,8 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s,p%(process)s,{%(filename)s:%(lineno)d},%(levelname)s,%(message)s",
     )
     manifests = _load_manifests(Path(args.dir), args.face)
+    if args.reconcile:
+        return asyncio.run(_reconcile(manifests))
     if not args.apply:
         print(f"(dry-run; {len(manifests)} face(s) planned. Re-run with --apply to write.)")
     return asyncio.run(_run(manifests, apply=args.apply))

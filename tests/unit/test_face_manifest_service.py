@@ -8,6 +8,7 @@ from registry.schemas.virtual_server_models import (
 from registry.services.face_manifest_service import (
     _manifest_tool_mappings,
     plan_face_import,
+    reconcile_face,
 )
 
 
@@ -113,3 +114,28 @@ def test_enabled_toggle_plans_update():
     plan = plan_face_import(m, current)
     assert plan.action == "update"
     assert plan.changes["is_enabled"] is False
+
+
+# --- reconcile ---
+
+
+def test_reconcile_missing_face_is_drift():
+    r = reconcile_face(_manifest(), None)
+    assert r.drift is True
+    assert r.reason == "missing"
+    assert r.face == "wire-customer"
+
+
+def test_reconcile_matching_face_is_ok():
+    m = _manifest()
+    r = reconcile_face(m, _config_from(m))
+    assert r.drift is False
+    assert r.reason == "ok"
+
+
+def test_reconcile_stale_face_is_drift():
+    m = _manifest(server_name="Renamed Face")
+    current = _config_from(_manifest())  # old name
+    r = reconcile_face(m, current)
+    assert r.drift is True
+    assert r.reason == "stale"

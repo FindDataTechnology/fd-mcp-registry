@@ -131,6 +131,49 @@ def _create_request(manifest: FaceManifest) -> CreateVirtualServerRequest:
     )
 
 
+@dataclass(frozen=True)
+class FaceReconcileResult:
+    """Reconcile outcome for one face.
+
+    Attributes:
+        face: Face id.
+        path: Virtual server path.
+        drift: True when the actual registry state differs from the manifest
+            (the face is missing, or its config would need an update).
+        reason: ``missing`` (no record), ``stale`` (record differs), or ``ok``.
+    """
+
+    face: str
+    path: str
+    drift: bool
+    reason: Literal["missing", "stale", "ok"]
+
+
+def reconcile_face(
+    manifest: FaceManifest,
+    existing: VirtualServerConfig | None,
+) -> FaceReconcileResult:
+    """Compare one face manifest against its current registry config.
+
+    Pure: the reconcile pass uses the same diff as the importer, so a face is
+    only "ok" when importing it would be a noop. A missing record is drift
+    (``missing``) so a deleted face is reported by name, not silently.
+
+    Args:
+        manifest: The validated face manifest.
+        existing: The face's current config, or None when absent.
+
+    Returns:
+        A :class:`FaceReconcileResult` naming the drift reason.
+    """
+    plan = plan_face_import(manifest, existing)
+    if plan.action == "create":
+        return FaceReconcileResult(manifest.face, manifest.path, True, "missing")
+    if plan.action == "update":
+        return FaceReconcileResult(manifest.face, manifest.path, True, "stale")
+    return FaceReconcileResult(manifest.face, manifest.path, False, "ok")
+
+
 async def apply_face_import(
     manifest: FaceManifest,
     *,
@@ -182,3 +225,23 @@ async def apply_face_import(
         len(plan.changes),
     )
     return plan
+
+
+async def reconcile_faces(manifests: list[FaceManifest]) -> list[FaceReconcileResult]:
+    """Reconcile every face manifest against the live registry (read-only).
+
+    Args:
+        manifests: Validated face manifests to check.
+
+    Returns:
+        One :class:`FaceReconcileResult` per manifest, in input order. Drift is
+        reported per face; the caller decides the exit code.
+    """
+    from registry.repositories.factory import get_virtual_server_repository
+
+    repo = get_virtual_server_repository()
+    results: list[FaceReconcileResult] = []
+    for manifest in manifests:
+        existing = await repo.get(manifest.path)
+        results.append(reconcile_face(manifest, existing))
+    return results
