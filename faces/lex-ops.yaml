@@ -1,0 +1,28 @@
+# Lex ops face (unify-line-entry-at-registry-gateway 4.2). The lex line's
+# self-service surface (me/usage/quota/credentials/matters), separate from the
+# legal-corpus face (lex-legal) because they serve different callers: this one
+# is the account plane, that one is the content plane.
+face: lex-ops
+server_name: Lex Ops
+description: "Lex account plane: usage, quota, credentials, matters, artifacts."
+audience: line-customer
+exposure: internal
+brand_policy:
+  strip_provenance: false
+required_scopes:
+  - mcp-lex-ops-execute
+is_enabled: true
+tools:
+  - {backend: /lex-ops-mcp, tool_name: lex_surface_overview, alias: lex_surface_overview}
+  - {backend: /lex-ops-mcp, tool_name: lex_me, alias: lex_me}
+  - {backend: /lex-ops-mcp, tool_name: lex_usage, alias: lex_usage}
+  - {backend: /lex-ops-mcp, tool_name: lex_billing, alias: lex_billing}
+  - {backend: /lex-ops-mcp, tool_name: lex_quota, alias: lex_quota}
+  - {backend: /lex-ops-mcp, tool_name: lex_credentials_list, alias: lex_credentials_list}
+  - {backend: /lex-ops-mcp, tool_name: lex_credential_mint, alias: lex_credential_mint}
+  - {backend: /lex-ops-mcp, tool_name: lex_credential_revoke, alias: lex_credential_revoke}
+  - {backend: /lex-ops-mcp, tool_name: lex_matter_create, alias: lex_matter_create}
+  - {backend: /lex-ops-mcp, tool_name: lex_matter_list, alias: lex_matter_list}
+  - {backend: /lex-ops-mcp, tool_name: lex_matter_show, alias: lex_matter_show}
+  - {backend: /lex-ops-mcp, tool_name: lex_matter_artifact_add, alias: lex_matter_artifact_add}
+  - {backend: /lex-ops-mcp, tool_name: lex_matter_artifact_list, alias: lex_matter_artifact_list}
