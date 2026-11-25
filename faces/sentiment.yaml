@@ -1,0 +1,26 @@
+# Sentiment line face (pilot for unify-line-entry-at-registry-gateway). All of
+# fd-sentiment's tools behind one stable entry, so an sk- (or Logto) customer
+# reaches the line through the registry gateway. fd-sentiment's line_token.py
+# resolves the ticket sub as a sub2api user id, so the gateway signs sk- callers'
+# tickets with that id; the backend enables its line-token path via
+# FD_SENTIMENT_LINE_TOKEN_LINE=sentiment.
+face: sentiment
+server_name: Sentiment
+description: "Sentiment line: document scoring, batch scoring, aggregation, evaluation."
+audience: line-customer
+exposure: internal
+brand_policy:
+  strip_provenance: false
+required_scopes: []
+is_enabled: true
+tools:
+  - {backend: /fd-sentiment, tool_name: score_document, alias: score_document}
+  - {backend: /fd-sentiment, tool_name: score_batch, alias: score_batch}
+  - {backend: /fd-sentiment, tool_name: get_task_status, alias: get_task_status}
+  - {backend: /fd-sentiment, tool_name: retry_failed, alias: retry_failed}
+  - {backend: /fd-sentiment, tool_name: get_score, alias: get_score}
+  - {backend: /fd-sentiment, tool_name: list_scores, alias: list_scores}
+  - {backend: /fd-sentiment, tool_name: aggregate_scores, alias: aggregate_scores}
+  - {backend: /fd-sentiment, tool_name: current_prompt_version, alias: current_prompt_version}
+  - {backend: /fd-sentiment, tool_name: run_evaluation, alias: run_evaluation}
+  - {backend: /fd-sentiment, tool_name: compare_evaluations, alias: compare_evaluations}
