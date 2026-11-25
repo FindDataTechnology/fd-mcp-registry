@@ -5302,10 +5302,12 @@ async def validate_request(request: Request):
             # as `rid` so that hop's token_mint record can be joined to the
             # mcp_server_access record this request writes above.
             audit_identity=_audit_identity_token_claim(validation_result, request_id),
-            # The OIDC sub (raw IdP `sub`, e.g. pih8r05mwh8w) distinct from the
-            # human `username`. A line_token mint signs this so the line resolves
-            # the customer by the shared Logto identity it already trusts.
-            oidc_sub=str((validation_result.get("data") or {}).get("sub") or ""),
+            # The OIDC sub (the shared Logto identity), resolved the SAME way the
+            # egress vault keys a user: `_canonical_egress_user` handles both a
+            # Logto token (data.sub) and a self-signed gateway token (egress_user
+            # claim), and fails closed ("" ) when it cannot. A line_token mint
+            # signs this so the line resolves the customer by that identity.
+            oidc_sub=_canonical_egress_user(validation_result),
         )
 
         # Generic-proxy hop token (proxied non-MCP entities). Keyed on the
