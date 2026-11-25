@@ -1189,9 +1189,58 @@ SUB2API_KEY_AUTH_ENABLED: bool = (
 # Scopes granted to every sk- caller (space or comma separated). Empty => the
 # sk- caller has no scopes and is gated out of any scope-guarded face (safe
 # default; deployment sets this to the line faces' required scope).
+#
+# GLOBAL BY CONSTRUCTION: this list applies to every active sk- key in the
+# billing plane, so it may only name faces whose backend holds no per-customer
+# data to isolate (corpus/reference lines). A line that isolates customers gets
+# its scopes through SUB2API_KEY_CALLER_SCOPES below instead.
 SUB2API_KEY_SCOPES: list[str] = [
     s for s in re.split(r"[\s,]+", os.environ.get("SUB2API_KEY_SCOPES", "")) if s
 ]
+# Per-customer scopes: JSON object mapping a sub2api user id (the resolved
+# holder) to the scope list that caller alone receives, ADDED to the global list
+# above. This is the seam a customer-isolating line uses, because the global
+# list cannot express "this tenant and nobody else": every sk- key would
+# otherwise reach the same rows.
+#
+#   SUB2API_KEY_CALLER_SCOPES='{"72": ["mcp-wire-execute"]}'
+#
+# Keyed on the sub2api id, which is what /validate resolved and what the line
+# ticket signs as `sub` -- one identity, not a request field. Malformed JSON
+# grants nobody (fail closed) rather than falling back to the global list.
+def _parse_caller_scopes(raw: str | None) -> dict[str, list[str]]:
+    text = (raw or "").strip()
+    if not text:
+        return {}
+    try:
+        doc = json.loads(text)
+    except ValueError:
+        logging.error(
+            "SUB2API_KEY_CALLER_SCOPES is not valid JSON; no per-customer scopes granted"
+        )
+        return {}
+    if not isinstance(doc, dict):
+        logging.error(
+            "SUB2API_KEY_CALLER_SCOPES must be a JSON object of {user_id: [scopes]}; "
+            "ignoring"
+        )
+        return {}
+    out: dict[str, list[str]] = {}
+    for uid, scopes in doc.items():
+        if isinstance(scopes, str):
+            scopes = re.split(r"[\s,]+", scopes)
+        if not isinstance(scopes, list):
+            logging.error("SUB2API_KEY_CALLER_SCOPES[%r] is not a list; skipped", uid)
+            continue
+        cleaned = [str(s).strip() for s in scopes if str(s).strip()]
+        if cleaned:
+            out[str(uid).strip()] = cleaned
+    return out
+
+
+SUB2API_KEY_CALLER_SCOPES: dict[str, list[str]] = _parse_caller_scopes(
+    os.environ.get("SUB2API_KEY_CALLER_SCOPES")
+)
 
 
 
@@ -4527,7 +4576,11 @@ async def validate_request(request: Request):
                         "client_id": "sub2api-key",
                         "username": _uid,
                         "email": _email,
-                        "scopes": list(SUB2API_KEY_SCOPES),
+                        # Global scopes plus this caller's own (keyed on the
+                        # resolved holder id, never a request field). A blank
+                        # caller map is the previous behavior exactly.
+                        "scopes": list(SUB2API_KEY_SCOPES)
+                        + list(SUB2API_KEY_CALLER_SCOPES.get(str(_uid), [])),
                         "groups": [],
                         "token_type": "user_generated",
                     }

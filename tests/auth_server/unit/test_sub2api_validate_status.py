@@ -22,6 +22,7 @@ try:
 except ImportError:
     from auth_server import sub2api_key_auth
 
+from auth_server import server  # noqa: E402
 from auth_server.server import app  # noqa: E402
 
 pytestmark = pytest.mark.unit
@@ -58,3 +59,49 @@ def test_sk_refusal_reaches_the_client(monkeypatch, exc, status, marker):
         assert "x-auth-refusal" not in r.headers
     else:
         assert r.headers["x-auth-refusal"] == marker
+
+
+async def _allow(*a, **k):
+    return True
+
+
+def test_caller_scopes_are_per_holder(monkeypatch):
+    """A per-customer line scope reaches only that holder, plus the global list."""
+
+    async def _holder(key):
+        return {"sub2api_user_id": "72", "email": "a@b.c"}
+
+    monkeypatch.setattr(sub2api_key_auth, "resolve_sk_caller", _holder)
+    monkeypatch.setattr(server, "SUB2API_KEY_SCOPES", ["mcp-sentiment-execute"])
+    monkeypatch.setattr(
+        server, "SUB2API_KEY_CALLER_SCOPES", {"72": ["mcp-wire-execute"]}
+    )
+    # The registry-scope lookup needs Mongo; this test is about the scope LIST
+    # built here, not about registry authorization.
+    monkeypatch.setattr(server, "validate_server_tool_access", _allow)
+    r = _validate(TestClient(app))
+    assert r.status_code == 200, r.text
+    assert r.json()["scopes"] == ["mcp-sentiment-execute", "mcp-wire-execute"]
+
+
+def test_other_holder_does_not_get_another_callers_scope(monkeypatch):
+    """The seam's whole point: a different sk- key must not inherit it."""
+
+    async def _holder(key):
+        return {"sub2api_user_id": "999", "email": "x@y.z"}
+
+    monkeypatch.setattr(sub2api_key_auth, "resolve_sk_caller", _holder)
+    monkeypatch.setattr(server, "SUB2API_KEY_SCOPES", ["mcp-sentiment-execute"])
+    monkeypatch.setattr(
+        server, "SUB2API_KEY_CALLER_SCOPES", {"72": ["mcp-wire-execute"]}
+    )
+    monkeypatch.setattr(server, "validate_server_tool_access", _allow)
+    r = _validate(TestClient(app))
+    assert r.status_code == 200, r.text
+    assert r.json()["scopes"] == ["mcp-sentiment-execute"]
+
+
+def test_malformed_caller_map_grants_nobody():
+    assert server._parse_caller_scopes("{not json") == {}
+    assert server._parse_caller_scopes('["72"]') == {}
+    assert server._parse_caller_scopes('{"72": "a b", "73": []}') == {"72": ["a", "b"]}
