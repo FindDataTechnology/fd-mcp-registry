@@ -1160,8 +1160,9 @@ PATCH_KEY_AUTH_ENABLED: bool = bool(getattr(settings, "patch_key_auth_enabled", 
 # other credential (IdP JWT, self-signed, patch key, static token) skips this
 # branch unchanged — the prefix gates it exactly like PATCH_KEY_PREFIX.
 SUB2API_KEY_PREFIX: str = (os.environ.get("SUB2API_KEY_PREFIX", "sk-") or "sk-").strip()
-SUB2API_KEY_AUTH_ENABLED: bool = _env_truthy(
-    os.environ.get("SUB2API_KEY_AUTH_ENABLED", "true"), True
+SUB2API_KEY_AUTH_ENABLED: bool = (
+    os.environ.get("SUB2API_KEY_AUTH_ENABLED", "true").strip().lower()
+    in ("1", "true", "yes", "on")
 )
 # Scopes granted to every sk- caller (space or comma separated). Empty => the
 # sk- caller has no scopes and is gated out of any scope-guarded face (safe
