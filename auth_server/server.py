@@ -1154,6 +1154,24 @@ else:
 # entirely -- those mechanisms are bit-for-bit unchanged.
 PATCH_KEY_AUTH_ENABLED: bool = bool(getattr(settings, "patch_key_auth_enabled", True))
 
+# sub2api 词元 (`sk-`) b2b customers (line-entry-unification). A bearer whose
+# value starts with SUB2API_KEY_PREFIX is authenticated against the billing
+# plane (probe + unique holder) and continues as that sub2api user id. Every
+# other credential (IdP JWT, self-signed, patch key, static token) skips this
+# branch unchanged — the prefix gates it exactly like PATCH_KEY_PREFIX.
+SUB2API_KEY_PREFIX: str = (os.environ.get("SUB2API_KEY_PREFIX", "sk-") or "sk-").strip()
+SUB2API_KEY_AUTH_ENABLED: bool = (
+    os.environ.get("SUB2API_KEY_AUTH_ENABLED", "true").strip().lower()
+    in ("1", "true", "yes", "on")
+)
+# Scopes granted to every sk- caller (space or comma separated). Empty => the
+# sk- caller has no scopes and is gated out of any scope-guarded face (safe
+# default; deployment sets this to the line faces' required scope).
+SUB2API_KEY_SCOPES: list[str] = [
+    s for s in re.split(r"[\s,]+", os.environ.get("SUB2API_KEY_SCOPES", "")) if s
+]
+
+
 
 # ---------------------------------------------------------------------------
 # Multi-key static token config model and parser (Issue #779)
@@ -4431,6 +4449,73 @@ async def validate_request(request: Request):
                 if PATCH_KEY_AUTH_ENABLED and access_token.startswith(PATCH_KEY_PREFIX):
                     validation_result = await _validate_patch_key_token(access_token)
                     logger.info("Token validated as patch key (prefix=wgk-)")
+
+                # sub2api 词元 (`sk-`) b2b customer (line-entry-unification). The
+                # prefix gates this branch; every other credential falls through
+                # unchanged. Probe + unique-holder resolve against the billing
+                # plane (reuses preflight_quota's probes). Fail-closed semantics:
+                # a degraded plane is 503 (retryable, never 401), an unusable or
+                # ambiguous key is 401/402. The identity is the sub2api user id
+                # (the line-token family's native `sub`).
+                if (
+                    not validation_result
+                    and SUB2API_KEY_AUTH_ENABLED
+                    and access_token.startswith(SUB2API_KEY_PREFIX)
+                ):
+                    try:
+                        from sub2api_key_auth import (
+                            Sub2ApiKeyRejected,
+                            Sub2ApiUnavailable,
+                            resolve_sk_caller,
+                        )
+                    except ImportError:
+                        from auth_server.sub2api_key_auth import (
+                            Sub2ApiKeyRejected,
+                            Sub2ApiUnavailable,
+                            resolve_sk_caller,
+                        )
+
+                    try:
+                        holder = await resolve_sk_caller(access_token)
+                    except Sub2ApiUnavailable as exc:
+                        # Billing plane down/ambiguous infra: retryable, not 401.
+                        logger.error("sub2api key auth unavailable: %s", exc)
+                        raise HTTPException(
+                            status_code=503,
+                            detail="Billing plane temporarily unavailable",
+                            headers={"Connection": "close"},
+                        ) from exc
+                    except Sub2ApiKeyRejected as exc:
+                        logger.warning("sub2api key rejected: %s", exc.reason)
+                        raise HTTPException(
+                            status_code=exc.status or 401,
+                            detail="Invalid or unusable API key",
+                            headers={"WWW-Authenticate": "Bearer", "Connection": "close"},
+                        ) from exc
+
+                    _uid = holder["sub2api_user_id"]
+                    _email = holder.get("email") or ""
+                    validation_result = {
+                        "valid": True,
+                        "method": "sub2api-key",
+                        "data": {
+                            # The line-token family's native subject: the
+                            # sub2api user id. `sub` here is this id (not an
+                            # OIDC sub); the mint signs it as the line-ticket sub.
+                            "sub": _uid,
+                            "username": _uid,
+                            "provider": "sub2api",
+                            "email": _email,
+                            "egress_user": "",
+                        },
+                        "client_id": "sub2api-key",
+                        "username": _uid,
+                        "email": _email,
+                        "scopes": list(SUB2API_KEY_SCOPES),
+                        "groups": [],
+                        "token_type": "user_generated",
+                    }
+                    logger.info("Token validated as sub2api key (method=sub2api-key)")
 
                 # Delegation grant (establish-agent-principal-plane). A grant is a
                 # single-audience Ed25519 JWT whose iss is the gateway; it is
@@ -8859,12 +8944,25 @@ async def mcp_proxy(
                 # (vend only happens then) and a server-declared line.
                 req_id = incoming_payload.get("id") if isinstance(incoming_payload, dict) else None
                 line_name = (vend.get("line_token_name") or "").strip().lower()
-                # Prefer the OIDC sub (the shared Logto identity the line resolves
-                # by); the token's `sub` is the human username, not wire's key.
-                caller_sub = (
-                    str((claims or {}).get("oidc_sub") or "").strip()
-                    or str((claims or {}).get("sub") or "").strip()
+                # The line-ticket `sub`/`logto_sub` depend on the caller class:
+                #  - sub2api `sk-` customer: sub = the sub2api user id (the
+                #    line-token family's native key); NOT a Logto identity, so no
+                #    logto_sub.
+                #  - Logto / self-signed: sub = OIDC sub, and logto_sub = it, so a
+                #    line that resolves by logto_sub (wire) finds the customer.
+                # The mint token marks the class via auth_method.
+                _is_sub2api_caller = (
+                    str((claims or {}).get("auth_method") or "").strip() == "sub2api-key"
                 )
+                if _is_sub2api_caller:
+                    caller_sub = str((claims or {}).get("sub") or "").strip()
+                    _logto_sub = ""
+                else:
+                    caller_sub = (
+                        str((claims or {}).get("oidc_sub") or "").strip()
+                        or str((claims or {}).get("sub") or "").strip()
+                    )
+                    _logto_sub = caller_sub
                 if not line_name or not caller_sub:
                     logger.warning(
                         "mcp_proxy: line_token server=%s missing line=%r or sub=%r; refusing",
@@ -8882,13 +8980,10 @@ async def mcp_proxy(
                             mint_line_token,
                         )
 
-                    # The verified caller sub is the shared Logto identity; carry it
-                    # both as sub and logto_sub so the line resolves by the key it
-                    # trusts (the Logto track) rather than an ambiguous billing id.
                     line_tok = mint_line_token(
                         line=line_name,
                         subject=caller_sub,
-                        logto_sub=caller_sub,
+                        logto_sub=_logto_sub,
                     )
                 except LineTokenKeyMissing:
                     logger.error(
