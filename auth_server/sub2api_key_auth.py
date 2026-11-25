@@ -68,9 +68,12 @@ async def _probe_liveness(base: str, key: str) -> None:
         raise Sub2ApiUnavailable(f"billing plane server error (HTTP {resp.status_code})")
     if resp.status_code < 300:
         return
-    # Reachable refusal. 402 or an insufficient-balance code is a billing gate
-    # (402); everything else (401 invalid, 403 group, 429 rate) is a refusal the
-    # caller maps to 401. Never a pass, never "unavailable".
+    # Reachable refusal. A billing gate is 402 no matter which status the plane
+    # picked to express it: sub2api answers an exhausted account with HTTP 403
+    # and code INSUFFICIENT_BALANCE, and mapping that to 401 sends the customer
+    # to re-paste a key that works. Everything else (401 invalid, 403 group,
+    # 429 rate) is a refusal the caller maps to 401. Never a pass, never
+    # "unavailable".
     code = None
     try:
         doc = resp.json()
@@ -78,8 +81,8 @@ async def _probe_liveness(base: str, key: str) -> None:
             code = doc.get("code")
     except ValueError:
         pass
-    if resp.status_code == 402:
-        raise Sub2ApiKeyRejected(f"insufficient balance (HTTP 402, code={code})", status=402)
+    if resp.status_code == 402 or str(code or "").upper() == "INSUFFICIENT_BALANCE":
+        raise Sub2ApiKeyRejected(f"insufficient balance (HTTP {resp.status_code}, code={code})", status=402)
     raise Sub2ApiKeyRejected(
         f"billing gate refused (HTTP {resp.status_code}, code={code or 'unknown'})"
     )

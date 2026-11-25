@@ -91,6 +91,27 @@ async def test_402_maps_to_402(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_403_insufficient_balance_maps_to_402(monkeypatch):
+    # What the plane actually sends for an exhausted account: 403 + code. Mapping
+    # that to 401 tells the customer their working key is invalid.
+    _patch(
+        monkeypatch,
+        _router(_FakeResp(403, {"code": "INSUFFICIENT_BALANCE"}), None),
+    )
+    with pytest.raises(m.Sub2ApiKeyRejected) as exc:
+        await m.resolve_sk_caller("sk-x")
+    assert exc.value.status == 402
+
+
+@pytest.mark.asyncio
+async def test_403_other_code_stays_401(monkeypatch):
+    _patch(monkeypatch, _router(_FakeResp(403, {"code": "GROUP_FORBIDDEN"}), None))
+    with pytest.raises(m.Sub2ApiKeyRejected) as exc:
+        await m.resolve_sk_caller("sk-x")
+    assert exc.value.status is None
+
+
+@pytest.mark.asyncio
 async def test_connect_failure_is_unavailable(monkeypatch):
     def _factory(*a, **k):
         class C:
