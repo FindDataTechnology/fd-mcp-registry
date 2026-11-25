@@ -52,6 +52,9 @@ COPY auth_server/ /app/auth_server/
 COPY api/ /app/api/
 COPY scripts/ /app/scripts/
 COPY cli/examples/ /app/cli/examples/
+# Face manifests ride with the image so scripts/import_faces.py can run in-pod
+# without a kubectl cp of a file the deployment does not otherwise carry.
+COPY faces/ /app/faces/
 
 # Install the registry package in editable mode (--no-deps; all runtime
 # deps already installed above by `uv sync --locked`).
@@ -160,6 +163,7 @@ COPY --from=backend-builder --chown=appuser:appuser /app/auth_server /app/auth_s
 COPY --from=backend-builder --chown=appuser:appuser /app/api /app/api
 COPY --from=backend-builder --chown=appuser:appuser /app/scripts /app/scripts
 COPY --from=backend-builder --chown=appuser:appuser /app/cli/examples /app/cli/examples
+COPY --from=backend-builder --chown=appuser:appuser /app/faces /app/faces
 
 # Copy built frontend from frontend builder
 COPY --from=frontend-builder --chown=appuser:appuser /app/frontend/build /app/frontend/build
