@@ -324,6 +324,28 @@ def _canonical_auth_method(validation_result: dict) -> str:
     return method
 
 
+def _refusal_exception(status_code: int, detail: str) -> HTTPException:
+    """A /validate refusal whose status nginx can actually relay to the client.
+
+    nginx's ``auth_request`` forwards ONLY 401/403; every other status from the
+    subrequest becomes nginx's own 500 page. So a 402 (out of quota) or a 503
+    (billing plane down, retry is correct) reaches the customer as an opaque
+    500 and looks identical to a broken gateway.
+
+    The tier gate already solved this (403 + ``X-Tier-Required``, rewritten by
+    ``@forbidden_error``); this is the same pattern generalized: answer 403 with
+    ``X-Auth-Refusal`` naming the real status, and ``@forbidden_error`` rewrites
+    it back. 401/403 pass through unchanged.
+    """
+    headers = {"Connection": "close"}
+    if status_code in (401, 403):
+        if status_code == 401:
+            headers["WWW-Authenticate"] = "Bearer"
+        return HTTPException(status_code=status_code, detail=detail, headers=headers)
+    headers["X-Auth-Refusal"] = str(status_code)
+    return HTTPException(status_code=403, detail=detail, headers=headers)
+
+
 def _trusted_egress_user_claim(validation_result: dict) -> str | None:
     """The ``egress_user`` claim, but ONLY from a token this gateway minted.
 
@@ -4480,17 +4502,11 @@ async def validate_request(request: Request):
                     except Sub2ApiUnavailable as exc:
                         # Billing plane down/ambiguous infra: retryable, not 401.
                         logger.error("sub2api key auth unavailable: %s", exc)
-                        raise HTTPException(
-                            status_code=503,
-                            detail="Billing plane temporarily unavailable",
-                            headers={"Connection": "close"},
-                        ) from exc
+                        raise _refusal_exception(503, "Billing plane temporarily unavailable") from exc
                     except Sub2ApiKeyRejected as exc:
                         logger.warning("sub2api key rejected: %s", exc.reason)
-                        raise HTTPException(
-                            status_code=exc.status or 401,
-                            detail="Invalid or unusable API key",
-                            headers={"WWW-Authenticate": "Bearer", "Connection": "close"},
+                        raise _refusal_exception(
+                            exc.status or 401, "Invalid or unusable API key"
                         ) from exc
 
                     _uid = holder["sub2api_user_id"]
@@ -4645,6 +4661,13 @@ async def validate_request(request: Request):
                     detail="Token validation failed",
                     headers={"WWW-Authenticate": "Bearer", "Connection": "close"},
                 )
+            except HTTPException:
+                # Branches above already chose the status: the sk- refusal
+                # (401/402) and the retryable billing 503. HTTPException is an
+                # Exception, so without this it became a 500 and nginx turned
+                # that into its own 500 page -- a rejected key and a broken
+                # gateway looked identical to the customer.
+                raise
             except Exception as e:
                 # Unexpected non-validation errors (network failure reaching
                 # IdP, provider misconfiguration, etc.) remain 500.

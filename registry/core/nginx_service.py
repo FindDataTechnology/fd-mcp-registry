@@ -1803,6 +1803,10 @@ map "$uri:$http_x_mcp_server_version" $versioned_backend {{
         auth_request_set $auth_user $upstream_http_x_user;
         auth_request_set $auth_username $upstream_http_x_username;
         auth_request_set $auth_method $upstream_http_x_auth_method;
+        # /validate cannot relay a 402/503 through auth_request (it forwards only
+        # 401/403). It answers 403 + X-Auth-Refusal with the real status instead;
+        # capture it so @forbidden_error rewrites it back.
+        auth_request_set $auth_refusal_status $upstream_http_x_auth_refusal;
         rewrite_by_lua_file /etc/nginx/lua/capture_body.lua;
         content_by_lua_file /etc/nginx/lua/virtual_router.lua;
 

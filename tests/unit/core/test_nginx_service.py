@@ -2159,6 +2159,11 @@ async def test_generated_virtual_server_block_is_rate_limited(nginx_service):
     assert "limit_req zone=mcp_gateway_edge burst=100 nodelay;" in blocks
     assert "limit_conn mcp_gateway_conn 100;" in blocks
 
+    # nginx's auth_request relays only 401/403 from /validate, so a 402/503
+    # refusal has to ride a header and be rewritten at @forbidden_error. The
+    # capture line is what wires the face into that rewrite.
+    assert "auth_request_set $auth_refusal_status $upstream_http_x_auth_refusal;" in blocks
+
 
 @pytest.mark.unit
 @pytest.mark.parametrize("conf_path", [_HTTP_ONLY_CONF, _HTTP_AND_HTTPS_CONF])
