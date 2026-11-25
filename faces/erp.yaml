@@ -1,0 +1,52 @@
+# erp line face (unify-line-entry-at-registry-gateway 4.2). One stable entry
+# over /fd-erp-ledger-mcp so an sk- customer reaches the line with a 门K ticket
+# minted for their sub2api id. The backend enables its ticket path via its own
+# <PREFIX>_LINE_TOKEN_ISSUER / _PUBLIC_KEY_PEM, already deployed.
+face: erp
+server_name: Erp
+description: "ERP ledger line: proposals, balances, entries, reconciliation, billing, posting, periods."
+audience: line-customer
+exposure: internal
+brand_policy:
+  strip_provenance: false
+required_scopes:
+  - mcp-erp-execute
+is_enabled: true
+tools:
+  - {backend: /fd-erp-ledger-mcp, tool_name: submit_proposal, alias: submit_proposal}
+  - {backend: /fd-erp-ledger-mcp, tool_name: list_proposals, alias: list_proposals}
+  - {backend: /fd-erp-ledger-mcp, tool_name: confirm_proposal, alias: confirm_proposal}
+  - {backend: /fd-erp-ledger-mcp, tool_name: reject_proposal, alias: reject_proposal}
+  - {backend: /fd-erp-ledger-mcp, tool_name: query_balance, alias: query_balance}
+  - {backend: /fd-erp-ledger-mcp, tool_name: query_entries, alias: query_entries}
+  - {backend: /fd-erp-ledger-mcp, tool_name: run_reconciliation, alias: run_reconciliation}
+  - {backend: /fd-erp-ledger-mcp, tool_name: get_recon_report, alias: get_recon_report}
+  - {backend: /fd-erp-ledger-mcp, tool_name: submit_billing_rule, alias: submit_billing_rule}
+  - {backend: /fd-erp-ledger-mcp, tool_name: approve_billing_rule, alias: approve_billing_rule}
+  - {backend: /fd-erp-ledger-mcp, tool_name: list_billing_rules, alias: list_billing_rules}
+  - {backend: /fd-erp-ledger-mcp, tool_name: bill_event, alias: bill_event}
+  - {backend: /fd-erp-ledger-mcp, tool_name: list_fees, alias: list_fees}
+  - {backend: /fd-erp-ledger-mcp, tool_name: get_fee_detail, alias: get_fee_detail}
+  - {backend: /fd-erp-ledger-mcp, tool_name: reverse_fee, alias: reverse_fee}
+  - {backend: /fd-erp-ledger-mcp, tool_name: simulate_billing, alias: simulate_billing}
+  - {backend: /fd-erp-ledger-mcp, tool_name: bill_period_snapshot, alias: bill_period_snapshot}
+  - {backend: /fd-erp-ledger-mcp, tool_name: reserve_credit, alias: reserve_credit}
+  - {backend: /fd-erp-ledger-mcp, tool_name: release_credit, alias: release_credit}
+  - {backend: /fd-erp-ledger-mcp, tool_name: query_credit, alias: query_credit}
+  - {backend: /fd-erp-ledger-mcp, tool_name: list_credit_reservations, alias: list_credit_reservations}
+  - {backend: /fd-erp-ledger-mcp, tool_name: ingest_event, alias: ingest_event}
+  - {backend: /fd-erp-ledger-mcp, tool_name: submit_event, alias: submit_event}
+  - {backend: /fd-erp-ledger-mcp, tool_name: decide_event, alias: decide_event}
+  - {backend: /fd-erp-ledger-mcp, tool_name: query_events, alias: query_events}
+  - {backend: /fd-erp-ledger-mcp, tool_name: query_object_balance, alias: query_object_balance}
+  - {backend: /fd-erp-ledger-mcp, tool_name: project_event, alias: project_event}
+  - {backend: /fd-erp-ledger-mcp, tool_name: submit_posting_rule, alias: submit_posting_rule}
+  - {backend: /fd-erp-ledger-mcp, tool_name: approve_posting_rule, alias: approve_posting_rule}
+  - {backend: /fd-erp-ledger-mcp, tool_name: list_posting_rules, alias: list_posting_rules}
+  - {backend: /fd-erp-ledger-mcp, tool_name: post_event, alias: post_event}
+  - {backend: /fd-erp-ledger-mcp, tool_name: list_posting_gaps, alias: list_posting_gaps}
+  - {backend: /fd-erp-ledger-mcp, tool_name: close_period, alias: close_period}
+  - {backend: /fd-erp-ledger-mcp, tool_name: reopen_period, alias: reopen_period}
+  - {backend: /fd-erp-ledger-mcp, tool_name: period_status, alias: period_status}
+  - {backend: /fd-erp-ledger-mcp, tool_name: period_report, alias: period_report}
+  - {backend: /fd-erp-ledger-mcp, tool_name: list_periods, alias: list_periods}

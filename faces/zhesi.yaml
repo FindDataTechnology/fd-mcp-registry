@@ -1,0 +1,21 @@
+# zhesi line face (unify-line-entry-at-registry-gateway 4.2). One stable entry
+# over /fd-zhesi-reference so an sk- customer reaches the line with a 门K ticket
+# minted for their sub2api id. The backend enables its ticket path via its own
+# <PREFIX>_LINE_TOKEN_ISSUER / _PUBLIC_KEY_PEM, already deployed.
+face: zhesi
+server_name: Zhesi
+description: "Zhesi reference line: philosophers, relations, concepts, stance distribution, papers."
+audience: line-customer
+exposure: internal
+brand_policy:
+  strip_provenance: false
+required_scopes:
+  - mcp-zhesi-execute
+is_enabled: true
+tools:
+  - {backend: /fd-zhesi-reference, tool_name: philosopher_query, alias: philosopher_query}
+  - {backend: /fd-zhesi-reference, tool_name: relation_query, alias: relation_query}
+  - {backend: /fd-zhesi-reference, tool_name: concept_lookup, alias: concept_lookup}
+  - {backend: /fd-zhesi-reference, tool_name: stance_distribution, alias: stance_distribution}
+  - {backend: /fd-zhesi-reference, tool_name: philpapers_paper_search, alias: philpapers_paper_search}
+  - {backend: /fd-zhesi-reference, tool_name: source_status, alias: source_status}

@@ -1,0 +1,21 @@
+# info line face (unify-line-entry-at-registry-gateway 4.2). One stable entry
+# over /fd-info so an sk- customer reaches the line with a 门K ticket
+# minted for their sub2api id. The backend enables its ticket path via its own
+# <PREFIX>_LINE_TOKEN_ISSUER / _PUBLIC_KEY_PEM, already deployed.
+face: info
+server_name: Info
+description: "Info stream line: since/item reads, search, evidence location, full body."
+audience: line-customer
+exposure: internal
+brand_policy:
+  strip_provenance: false
+required_scopes:
+  - mcp-info-execute
+is_enabled: true
+tools:
+  - {backend: /fd-info, tool_name: list_since, alias: list_since}
+  - {backend: /fd-info, tool_name: get_item, alias: get_item}
+  - {backend: /fd-info, tool_name: search_info, alias: search_info}
+  - {backend: /fd-info, tool_name: locate_evidence, alias: locate_evidence}
+  - {backend: /fd-info, tool_name: get_body, alias: get_body}
+  - {backend: /fd-info, tool_name: stream_health, alias: stream_health}
