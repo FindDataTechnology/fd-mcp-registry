@@ -221,6 +221,35 @@ class TestInternalEgressTokenRoute:
         assert body.get("connect_url") is None
         assert body.get("request_state") is None
 
+    def test_sk_caller_gets_line_token_directive(self, make_client):
+        # An sk- billing customer has no vault and no egress_user claim. A
+        # line_token server is stateless (auth_server mints from the verified
+        # token), so the vend must hand back the directive instead of bouncing
+        # the caller to consent -- the wire pilot died exactly here.
+        server = _server(
+            egress_auth_mode="line_token",
+            egress_oauth={"target_audience": "sentiment", "scopes": ["line:read"]},
+        )
+        client = make_client(
+            _claims(auth_method="sub2api-key", egress_user="", sub="78"), server
+        )
+        body = _post(client, server_path="fd-sentiment").json()
+        assert body["mode"] == "line_token"
+        assert body["line_token_name"] == "sentiment"
+        assert body["consent_required"] is False
+        assert not client._svc.called  # never touches the per-user vault
+
+    def test_sk_caller_still_refused_on_vaulted_server(self, make_client):
+        # The non-per-user refusal stays for every mode that reads the vault: an
+        # sk- caller must not reach another user's stored token.
+        client = make_client(
+            _claims(auth_method="sub2api-key", egress_user="", sub="78"), _server()
+        )
+        body = _post(client).json()
+        assert body["consent_required"] is True
+        assert body.get("access_token") is None
+        assert not client._svc.called
+
     def test_store_transiently_unavailable_returns_503(self, make_client):
         # When the token store fails transiently (get_valid_token raises
         # SecretStoreError after the store exhausted its own retry budget), the

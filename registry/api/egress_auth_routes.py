@@ -748,17 +748,6 @@ async def vend_egress_token(
     auth_method = claims.get("auth_method") or ""
     token_upstream = claims.get("upstream_url") or ""
 
-    # Only real per-user principals may vend. A non-per-user caller (e.g. a
-    # Logto-authenticated gateway user) skips the per-user vault entirely, but
-    # still gets the server's shared Backend Auth credential when one exists --
-    # that fallback is what makes such servers zero-setup for every user.
-    if not is_per_user_auth_method(auth_method):
-        logger.info("egress vend: non-per-user auth_method %r -> consent", auth_method)
-        server_probe = await get_server_repository().get(
-            body.server_path if body.server_path.startswith("/") else "/" + body.server_path
-        )
-        return _consent_with_backend_auth(server_probe)
-
     # Normalize the server path: mcp_proxy passes the first path segment without a
     # leading slash ("github"), but server entries, the vault key, and the consent
     # state all use the slash-prefixed path ("/github"). Without this, the lookup
@@ -766,13 +755,24 @@ async def vend_egress_token(
     server_path = body.server_path if body.server_path.startswith("/") else "/" + body.server_path
 
     server = await get_server_repository().get(server_path)
+    egress_mode = server.get("egress_auth_mode") if server else None
+
+    # Only real per-user principals may vend a vaulted token. A non-per-user
+    # caller (e.g. an sk- billing customer, who has no per-user vault) still gets
+    # the server's shared Backend Auth credential when one exists, and still gets
+    # a line_token directive: that mode is stateless (auth_server mints from the
+    # verified token, no vault read), so requiring a vault id for it would deny
+    # exactly the callers the mode exists for.
+    if not is_per_user_auth_method(auth_method) and egress_mode != "line_token":
+        logger.info("egress vend: non-per-user auth_method %r -> consent", auth_method)
+        return _consent_with_backend_auth(server)
+
     if server is None:
         return EgressTokenResponse(consent_required=True)
 
     # Per-server enablement: a misconfigured/half-deleted server never vends a
     # per-user token -- but its shared Backend Auth credential (if configured)
     # still applies, keeping the server zero-setup for every gateway user.
-    egress_mode = server.get("egress_auth_mode")
     if egress_mode not in ("oauth_user", "obo_exchange", "pat", "line_token") or not server.get(
         "egress_oauth"
     ):
