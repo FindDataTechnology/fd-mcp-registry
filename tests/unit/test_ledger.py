@@ -11,7 +11,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from registry.ledger import events as ledger_events
 from registry.ledger.events import (
     BudgetCounter,
     LedgerEvent,
@@ -32,9 +31,16 @@ def test_emit_writes_jsonl(tmp_path, monkeypatch):
     sink = tmp_path / "ledger.jsonl"
     monkeypatch.setenv("LEDGER_SINK_PATH", str(sink))
     e = LedgerEvent(
-        run="r1", principal="agent:1", actor="user:9", tenant="t1",
-        audience="svcA", tool="read", outcome="ok", grant_jti="j1",
-        rows=120, latency_ms=42,
+        run="r1",
+        principal="agent:1",
+        actor="user:9",
+        tenant="t1",
+        audience="svcA",
+        tool="read",
+        outcome="ok",
+        grant_jti="j1",
+        rows=120,
+        latency_ms=42,
     )
     emit(e)
     line = sink.read_text().strip()
@@ -56,8 +62,14 @@ def test_emit_never_raises_on_io_error(monkeypatch):
     # Point the sink at an unwritable path; emit must swallow and keep going.
     monkeypatch.setenv("LEDGER_SINK_PATH", "/proc/nonexistent/ledger.jsonl")
     e = LedgerEvent(
-        run="r", principal="p", actor=None, tenant="t", audience="a",
-        tool="x", outcome="ok", grant_jti="j",
+        run="r",
+        principal="p",
+        actor=None,
+        tenant="t",
+        audience="a",
+        tool="x",
+        outcome="ok",
+        grant_jti="j",
     )
     emit(e)  # no exception
 
@@ -88,10 +100,20 @@ async def test_budget_counter_accumulates():
 
 def test_shipper_coerces_row():
     ev = {
-        "grant_jti": "j", "span_id": "s", "run": "r", "principal": "p",
-        "actor": None, "tenant": "t", "audience": "a", "tool": "x",
-        "outcome": "ok", "rows": 3, "tokens": None, "latency_ms": 7,
-        "source": "resource", "ts": datetime.now(UTC).isoformat(),
+        "grant_jti": "j",
+        "span_id": "s",
+        "run": "r",
+        "principal": "p",
+        "actor": None,
+        "tenant": "t",
+        "audience": "a",
+        "tool": "x",
+        "outcome": "ok",
+        "rows": 3,
+        "tokens": None,
+        "latency_ms": 7,
+        "source": "resource",
+        "ts": datetime.now(UTC).isoformat(),
     }
     row = _coerce_row(ev)
     assert row["principal"] == "p"
@@ -233,10 +255,22 @@ async def test_ledger_for_run_groups_distinct_actor(monkeypatch):
     captured = _fake_collection(
         monkeypatch,
         [
-            {"_id": {"principal": "aloadtree@gmail.com", "actor": None, "tenant": "acme"},
-             "calls": 2, "rows": 10, "tokens": 0},
-            {"_id": {"principal": "agent:procurement-acme", "actor": "aloadtree@gmail.com",
-                     "tenant": "acme"}, "calls": 3, "rows": 40, "tokens": 0},
+            {
+                "_id": {"principal": "aloadtree@gmail.com", "actor": None, "tenant": "acme"},
+                "calls": 2,
+                "rows": 10,
+                "tokens": 0,
+            },
+            {
+                "_id": {
+                    "principal": "agent:procurement-acme",
+                    "actor": "aloadtree@gmail.com",
+                    "tenant": "acme",
+                },
+                "calls": 3,
+                "rows": 40,
+                "tokens": 0,
+            },
         ],
     )
     out = await ledger_routes.ledger_for_run("r1", user_context={})
@@ -283,7 +317,9 @@ async def test_ledger_read_face_503_when_store_down(monkeypatch):
     async def _boom():
         raise RuntimeError("mongo down")
 
-    monkeypatch.setattr("registry.repositories.documentdb.client.get_documentdb_client", _boom)
+    # _collection resolves get_documentdb_client from its own module namespace,
+    # so patch that binding (patching the source module would not rebind it).
+    monkeypatch.setattr(ledger_routes, "get_documentdb_client", _boom)
     with pytest.raises(HTTPException) as ei:
         await ledger_routes._collection()
     assert ei.value.status_code == 503
@@ -293,8 +329,9 @@ async def test_ledger_read_face_503_when_store_down(monkeypatch):
 async def test_write_mongo_inserts_and_dedups(monkeypatch):
     """_write_mongo persists the event; a duplicate (same grant_jti,span_id) is
     swallowed by the unique index, not raised."""
-    from registry.ledger import events as _ev
     from unittest.mock import AsyncMock, MagicMock
+
+    from registry.ledger import events as _ev
 
     inserted = []
 
@@ -308,13 +345,17 @@ async def test_write_mongo_inserts_and_dedups(monkeypatch):
     async def _getdb():
         return db
 
-    monkeypatch.setattr(
-        "registry.repositories.documentdb.client.get_documentdb_client", _getdb
-    )
+    monkeypatch.setattr("registry.repositories.documentdb.client.get_documentdb_client", _getdb)
     _ev._mongo_index_ready = False
     e = LedgerEvent(
-        run="r1", principal="agent:1", actor="user:9", tenant="t1",
-        audience="svcA", tool="read", outcome="ok", grant_jti="jX",
+        run="r1",
+        principal="agent:1",
+        actor="user:9",
+        tenant="t1",
+        audience="svcA",
+        tool="read",
+        outcome="ok",
+        grant_jti="jX",
     )
     await _ev._write_mongo(e)
     assert len(inserted) == 1
