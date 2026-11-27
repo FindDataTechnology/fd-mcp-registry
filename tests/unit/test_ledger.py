@@ -172,6 +172,123 @@ def test_shipper_backlog_counts_unshipped_bytes(tmp_path):
     assert backlog(str(sink), str(cursor)) > 0
 
 
+def test_month_bounds_half_open_and_rollover():
+    from registry.api.ledger_routes import _month_bounds
+
+    start, end = _month_bounds("2026-11")
+    assert start == datetime(2026, 11, 1, tzinfo=UTC)
+    assert end == datetime(2026, 12, 1, tzinfo=UTC)
+    # December rolls the year forward, not month 13.
+    start, end = _month_bounds("2026-12")
+    assert end == datetime(2027, 1, 1, tzinfo=UTC)
+
+
+def test_month_bounds_rejects_bad_format():
+    from fastapi import HTTPException
+
+    from registry.api.ledger_routes import _month_bounds
+
+    with pytest.raises(HTTPException) as ei:
+        _month_bounds("2026/11")
+    assert ei.value.status_code == 422
+
+
+class _FakeCursor:
+    def __init__(self, rows):
+        self._rows = list(rows)
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if not self._rows:
+            raise StopAsyncIteration
+        return self._rows.pop(0)
+
+
+def _fake_collection(monkeypatch, rows):
+    """Patch the read face's ``_collection`` to return a canned aggregate cursor."""
+    captured: dict = {}
+    col = MagicMock()
+
+    def _aggregate(pipeline):
+        captured["pipeline"] = pipeline
+        return _FakeCursor(rows)
+
+    col.aggregate = _aggregate
+
+    async def _get():
+        return col
+
+    monkeypatch.setattr("registry.api.ledger_routes._collection", _get)
+    return captured
+
+
+@pytest.mark.asyncio
+async def test_ledger_for_run_groups_distinct_actor(monkeypatch):
+    """A user call (actor null) and an agent call (actor=owner) are two groups
+    under one run and one tenant — the split task 6.2/8.1 needs."""
+    from registry.api import ledger_routes
+
+    captured = _fake_collection(
+        monkeypatch,
+        [
+            {"_id": {"principal": "aloadtree@gmail.com", "actor": None, "tenant": "acme"},
+             "calls": 2, "rows": 10, "tokens": 0},
+            {"_id": {"principal": "agent:procurement-acme", "actor": "aloadtree@gmail.com",
+                     "tenant": "acme"}, "calls": 3, "rows": 40, "tokens": 0},
+        ],
+    )
+    out = await ledger_routes.ledger_for_run("r1", user_context={})
+    assert [g["principal"] for g in out["groups"]] == [
+        "aloadtree@gmail.com",
+        "agent:procurement-acme",
+    ]
+    agent = out["groups"][1]
+    assert agent["actor"] == "aloadtree@gmail.com"
+    assert agent["tenant"] == "acme"
+    assert out["groups"][0]["actor"] is None
+    # Sum of the two groups is the run total (three-dimension consistency).
+    assert sum(g["calls"] for g in out["groups"]) == 5
+    assert captured["pipeline"][0] == {"$match": {"run": "r1"}}
+
+
+@pytest.mark.asyncio
+async def test_ledger_for_tenant_totals(monkeypatch):
+    from registry.api import ledger_routes
+
+    captured = _fake_collection(monkeypatch, [{"_id": None, "calls": 4, "rows": 400, "tokens": 9}])
+    out = await ledger_routes.ledger_for_tenant("acme", month="2026-11", user_context={})
+    assert out == {"tenant_id": "acme", "month": "2026-11", "calls": 4, "rows": 400, "tokens": 9}
+    match = captured["pipeline"][0]["$match"]
+    assert match["tenant"] == "acme"
+    assert match["ts"]["$gte"] == datetime(2026, 11, 1, tzinfo=UTC)
+
+
+@pytest.mark.asyncio
+async def test_ledger_for_tenant_empty_is_zero_not_error(monkeypatch):
+    from registry.api import ledger_routes
+
+    _fake_collection(monkeypatch, [])
+    out = await ledger_routes.ledger_for_tenant("acme", month="2026-11", user_context={})
+    assert out["calls"] == 0 and out["rows"] == 0
+
+
+@pytest.mark.asyncio
+async def test_ledger_read_face_503_when_store_down(monkeypatch):
+    from fastapi import HTTPException
+
+    from registry.api import ledger_routes
+
+    async def _boom():
+        raise RuntimeError("mongo down")
+
+    monkeypatch.setattr("registry.repositories.documentdb.client.get_documentdb_client", _boom)
+    with pytest.raises(HTTPException) as ei:
+        await ledger_routes._collection()
+    assert ei.value.status_code == 503
+
+
 @pytest.mark.asyncio
 async def test_write_mongo_inserts_and_dedups(monkeypatch):
     """_write_mongo persists the event; a duplicate (same grant_jti,span_id) is
