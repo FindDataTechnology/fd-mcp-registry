@@ -4030,6 +4030,30 @@ async def health_check():
     return {"status": "healthy", "service": "simplified-auth-server"}
 
 
+def _egress_pool_gauges(pool) -> dict[str, int]:
+    """Read the shared egress pool's gauges without ever raising.
+
+    Two traps this helper exists to avoid, both observed on 2026-11-28:
+
+    1. ``pool._requests`` holds active AND queued requests. Only ``is_queued()``
+       entries are waiting for a slot; ``len(_requests)`` reads as permanently
+       non-zero and would keep a tripwire lit forever.
+    2. ``pool.connections`` is every connection object, not the idle ones. It
+       showed 100 ("max") on a fully exhausted pool, which reads as "everything
+       is free" when the truth is the opposite. Idle means ``is_idle()``.
+
+    The raw object count is still reported, under an honest name.
+    """
+    requests = getattr(pool, "_requests", ()) or ()
+    connections = list(getattr(pool, "connections", ()) or ())
+    return {
+        "max_connections": int(getattr(pool, "_max_connections", 0) or 0),
+        "waiting_requests": sum(1 for r in requests if getattr(r, "is_queued", lambda: False)()),
+        "idle_connections": sum(1 for c in connections if getattr(c, "is_idle", lambda: False)()),
+        "connections_total": len(connections),
+    }
+
+
 @app.get("/metrics")
 async def metrics():
     """Prometheus text exposition for the shared egress connection pool.
@@ -4054,8 +4078,10 @@ async def metrics():
         "# TYPE mcp_egress_pool_max_connections gauge",
         "# HELP mcp_egress_pool_waiting_requests Requests waiting for a pooled connection slot.",
         "# TYPE mcp_egress_pool_waiting_requests gauge",
-        "# HELP mcp_egress_pool_idle_connections Idle keep-alive connections held by the pool.",
+        "# HELP mcp_egress_pool_idle_connections Keep-alive connections currently idle and available for reuse.",
         "# TYPE mcp_egress_pool_idle_connections gauge",
+        "# HELP mcp_egress_pool_connections_total All connection objects held by the pool (idle plus in use).",
+        "# TYPE mcp_egress_pool_connections_total gauge",
     ]
     try:
         from registry.utils.url_guard import (
@@ -4064,15 +4090,10 @@ async def metrics():
         )
 
         pool = shared_guarded_async_client(profile=EGRESS_UPSTREAM_PROFILE)._transport._pool
-        max_conn = int(getattr(pool, "_max_connections", 0) or 0)
-        # _requests holds BOTH active and queued requests. Only is_queued() ones
-        # are actually waiting for a free slot; len(_requests) also counts the
-        # requests being served and reads as permanently non-zero (measured a
-        # steady 7 while the pool was healthy) -- a tripwire that is always on
-        # is worse than none.
-        requests = getattr(pool, "_requests", ()) or ()
-        waiting = sum(1 for r in requests if getattr(r, "is_queued", lambda: False)())
-        idle = len(getattr(pool, "connections", ()) or ())
+        gauges = _egress_pool_gauges(pool)
+        max_conn = gauges["max_connections"]
+        waiting = gauges["waiting_requests"]
+        idle = gauges["idle_connections"]
     except Exception as exc:  # noqa: BLE001 - a metrics scrape must never 500
         logger.warning("metrics: egress pool introspection failed (%s)", type(exc).__name__)
         return PlainTextResponse(
@@ -4085,6 +4106,7 @@ async def metrics():
         f"mcp_egress_pool_max_connections {max_conn}",
         f"mcp_egress_pool_waiting_requests {waiting}",
         f"mcp_egress_pool_idle_connections {idle}",
+        f"mcp_egress_pool_connections_total {gauges['connections_total']}",
         "mcp_egress_pool_available 1",
     ]
     return PlainTextResponse("\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")
