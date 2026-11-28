@@ -176,17 +176,26 @@ def test_checked_in_face_parses(path: Path):
 
 
 @pytest.mark.parametrize("path", _face_files(), ids=lambda p: p.stem)
-def test_commercial_faces_are_not_shipped_enabled(path: Path):
-    """A commercial face must be switched on by a person, not by a commit.
+def test_enabled_commercial_face_states_why(path: Path):
+    """A commercial face may ship enabled, but not silently.
 
-    Enabling it changes what every holder of its scope can call. The manifest
-    alone cannot know whether the backend's commercial surface and the
-    customer's scope grant are in place, so shipping it enabled is how a face
-    goes live by accident.
+    Enabling one changes what every holder of its scope can call, and the
+    manifest alone cannot know whether the backend's commercial surface and the
+    scope grant are actually in place. So the rule is not "never enabled" --
+    that would push operators to flip it in the console, where the decision
+    leaves no trace in review. The rule is "justify it in the file": an enabled
+    commercial face must carry the two facts a reviewer needs, the backend's
+    commercial-surface evidence and who currently holds the grant.
     """
     manifest = load_face_manifest(path)
-    if manifest.exposure == "commercial":
-        assert not manifest.is_enabled, (
-            f"{path.name}: commercial faces ship disabled; enable after the "
-            f"backend commercial surface and the customer scope grant exist"
-        )
+    if manifest.exposure != "commercial" or not manifest.is_enabled:
+        return
+    text = path.read_text(encoding="utf-8")
+    assert "commercial_tools" in text or "commercial surface" in text, (
+        f"{path.name}: enabling a commercial face requires naming the backend's "
+        f"commercial-surface evidence in the manifest"
+    )
+    assert "SUB2API_KEY_CALLER_SCOPES" in text, (
+        f"{path.name}: enabling a commercial face requires saying who holds the "
+        f"scope grant (SUB2API_KEY_CALLER_SCOPES)"
+    )

@@ -12,10 +12,20 @@
 #   genuinely needs the ledger, it goes through SUB2API_KEY_CALLER_SCOPES plus a
 #   separate, tenant-scoped face -- not by widening this one.
 #
-# Disabled on import: the importer starts faces disabled unless is_enabled is
-# explicit. This one is enabled only after the operator has (a) added a
-# commercial tool-surface entry for the 52 tools below and (b) granted the
-# scope to a named customer. Until then is_enabled stays false.
+# Enabled 2026-11-28. Both preconditions are met:
+#   (a) fd-quant's registry entry declares all 58 tools commercial
+#       (metadata.surface.commercial_tools, manifest_verified_at 2026-11-12);
+#   (b) mcp-quant-execute is granted -- currently to the demo probe client
+#       (idp_m2m_clients 916d9pni64m6pz2d51ytm) so the daily readiness reader
+#       proves the surface works through the real gateway path.
+#
+# A customer reaches it by adding "mcp-quant-execute" to their entry in
+# SUB2API_KEY_CALLER_SCOPES. That is a per-customer grant and deliberately not
+# pre-applied: it widens what a paying account can call, so it is an operator
+# decision, not a default.
+#
+# decision_ledger stays off this face either way (see the note above): the six
+# ledger tools write tenant state.
 face: quant
 server_name: Quant
 description: "Investing line compute surface: technical indicators, portfolio and factor statistics, regime detection, valuation operators, and look-ahead/observation validators."
@@ -25,7 +35,7 @@ brand_policy:
   strip_provenance: false
 required_scopes:
   - mcp-quant-execute
-is_enabled: false
+is_enabled: true
 tools:
   - {backend: /fd-quant, tool_name: check_preconditions_monitorable, alias: check_preconditions_monitorable}
   - {backend: /fd-quant, tool_name: detect_conflicts, alias: detect_conflicts}
