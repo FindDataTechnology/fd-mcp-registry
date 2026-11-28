@@ -4065,7 +4065,13 @@ async def metrics():
 
         pool = shared_guarded_async_client(profile=EGRESS_UPSTREAM_PROFILE)._transport._pool
         max_conn = int(getattr(pool, "_max_connections", 0) or 0)
-        waiting = len(getattr(pool, "_requests", ()) or ())
+        # _requests holds BOTH active and queued requests. Only is_queued() ones
+        # are actually waiting for a free slot; len(_requests) also counts the
+        # requests being served and reads as permanently non-zero (measured a
+        # steady 7 while the pool was healthy) -- a tripwire that is always on
+        # is worse than none.
+        requests = getattr(pool, "_requests", ()) or ()
+        waiting = sum(1 for r in requests if getattr(r, "is_queued", lambda: False)())
         idle = len(getattr(pool, "connections", ()) or ())
     except Exception as exc:  # noqa: BLE001 - a metrics scrape must never 500
         logger.warning("metrics: egress pool introspection failed (%s)", type(exc).__name__)
