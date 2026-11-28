@@ -1,0 +1,81 @@
+# Quant line face: the deterministic compute surface for the investing line,
+# served at /virtual/quant. A customer agent connects once and gets indicators,
+# portfolio statistics, factor stats, valuation operators and validation helpers
+# without going through the raw 58-tool backend.
+#
+# SCOPE OF EXPOSURE (deliberate, 2026-11-28):
+#   decision_ledger's 6 tools (record_decision / settle_decision /
+#   settle_portfolio / list_pending_decisions / retrieve_decisions /
+#   summarize_pack_performance) are NOT on this face. They write to the decision
+#   ledger and are per-tenant state, not computation. Exposing them to every
+#   sk- customer would let one tenant write rows another can read. If a customer
+#   genuinely needs the ledger, it goes through SUB2API_KEY_CALLER_SCOPES plus a
+#   separate, tenant-scoped face -- not by widening this one.
+#
+# Disabled on import: the importer starts faces disabled unless is_enabled is
+# explicit. This one is enabled only after the operator has (a) added a
+# commercial tool-surface entry for the 52 tools below and (b) granted the
+# scope to a named customer. Until then is_enabled stays false.
+face: quant
+server_name: Quant
+description: "Investing line compute surface: technical indicators, portfolio and factor statistics, regime detection, valuation operators, and look-ahead/observation validators."
+audience: paying-customer
+exposure: commercial
+brand_policy:
+  strip_provenance: false
+required_scopes:
+  - mcp-quant-execute
+is_enabled: false
+tools:
+  - {backend: /fd-quant, tool_name: check_preconditions_monitorable, alias: check_preconditions_monitorable}
+  - {backend: /fd-quant, tool_name: detect_conflicts, alias: detect_conflicts}
+  - {backend: /fd-quant, tool_name: compute_factor_exposure, alias: compute_factor_exposure}
+  - {backend: /fd-quant, tool_name: compute_grouped_returns, alias: compute_grouped_returns}
+  - {backend: /fd-quant, tool_name: compute_information_coefficient, alias: compute_information_coefficient}
+  - {backend: /fd-quant, tool_name: rank_factor_scores, alias: rank_factor_scores}
+  - {backend: /fd-quant, tool_name: compute_cash_flow_quality, alias: compute_cash_flow_quality}
+  - {backend: /fd-quant, tool_name: compute_dupont, alias: compute_dupont}
+  - {backend: /fd-quant, tool_name: compute_efficiency, alias: compute_efficiency}
+  - {backend: /fd-quant, tool_name: compute_growth, alias: compute_growth}
+  - {backend: /fd-quant, tool_name: compute_interest_coverage, alias: compute_interest_coverage}
+  - {backend: /fd-quant, tool_name: compute_leverage_and_liquidity, alias: compute_leverage_and_liquidity}
+  - {backend: /fd-quant, tool_name: compute_profitability, alias: compute_profitability}
+  - {backend: /fd-quant, tool_name: detect_red_flags, alias: detect_red_flags}
+  - {backend: /fd-quant, tool_name: build_portfolio_intent, alias: build_portfolio_intent}
+  - {backend: /fd-quant, tool_name: to_target_weights, alias: to_target_weights}
+  - {backend: /fd-quant, tool_name: validate_portfolio_intent, alias: validate_portfolio_intent}
+  - {backend: /fd-quant, tool_name: evaluate_portfolio_gate, alias: evaluate_portfolio_gate}
+  - {backend: /fd-quant, tool_name: summarize_beta, alias: summarize_beta}
+  - {backend: /fd-quant, tool_name: summarize_calmar, alias: summarize_calmar}
+  - {backend: /fd-quant, tool_name: summarize_concentration, alias: summarize_concentration}
+  - {backend: /fd-quant, tool_name: summarize_drawdown, alias: summarize_drawdown}
+  - {backend: /fd-quant, tool_name: summarize_information_ratio, alias: summarize_information_ratio}
+  - {backend: /fd-quant, tool_name: summarize_return, alias: summarize_return}
+  - {backend: /fd-quant, tool_name: summarize_sharpe, alias: summarize_sharpe}
+  - {backend: /fd-quant, tool_name: summarize_sortino, alias: summarize_sortino}
+  - {backend: /fd-quant, tool_name: summarize_turnover, alias: summarize_turnover}
+  - {backend: /fd-quant, tool_name: summarize_volatility, alias: summarize_volatility}
+  - {backend: /fd-quant, tool_name: detect_regime_slow, alias: detect_regime_slow}
+  - {backend: /fd-quant, tool_name: detect_shock_fast, alias: detect_shock_fast}
+  - {backend: /fd-quant, tool_name: document_regime_defaults, alias: document_regime_defaults}
+  - {backend: /fd-quant, tool_name: compute_atr, alias: compute_atr}
+  - {backend: /fd-quant, tool_name: compute_bollinger, alias: compute_bollinger}
+  - {backend: /fd-quant, tool_name: compute_cci, alias: compute_cci}
+  - {backend: /fd-quant, tool_name: compute_dmi, alias: compute_dmi}
+  - {backend: /fd-quant, tool_name: compute_ema, alias: compute_ema}
+  - {backend: /fd-quant, tool_name: compute_kdj, alias: compute_kdj}
+  - {backend: /fd-quant, tool_name: compute_macd, alias: compute_macd}
+  - {backend: /fd-quant, tool_name: compute_obv, alias: compute_obv}
+  - {backend: /fd-quant, tool_name: compute_rsi, alias: compute_rsi}
+  - {backend: /fd-quant, tool_name: compute_sma, alias: compute_sma}
+  - {backend: /fd-quant, tool_name: check_observation_sufficiency, alias: check_observation_sufficiency}
+  - {backend: /fd-quant, tool_name: check_series_as_of_bounds, alias: check_series_as_of_bounds}
+  - {backend: /fd-quant, tool_name: split_holdout, alias: split_holdout}
+  - {backend: /fd-quant, tool_name: split_walk_forward_windows, alias: split_walk_forward_windows}
+  - {backend: /fd-quant, tool_name: validate_no_lookahead, alias: validate_no_lookahead}
+  - {backend: /fd-quant, tool_name: build_valuation_synthesis, alias: build_valuation_synthesis}
+  - {backend: /fd-quant, tool_name: compute_comparable_multiples, alias: compute_comparable_multiples}
+  - {backend: /fd-quant, tool_name: compute_sensitivity_grid, alias: compute_sensitivity_grid}
+  - {backend: /fd-quant, tool_name: estimate_dcf, alias: estimate_dcf}
+  - {backend: /fd-quant, tool_name: estimate_ddm, alias: estimate_ddm}
+  - {backend: /fd-quant, tool_name: estimate_monte_carlo, alias: estimate_monte_carlo}
