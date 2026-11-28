@@ -380,3 +380,94 @@ class TestStreamingIdempotentCleanup:
         await resp.background()
         assert sem._value == 2
         assert client.closed is True
+
+# ---------------------------------------------------------------------------
+# _read_bounded must not wait for an SSE upstream to close.
+#
+# 2026-11-28 outage: every auth_scheme=bearer MCP server timed out through the
+# gateway while auth_scheme=none ones stayed healthy. Cause: MCP streamable-http
+# servers answer over text/event-stream and may hold the connection open after
+# the events a client needs; "read until EOF" parked the coroutine forever, and
+# the checked-out pooled connection accumulated until the shared egress pool
+# (default 100) was exhausted -- after which every bearer request queued to its
+# timeout. These tests pin the fix: one complete SSE event ends the read.
+# ---------------------------------------------------------------------------
+
+
+class _NeverEndingSSEResponse:
+    """Emits events then blocks, the way a real streamable-http server can.
+
+    ``aiter_bytes`` never raises and never finishes on its own; a reader that
+    waits for exhaustion hangs exactly like the production bug did.
+    """
+
+    def __init__(self, first_event: bytes, hold_seconds: float = 30.0):
+        self.headers = {"content-type": "text/event-stream"}
+        self._first = first_event
+        self._hold = hold_seconds
+
+    async def aiter_bytes(self, chunk_size: int = 65536):
+        yield self._first
+        await asyncio.sleep(self._hold)  # connection stays open, no more data
+
+
+class _JSONResponse:
+    headers = {"content-type": "application/json"}
+
+    def __init__(self, body: bytes):
+        self._body = body
+
+    async def aiter_bytes(self, chunk_size: int = 65536):
+        yield self._body
+
+
+@pytest.mark.asyncio
+async def test_read_bounded_returns_on_first_sse_event_without_waiting():
+    """An SSE upstream that never closes must not hang the read."""
+    body = b'event: message\ndata: {"jsonrpc":"2.0","id":1,"result":{}}\n\n'
+    response = _NeverEndingSSEResponse(body)
+
+    start = asyncio.get_running_loop().time()
+    out = await asyncio.wait_for(
+        server_module._read_bounded(response, 1024 * 1024), timeout=5.0
+    )
+    elapsed = asyncio.get_running_loop().time() - start
+
+    assert out.startswith(b"event: message")
+    # The fixture holds for 30s; returning promptly proves we stopped at the
+    # event boundary rather than waiting for the stream to close.
+    assert elapsed < 5.0
+
+
+@pytest.mark.asyncio
+async def test_read_bounded_sse_accepts_crlf_event_boundary():
+    body = b'event: message\r\ndata: {"jsonrpc":"2.0","id":1,"result":{}}\r\n\r\n'
+    out = await asyncio.wait_for(
+        server_module._read_bounded(_NeverEndingSSEResponse(body), 1024 * 1024),
+        timeout=5.0,
+    )
+    assert b"data:" in out
+
+
+@pytest.mark.asyncio
+async def test_read_bounded_json_reads_to_eof():
+    """Non-SSE bodies keep the original read-to-end behaviour."""
+    body = b'{"jsonrpc":"2.0","id":1,"result":{}}'
+    out = await server_module._read_bounded(_JSONResponse(body), 1024 * 1024)
+    assert out == body
+
+
+@pytest.mark.asyncio
+async def test_read_bounded_sse_still_enforces_byte_cap():
+    """A single event larger than the cap must 413, not silently truncate."""
+    huge = b"data: " + b"x" * 4096 + b"\n\n"
+    with pytest.raises(HTTPException) as exc:
+        await server_module._read_bounded(_NeverEndingSSEResponse(huge), 1024)
+    assert exc.value.status_code == 413
+
+
+def test_sse_event_complete_detects_both_line_endings():
+    assert server_module._sse_event_complete(b"data: {}\n\n")
+    assert server_module._sse_event_complete(b"data: {}\r\n\r\n")
+    assert not server_module._sse_event_complete(b"data: {}")
+    assert not server_module._sse_event_complete(b"")

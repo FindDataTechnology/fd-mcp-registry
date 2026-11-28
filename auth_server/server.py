@@ -7665,11 +7665,29 @@ _FORWARDED_RESPONSE_HEADERS: frozenset[str] = frozenset(
 async def _read_bounded(
     response: httpx.Response,
     max_bytes: int,
+    *,
+    content_type: str | None = None,
 ) -> bytes:
     """Read upstream body in chunks, enforcing an upper size bound.
 
     Raises HTTPException(413) if total bytes exceed max_bytes.
+
+    Streamable-HTTP MCP servers answer ``initialize``/``tools/call`` with
+    ``text/event-stream`` and may keep the connection open after the events a
+    client needs. A plain "read until EOF" therefore never returns: the
+    coroutine parks forever, the pooled egress connection stays checked out,
+    and after enough of them the shared pool (default 100) is exhausted, at
+    which point every further bearer-proxied request queues until its timeout.
+    That is the 2026-11-28 outage: all ``auth_scheme=bearer`` servers timed out
+    while ``auth_scheme=none`` ones (which use a per-call client) stayed fine.
+
+    So for ``text/event-stream`` we read only the first event. One complete SSE
+    event is what the MCP JSON-RPC response is; the upstream's decision to hold
+    the stream open afterwards is its own concern, not ours to wait on.
+    ``_probe_mcp_endpoint`` already avoids the same trap by never reading the
+    body -- this is that lesson applied to the proxy path.
     """
+    is_sse = _is_sse_content_type(content_type or response.headers.get("content-type", ""))
     size = 0
     chunks: list[bytes] = []
     async for chunk in response.aiter_bytes(chunk_size=64 * 1024):
@@ -7682,7 +7700,19 @@ async def _read_bounded(
                 ),
             )
         chunks.append(chunk)
+        if is_sse and _sse_event_complete(b"".join(chunks)):
+            break
     return b"".join(chunks)
+
+
+def _sse_event_complete(buf: bytes) -> bool:
+    """True once ``buf`` holds one whole SSE event.
+
+    SSE events are separated by a blank line. Data may use either CRLF or LF,
+    and a leading BOM is legal, so both are accepted. Only called for
+    ``text/event-stream`` responses; a JSON body never reaches here.
+    """
+    return b"\n\n" in buf or b"\r\n\r\n" in buf
 
 
 # Client-sent auth headers are INGRESS credentials (issue #1266): they
@@ -9386,8 +9416,14 @@ async def mcp_proxy(
             timeout=proxy_timeout,
         ) as upstream_response:
             # Buffer with the same cap whether or not we filter, so a
-            # pathological upstream cannot DoS the proxy.
-            body_bytes = await _read_bounded(upstream_response, max_body_bytes)
+            # pathological upstream cannot DoS the proxy. The content type is
+            # passed in so an SSE upstream is read to its first event instead
+            # of being waited on until it closes (see _read_bounded).
+            body_bytes = await _read_bounded(
+                upstream_response,
+                max_body_bytes,
+                content_type=upstream_response.headers.get("content-type"),
+            )
             status_code = upstream_response.status_code
             content_type = upstream_response.headers.get("content-type", "application/json")
             # Snapshot upstream headers BEFORE leaving the stream context. httpx
@@ -10445,7 +10481,11 @@ async def generic_proxy(
                     content=request_body,
                     headers=forward_headers,
                 ) as upstream_response:
-                    body_bytes = await _read_bounded(upstream_response, max_body_bytes)
+                    body_bytes = await _read_bounded(
+                        upstream_response,
+                        max_body_bytes,
+                        content_type=upstream_response.headers.get("content-type"),
+                    )
                     status_code = upstream_response.status_code
                     content_type = upstream_response.headers.get(
                         "content-type", "application/octet-stream"
