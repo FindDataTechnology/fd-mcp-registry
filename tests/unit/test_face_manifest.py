@@ -138,3 +138,55 @@ def test_load_invalid_schema_raises_with_path(tmp_path):
     with pytest.raises(ValueError) as exc:
         load_face_manifest(p)
     assert "failed schema validation" in str(exc.value)
+
+# --------------------------------------------------------------------------
+# Every checked-in face manifest must parse under the schema.
+#
+# Why this test exists: the schema tests above only build dicts in memory. A
+# manifest added under faces/ could be malformed and nothing would notice until
+# an operator ran import_faces.py against a live registry -- i.e. at the moment
+# it changes what a paying customer can call. This closes that gap cheaply.
+#
+# It intentionally does NOT check closure against live backends: that needs the
+# registry's server index and belongs to the importer.
+# --------------------------------------------------------------------------
+_FACES_DIR = Path(__file__).parent.parent.parent / "faces"
+
+
+def _face_files() -> list[Path]:
+    if not _FACES_DIR.is_dir():
+        return []
+    return sorted(_FACES_DIR.glob("*.yaml"))
+
+
+def test_faces_dir_is_present():
+    assert _FACES_DIR.is_dir(), f"faces/ not found at {_FACES_DIR}"
+    assert _face_files(), "faces/ has no manifests -- the glob is wrong"
+
+
+@pytest.mark.parametrize("path", _face_files(), ids=lambda p: p.stem)
+def test_checked_in_face_parses(path: Path):
+    manifest = load_face_manifest(path)
+    assert manifest.tools, f"{path.name} declares no tools"
+    aliases = [t.alias for t in manifest.tools]
+    assert len(aliases) == len(set(aliases)), f"{path.name} has duplicate aliases"
+    assert manifest.face == path.stem, (
+        f"{path.name}: face name {manifest.face!r} must equal the file name"
+    )
+
+
+@pytest.mark.parametrize("path", _face_files(), ids=lambda p: p.stem)
+def test_commercial_faces_are_not_shipped_enabled(path: Path):
+    """A commercial face must be switched on by a person, not by a commit.
+
+    Enabling it changes what every holder of its scope can call. The manifest
+    alone cannot know whether the backend's commercial surface and the
+    customer's scope grant are in place, so shipping it enabled is how a face
+    goes live by accident.
+    """
+    manifest = load_face_manifest(path)
+    if manifest.exposure == "commercial":
+        assert not manifest.is_enabled, (
+            f"{path.name}: commercial faces ship disabled; enable after the "
+            f"backend commercial surface and the customer scope grant exist"
+        )
