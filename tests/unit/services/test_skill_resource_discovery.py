@@ -135,6 +135,111 @@ class TestResolveTreeApi:
 
 
 # =============================================================================
+# _resolve_gitee_tree_api
+# =============================================================================
+
+
+class TestResolveGiteeTreeApi:
+    """Gitee serves SKILL.md as /<owner>/<repo>/raw/<ref>/<dir>/SKILL.md."""
+
+    def test_raw_url_maps_to_v5_tree_api(self):
+        url = (
+            "https://gitee.com/acme/skills/raw/master/finance/dcf-model/SKILL.md"
+        )
+        tree_url, project, ref, skill_dir = _resolve_tree_api(url)
+        assert tree_url == (
+            "https://gitee.com/api/v5/repos/acme/skills/git/trees/master?recursive=1"
+        )
+        assert project == "acme/skills"
+        assert ref == "master"
+        assert skill_dir == "finance/dcf-model"
+
+    def test_nested_skill_dir_is_preserved(self):
+        url = "https://gitee.com/acme/skills/raw/main/a/b/c/SKILL.md"
+        tree_url, _, _, skill_dir = _resolve_tree_api(url)
+        assert skill_dir == "a/b/c"
+        assert tree_url.endswith("/git/trees/main?recursive=1")
+
+    def test_skill_at_repo_root_yields_empty_skill_dir(self):
+        url = "https://gitee.com/acme/skills/raw/main/SKILL.md"
+        _, _, _, skill_dir = _resolve_tree_api(url)
+        assert skill_dir == ""
+
+    def test_non_skill_md_path_returns_none(self):
+        url = "https://gitee.com/acme/skills/raw/main/README.md"
+        assert _resolve_tree_api(url) is None
+
+    def test_blob_url_returns_none(self):
+        # Gitee's web path is /blob/, not /raw/; we only fetch what we can
+        # derive a tree API from, and blob URLs carry no raw marker.
+        url = "https://gitee.com/acme/skills/blob/main/finance/dcf/SKILL.md"
+        assert _resolve_tree_api(url) is None
+
+    def test_truncated_path_returns_none(self):
+        assert _resolve_tree_api("https://gitee.com/acme/raw/main/SKILL.md") is None
+
+    @patch("registry.services.skill_service.settings")
+    def test_token_attached_only_when_configured(self, mock_settings):
+        mock_settings.gitee_access_token = ""
+        url = "https://gitee.com/acme/skills/raw/main/x/SKILL.md"
+        tree_url, _, _, _ = _resolve_tree_api(url)
+        assert "access_token" not in tree_url
+
+    @patch("registry.services.skill_service.settings")
+    def test_token_appended_when_configured(self, mock_settings):
+        mock_settings.gitee_access_token = "abc123"
+        url = "https://gitee.com/acme/skills/raw/main/x/SKILL.md"
+        tree_url, _, _, _ = _resolve_tree_api(url)
+        assert tree_url.endswith("&access_token=abc123")
+
+
+# =============================================================================
+# Short-ref raw URLs
+# =============================================================================
+
+
+class TestShortRefRawUrls:
+    """raw.githubusercontent.com serves /<owner>/<repo>/<ref>/<path> with no
+    refs/heads/ segment. Every GitHub-hosted skill in our registry is stored in
+    this form, so failing to parse it nulled out discovery for all of them."""
+
+    def test_short_ref_parsed(self):
+        url = (
+            "https://raw.githubusercontent.com/acme/skills/main/"
+            "finance/3-statement-model/SKILL.md"
+        )
+        tree_url, project, ref, skill_dir = _resolve_tree_api(url)
+        assert tree_url == (
+            "https://api.github.com/repos/acme/skills/git/trees/main?recursive=1"
+        )
+        assert project == "acme/skills"
+        assert ref == "main"
+        assert skill_dir == "finance/3-statement-model"
+
+    def test_short_ref_commit_sha_is_kept_verbatim(self):
+        sha = "ca45fc496a3436251f191354091d557da31c15b5"
+        url = f"https://raw.githubusercontent.com/anthropics/skills/{sha}/x/SKILL.md"
+        _, _, ref, _ = _resolve_tree_api(url)
+        assert ref == sha
+
+    def test_refs_heads_form_is_not_read_as_short_ref(self):
+        # The refs/heads form must keep winning: "refs" is not a branch name.
+        url = (
+            "https://raw.githubusercontent.com/acme/skills/refs/heads/main/"
+            "x/SKILL.md"
+        )
+        _, _, ref, skill_dir = _resolve_tree_api(url)
+        assert ref == "main"
+        assert skill_dir == "x"
+
+    def test_short_ref_not_applied_to_blob_hosts(self):
+        # github.com/<owner>/<repo>/<ref>/... is not a raw layout; only raw.*
+        # hosts get the short-ref reading.
+        url = "https://github.com/acme/skills/main/finance/x/SKILL.md"
+        assert _resolve_tree_api(url) is None
+
+
+# =============================================================================
 # _classify_resource
 # =============================================================================
 
@@ -459,3 +564,111 @@ class TestDiscoverSkillResources:
             "https://api.github.com/repos/foo/bar/git/trees/main?recursive=1",
             allow_global_credentials=True,
         )
+
+
+# =============================================================================
+# Credential origin scoping and log hygiene
+# =============================================================================
+
+
+class TestCredentialOriginScoping:
+    """GitHub credentials must never travel to gitee.com, and vice versa."""
+
+    @pytest.fixture
+    def mock_github_auth(self):
+        with patch("registry.services.skill_service._github_auth") as auth:
+            auth.get_auth_headers = AsyncMock(return_value={"Authorization": "Bearer ghp_secret"})
+            yield auth
+
+    @pytest.fixture
+    def mock_async_client(self):
+        with patch("registry.services.skill_service.guarded_async_client") as client_cls:
+            response = MagicMock()
+            response.status_code = 200
+            response.json = MagicMock(return_value=_trees_payload([]))
+            response.headers = {}
+            client_instance = MagicMock()
+            client_instance.get = AsyncMock(return_value=response)
+            client_instance.__aenter__ = AsyncMock(return_value=client_instance)
+            client_instance.__aexit__ = AsyncMock(return_value=False)
+            client_cls.return_value = client_instance
+            yield response
+
+    async def test_github_pat_not_sent_to_gitee(
+        self,
+        mock_github_auth,
+        mock_async_client,
+    ):
+        await _discover_skill_resources(
+            "https://gitee.com/acme/skills/raw/main/x/SKILL.md",
+            auth_scheme="global_credentials",
+        )
+        # Even when the caller opted into shared credentials, a Gitee tree URL
+        # must not trigger the GitHub credential lookup at all.
+        mock_github_auth.get_auth_headers.assert_not_awaited()
+
+    async def test_github_pat_sent_to_github(
+        self,
+        mock_github_auth,
+        mock_async_client,
+    ):
+        await _discover_skill_resources(
+            "https://raw.githubusercontent.com/acme/skills/main/x/SKILL.md",
+            auth_scheme="global_credentials",
+        )
+        mock_github_auth.get_auth_headers.assert_awaited_once()
+
+    async def test_lookalike_host_does_not_receive_github_pat(
+        self,
+        mock_github_auth,
+        mock_async_client,
+    ):
+        # "notgithub.com" must not match the GitHub-origin check by substring.
+        with patch(
+            "registry.services.skill_service._resolve_tree_api",
+            return_value=(
+                "https://notgithub.com/repos/acme/skills/git/trees/main?recursive=1",
+                "acme/skills",
+                "main",
+                "x",
+            ),
+        ):
+            await _discover_skill_resources(
+                "https://notgithub.com/acme/skills/blob/main/x/SKILL.md",
+                auth_scheme="global_credentials",
+            )
+        mock_github_auth.get_auth_headers.assert_not_awaited()
+
+    @patch("registry.services.skill_service.settings")
+    async def test_gitee_token_never_in_logs(
+        self,
+        mock_settings,
+        mock_async_client,
+        caplog,
+    ):
+        mock_settings.gitee_access_token = "gitee-secret-token-xyz"
+        mock_settings.github_api_base_url = "https://api.github.com"
+        mock_async_client.status_code = 500
+
+        with caplog.at_level(logging.DEBUG):
+            await _discover_skill_resources(
+                "https://gitee.com/acme/skills/raw/main/x/SKILL.md",
+            )
+
+        assert caplog.messages, "expected a warning for the failed fetch"
+        for message in caplog.messages:
+            assert "gitee-secret-token-xyz" not in message
+
+
+class TestUnsupportedHostLogging:
+    """An unsupported host must be distinguishable from 'no companion files'."""
+
+    async def test_unrecognised_host_warns_with_host(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            result = await _discover_skill_resources("https://example.com/a/b/SKILL.md")
+
+        assert result is None
+        assert any(
+            record.levelno >= logging.WARNING and "example.com" in record.getMessage()
+            for record in caplog.records
+        ), caplog.messages

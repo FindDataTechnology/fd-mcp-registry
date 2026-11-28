@@ -743,6 +743,15 @@ class Settings(BaseSettings):
         default="https://api.github.com",
         description="GitHub API base URL for App token exchange (for GHES: https://github.mycompany.com/api/v3)",
     )
+    gitee_access_token: str = Field(
+        default="",
+        description=(
+            "Gitee personal access token for skill companion-resource discovery. "
+            "Empty means Gitee-hosted skills cannot be scanned (their tree API requires "
+            "auth for private repos and rate-limits anonymous reads hard), so their "
+            "resource_manifest stays null. Only ever sent to gitee.com; never to GitHub."
+        ),
+    )
     skill_content_cache_ttl_seconds: int = Field(
         default=300,
         ge=0,

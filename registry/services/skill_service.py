@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from typing import (
     Any,
 )
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import httpx
 
@@ -238,6 +238,12 @@ _LANG_BY_EXT: dict[str, str] = {
 # enterprise GitHub instances mirror the public path layout.
 _BLOB_PATH_PATTERN = re.compile(r"^/([^/]+)/([^/]+)/blob/([^/]+)/(.+)$")
 _RAW_PATH_PATTERN = re.compile(r"^/([^/]+)/([^/]+)/refs/heads/([^/]+)/(.+)$")
+# raw.githubusercontent.com also serves the short ref form, with no refs/heads/
+# segment: /<owner>/<repo>/<ref>/<dir...>/SKILL.md. Every GitHub-hosted skill in
+# our registry is stored in this form, so without it discovery returned None for
+# all of them and their resource_manifest stayed null. Only applied to raw.*
+# hosts, where the third path segment is unambiguously the ref.
+_RAW_SHORT_REF_PATH_PATTERN = re.compile(r"^/([^/]+)/([^/]+)/([^/]+)/(.+)$")
 
 
 def _api_base_for_skill_host(
@@ -265,6 +271,71 @@ def _api_base_for_skill_host(
         return configured
 
     return None
+
+
+# Gitee raw-content URLs look like:
+#   https://gitee.com/<owner>/<repo>/raw/<ref>/<dir...>/SKILL.md
+# Split on the literal marker rather than a regex: the path is attacker-supplied
+# and Gitee refs routinely contain slashes, which makes a greedy pattern both
+# ambiguous and a backtracking risk.
+_GITEE_RAW_MARKER = "/raw/"
+_GITEE_API_BASE = "https://gitee.com/api/v5"
+
+
+def _resolve_gitee_tree_api(
+    skill_md_url: str,
+) -> tuple[str, str, str, str] | None:
+    """Resolve the Gitee v5 Trees API endpoint for a Gitee-hosted SKILL.md.
+
+    Returns the same 4-tuple shape as the GitHub path so the caller needs no
+    branch of its own:
+    ``(tree_api_url, "{owner}/{repo}", ref, skill_dir)``.
+
+    Why this exists at all: every skill in ``FindDataTechnology/finddata-skills``
+    is served from gitee.com, and `_resolve_tree_api` had no Gitee branch, so
+    resource discovery returned None for all of them and every skill's
+    `resource_manifest` stayed null even where the repo carries `references/`.
+    """
+    parsed = urlparse(skill_md_url)
+    if (parsed.hostname or "").lower() != "gitee.com":
+        return None
+
+    path = parsed.path
+    idx = path.find(_GITEE_RAW_MARKER)
+    if idx < 0:
+        return None
+    # Segments before the marker are /<owner>/<repo>; the marker itself is the
+    # boundary. Splitting the whole path (not the tail) is what keeps owner and
+    # repo on the right side of it.
+    prefix = path[:idx].strip("/").split("/")
+    if len(prefix) != 2:
+        return None
+    owner, repo = prefix
+    rest = path[idx + len(_GITEE_RAW_MARKER):]
+
+    # After the marker: <ref>/<dir...>/SKILL.md. Gitee refs routinely contain
+    # slashes, so a slash-bearing ref cannot be told apart from a nested dir
+    # here. Take the first segment as the ref, which is correct for every
+    # ordinary branch name and keeps the parse linear (no backtracking).
+    parts = rest.split("/")
+    if len(parts) < 2:
+        return None
+    ref = parts[0]
+    file_path = "/".join(parts[1:])
+    if not file_path.endswith("SKILL.md"):
+        return None
+
+    skill_dir = file_path.rsplit("/", 1)[0] if "/" in file_path else ""
+
+    tree_url = f"{_GITEE_API_BASE}/repos/{owner}/{repo}/git/trees/{ref}?recursive=1"
+    token = (getattr(settings, "gitee_access_token", "") or "").strip()
+    if token:
+        # Gitee v5 takes the token as a query parameter. This URL only ever
+        # reaches a log through redact_url(), which strips query credentials;
+        # a test pins that the token never appears in emitted log records.
+        tree_url += f"&access_token={quote(token, safe='')}"
+
+    return tree_url, f"{owner}/{repo}", ref, skill_dir
 
 
 def _resolve_tree_api(
@@ -299,6 +370,12 @@ def _resolve_tree_api(
     except ImportError:
         pass
 
+    # Gitee: every skill in our own skills repo is served from gitee.com, and
+    # without this branch discovery returned None for all 114 of them.
+    gitee_result = _resolve_gitee_tree_api(skill_md_url)
+    if gitee_result is not None:
+        return gitee_result
+
     # Fall through to upstream GitHub / GHES handling.
     parsed = urlparse(skill_md_url)
     hostname = parsed.hostname or ""
@@ -306,6 +383,10 @@ def _resolve_tree_api(
         return None
 
     match = _BLOB_PATH_PATTERN.match(parsed.path) or _RAW_PATH_PATTERN.match(parsed.path)
+    if not match and hostname.lower().startswith("raw."):
+        # Short ref form, raw hosts only: /<owner>/<repo>/<ref>/<path>. Tried
+        # after the refs/heads form so that one is never misread as ref="refs".
+        match = _RAW_SHORT_REF_PATH_PATTERN.match(parsed.path)
     if not match:
         return None
 
@@ -411,9 +492,15 @@ async def _discover_skill_resources(
 
     tree_info = _resolve_tree_api(skill_md_url)
     if not tree_info:
-        logger.debug(
-            "Cannot derive tree API URL from %s — skipping resource discovery",
+        # warning, not debug: "host not recognised" and "skill genuinely has no
+        # companion files" both end as resource_manifest=None, and at debug level
+        # they were indistinguishable — which is how Gitee went unnoticed for
+        # every skill in our own repo.
+        logger.warning(
+            "Resource discovery skipped: unsupported hosting platform for %s (host=%s). "
+            "Supported: GitHub, GHES, GitLab, Gitee.",
             redact_url(skill_md_url),
+            urlparse(skill_md_url).hostname or "?",
         )
         return None
 
@@ -426,9 +513,26 @@ async def _discover_skill_resources(
             # Merge global GitHub auth headers (PAT / GitHub App) so private
             # repos and rate-limited public repos work -- but only when the
             # caller is authorized to use the shared identity (global_credentials).
-            github_headers = await _github_auth.get_auth_headers(
-                tree_url,
-                allow_global_credentials=(auth_scheme == "global_credentials"),
+            # GitHub credentials are scoped to GitHub origins. Sending the PAT to
+            # gitee.com would hand our GitHub identity to a third party, so the
+            # lookup is skipped entirely for non-GitHub tree URLs.
+            tree_host = (urlparse(tree_url).hostname or "").lower()
+            # GitHub credentials go only to a GitHub origin: github.com, its
+            # subdomains, or the configured GHES host. Never a substring match —
+            # "notgithub.example.com" must not receive our PAT.
+            ghes_host = (urlparse(settings.github_api_base_url or "").hostname or "").lower()
+            is_github_origin = (
+                tree_host == "github.com"
+                or tree_host.endswith(".github.com")
+                or (bool(ghes_host) and tree_host == ghes_host)
+            )
+            github_headers = (
+                await _github_auth.get_auth_headers(
+                    tree_url,
+                    allow_global_credentials=(auth_scheme == "global_credentials"),
+                )
+                if is_github_origin
+                else {}
             )
             merged_headers = {**github_headers, **headers}
             resp = await client.get(tree_url, headers=merged_headers)
@@ -461,7 +565,7 @@ async def _discover_skill_resources(
                     logger.warning(
                         "GitLab tree pagination hit %s-page cap for %s; results may be incomplete",
                         MAX_GITLAB_TREE_PAGES,
-                        tree_url,
+                        redact_url(tree_url),
                     )
     except Exception as e:
         logger.warning("Resource discovery error for %s: %s", redact_url(tree_url), e)
@@ -475,7 +579,7 @@ async def _discover_skill_resources(
         if payload.get("truncated"):
             logger.warning(
                 "Trees API response truncated for %s; manifest may be incomplete",
-                tree_url,
+                redact_url(tree_url),
             )
     else:
         items = payload
