@@ -4030,6 +4030,60 @@ async def health_check():
     return {"status": "healthy", "service": "simplified-auth-server"}
 
 
+@app.get("/metrics")
+async def metrics():
+    """Prometheus text exposition for the shared egress connection pool.
+
+    Why this exists (2026-11-28 outage): every auth_scheme=bearer MCP server
+    timed out while auth_scheme=none ones stayed healthy. The bearer path reuses
+    the shared, pooled egress client; an SSE upstream that never closed parked
+    each proxied request with a connection checked out, and the pool (default
+    100) filled up over hours. Nothing reported the approach -- the first signal
+    was total failure. These two gauges are the missing early signal.
+
+    ``_requests`` on an httpcore pool is the set of requests waiting for a free
+    connection slot. It is 0 in normal operation and non-zero only once the pool
+    is saturated, which is exactly the condition that caused the outage, so it
+    is a better tripwire than established-socket counts (those include idle
+    keep-alives and look alarming in steady state).
+    """
+    from fastapi.responses import PlainTextResponse
+
+    lines = [
+        "# HELP mcp_egress_pool_max_connections Configured cap of the shared egress pool.",
+        "# TYPE mcp_egress_pool_max_connections gauge",
+        "# HELP mcp_egress_pool_waiting_requests Requests waiting for a pooled connection slot.",
+        "# TYPE mcp_egress_pool_waiting_requests gauge",
+        "# HELP mcp_egress_pool_idle_connections Idle keep-alive connections held by the pool.",
+        "# TYPE mcp_egress_pool_idle_connections gauge",
+    ]
+    try:
+        from registry.utils.url_guard import (
+            EGRESS_UPSTREAM_PROFILE,
+            shared_guarded_async_client,
+        )
+
+        pool = shared_guarded_async_client(profile=EGRESS_UPSTREAM_PROFILE)._transport._pool
+        max_conn = int(getattr(pool, "_max_connections", 0) or 0)
+        waiting = len(getattr(pool, "_requests", ()) or ())
+        idle = len(getattr(pool, "connections", ()) or ())
+    except Exception as exc:  # noqa: BLE001 - a metrics scrape must never 500
+        logger.warning("metrics: egress pool introspection failed (%s)", type(exc).__name__)
+        return PlainTextResponse(
+            "# HELP mcp_egress_pool_available 0 when the pool gauge could not be read.\n"
+            "# TYPE mcp_egress_pool_available gauge\n"
+            "mcp_egress_pool_available 0\n",
+            media_type="text/plain; version=0.0.4",
+        )
+    lines += [
+        f"mcp_egress_pool_max_connections {max_conn}",
+        f"mcp_egress_pool_waiting_requests {waiting}",
+        f"mcp_egress_pool_idle_connections {idle}",
+        "mcp_egress_pool_available 1",
+    ]
+    return PlainTextResponse("\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")
+
+
 @app.get("/validate")
 async def validate_request(request: Request):
     """
